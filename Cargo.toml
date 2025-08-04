@@ -1,0 +1,18 @@
+[package]
+name = "keywork"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+lto = true
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+
+[dependencies]
