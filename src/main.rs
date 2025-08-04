@@ -1,6 +1,7 @@
 #![no_main]
 #![no_std]
 
+mod io;
 mod panic;
 
 use core::arch::global_asm;
