@@ -6,7 +6,7 @@ use super::{
 
 use core::cell::UnsafeCell;
 
-const AUX_BASE: MmioAddress = MmioAddress(PERIPHERAL_BASE as usize + 0x215000);
+const AUX_BASE: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x215000);
 const AUX_ENABLES: MmioAddress = AUX_BASE.offset(4);
 const AUX_MU_IO_REG: MmioAddress = AUX_BASE.offset(64);
 const AUX_MU_IER_REG: MmioAddress = AUX_BASE.offset(68);
@@ -17,14 +17,14 @@ const AUX_MU_LSR_REG: MmioAddress = AUX_BASE.offset(84);
 const AUX_MU_CNTL_REG: MmioAddress = AUX_BASE.offset(96);
 const AUX_MU_BAUD_REG: MmioAddress = AUX_BASE.offset(104);
 const AUX_UART_CLOCK: u32 = 500_000_000;
-const UART_MAX_QUEUE: u32 = 16 * 1024;
+const UART_MAX_QUEUE: usize = 16 * 1024;
 
 fn aux_mu_baud(baud: u32) -> u32 {
     (AUX_UART_CLOCK / (baud * 8)) - 1
 }
 
 pub struct Uart {
-    output_queue: [u8; UART_MAX_QUEUE as usize],
+    output_queue: [u8; UART_MAX_QUEUE],
     output_queue_write: usize,
     output_queue_read: usize,
 }
@@ -43,7 +43,7 @@ impl UartStatic {
 impl Uart {
     pub const fn new() -> Self {
         Uart {
-            output_queue: [0; UART_MAX_QUEUE as usize],
+            output_queue: [0; UART_MAX_QUEUE],
             output_queue_write: 0,
             output_queue_read: 0,
         }
@@ -107,7 +107,7 @@ impl Uart {
     }
 
     fn write_blocking_byte(&mut self, byte: u8) {
-        let next = (self.output_queue_write + 1) & (UART_MAX_QUEUE as usize - 1);
+        let next = (self.output_queue_write + 1) & (UART_MAX_QUEUE - 1);
         while next == self.output_queue_read {
             self.load_output_fifo();
         }
@@ -118,7 +118,7 @@ impl Uart {
     fn load_output_fifo(&mut self) {
         while !self.is_output_queue_empty() && self.is_write_ready() {
             let byte = self.output_queue[self.output_queue_read];
-            self.output_queue_read = (self.output_queue_read + 1) & (UART_MAX_QUEUE as usize - 1);
+            self.output_queue_read = (self.output_queue_read + 1) & (UART_MAX_QUEUE - 1);
             self.write_blocking_byte(byte);
         }
     }
