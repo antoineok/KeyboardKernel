@@ -1,10 +1,10 @@
 use core::cell::UnsafeCell;
 
-use crate::io::mailbox::{
+use crate::{io::mailbox::{
     MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
     MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
     MBOX_TAG_SETVIRTWH,
-};
+}, uart_println};
 
 pub struct Framebuffer {
     width: u32,
@@ -98,15 +98,11 @@ impl Framebuffer {
             self.buffer = mbox.0[28] as *mut u8;
 
             // Clear the framebuffer
-            unsafe {
-                let buffer_slice = core::slice::from_raw_parts_mut(
-                    self.buffer,
-                    (self.pitch * self.height) as usize,
-                );
-                for pixel in buffer_slice.iter_mut() {
-                    *pixel = 0; // Set to black
-                }
-            }
+            self.clear(0x000000); // Black
+            uart_println!("Framebuffer initialized: {}x{} with pitch {}", self.width, self.height, self.pitch);
+            uart_println!("Framebuffer buffer address: {:p}", self.buffer);
+            uart_println!("Framebuffer is RGB: {}", self.is_rgb);
+            
         } else {
             panic!("Failed to initialize framebuffer");
         }
@@ -133,14 +129,14 @@ impl Framebuffer {
     }
 
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
-        if x < self.width && y < self.height {
-            let offset = (y * self.pitch + x * 4) as usize;
+        if x < self.width() && y < self.height() {
+            let offset = (y * self.pitch() + x * 4) as usize;
             unsafe {
                 let buffer_slice = core::slice::from_raw_parts_mut(
-                    self.buffer,
-                    (self.width * self.height * 4) as usize,
+                    self.buffer(),
+                    (self.pitch() * self.height()) as usize,
                 );
-                if self.is_rgb {
+                if self.is_rgb() {
                     buffer_slice[offset] = ((color >> 16) & 0xFF) as u8; // Red
                     buffer_slice[offset + 1] = ((color >> 8) & 0xFF) as u8; // Green
                     buffer_slice[offset + 2] = (color & 0xFF) as u8; // Blue
@@ -255,6 +251,6 @@ impl Framebuffer {
     }
 
     pub fn clear(&mut self, color: u32) {
-        self.draw_rect(0, 0, self.width - 1, self.height - 1, color, true);
+        self.draw_rect(0, 0, self.width, self.height, color, true);
     }
 }
