@@ -48,6 +48,11 @@ pub fn memory_init(dtb_addr: usize) {
     uart_println!("Starting virtual memory manager initialization...");
     let mut vmm = Vmm::new(pmm);
     uart_println!("Virtual memory manager initialized.");
+    uart_println!("Starting MMU initialization...");
+    unsafe {
+        enable_mmu(vmm.root as u64); // Pass physical address of root PT
+    }
+    uart_println!("MMU initialized.");
 
     // 4. Initialize bump allocator for heap (1MB at 0xffff_8000_0000_0000)
     uart_println!("Starting bump allocator initialization...");
@@ -69,4 +74,34 @@ pub fn memory_init(dtb_addr: usize) {
     assert_eq!(*boxed_val, 42);
     drop(boxed_val);
     uart_println!("Heap allocation test passed.");
+}
+
+pub unsafe fn enable_mmu(root_table_pa: u64) {
+    use core::arch::asm;
+
+    // Set MAIR_EL1: Attr0=normal memory, Attr1=device memory
+    // Attr0 = 0xff (write-back, write-allocate), Attr1 = 0x00 (device nGnRE)
+    let mair_value: u64 = (0xff << 0) | (0x00 << 8);
+    asm!("msr mair_el1, {0}", in(reg) mair_value);
+
+    // Set TCR_EL1: 4KB granule, 48-bit VA/PA, inner shareable, WBWA
+    // This configures TTBR1 (kernel space) only.
+    let tcr_value: u64 = (16 << 0) |   // T1SZ: 48 - VA bits
+        (1 << 8)  |   // Inner shareable
+        (1 << 10) |   // TG1: 4KB granule
+        (1 << 12) |   // IPS: 40 bits PA (change if you want 48)
+        (1 << 14); // TBI=1 (top byte ignored, optional)
+    asm!("msr tcr_el1, {0}", in(reg) tcr_value);
+
+    // Set TTBR1_EL1 to root page table physical address
+    asm!("msr ttbr1_el1, {0}", in(reg) root_table_pa);
+
+    // Enable MMU: set SCTLR_EL1.M
+    let mut sctlr: u64;
+    asm!("mrs {0}, sctlr_el1", out(reg) sctlr);
+    sctlr |= 1; // Set M bit (MMU enable)
+    asm!("msr sctlr_el1, {0}", in(reg) sctlr);
+
+    // ISB: flush pipeline
+    asm!("isb");
 }
