@@ -49,10 +49,10 @@ enum Command {
     ResetChip = 0x03,
     AdvertData = 0x0008,
     SetAdvertParameters = 0x0006, // LE Set Advertising Parameters command OCF
-    SetAdvertEnable = 0x000a, // LE Set Advertising Enable command OCF
-    SetScanEnable = 0x000c, // LE Set Scan Enable command OCF
-    SetScanParameters = 0x000b, // LE Set Scan Parameters command OCF
-    CreateConnection = 0x0d, // LE Create Connection command OCF
+    SetAdvertEnable = 0x000a,     // LE Set Advertising Enable command OCF
+    SetScanEnable = 0x000c,       // LE Set Scan Enable command OCF
+    SetScanParameters = 0x000b,   // LE Set Scan Parameters command OCF
+    CreateConnection = 0x0d,      // LE Create Connection command OCF
     SetBaud = 0x18,
     LoadFirmware = 0x2e,
 }
@@ -81,7 +81,9 @@ enum LeAdvType {
 }
 
 impl Ogf {
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x03 => Some(Ogf::HostControl),
@@ -92,7 +94,9 @@ impl Ogf {
     }
 }
 impl Command {
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(Command::SetBdAddr),
@@ -104,7 +108,9 @@ impl Command {
     }
 }
 impl HciPacketType {
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(HciPacketType::Command),
@@ -115,7 +121,9 @@ impl HciPacketType {
     }
 }
 impl HciEventCode {
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x0e => Some(HciEventCode::CommandComplete),
@@ -125,7 +133,9 @@ impl HciEventCode {
     }
 }
 impl LeScanType {
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(LeScanType::Active),
@@ -134,7 +144,9 @@ impl LeScanType {
     }
 }
 impl LeAdvType {
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x03 => Some(LeAdvType::NonConnInd),
@@ -172,7 +184,6 @@ impl BluetoothStatic {
 }
 
 impl Bluetooth {
-
     pub const fn new() -> Self {
         Bluetooth
     }
@@ -298,23 +309,13 @@ impl Bluetooth {
     }
 
     pub fn reset(&self) {
-        if self.hci_command(
-            Ogf::HostControl,
-            Command::ResetChip,
-            &[],
-        ) != 0
-        {
+        if self.hci_command(Ogf::HostControl, Command::ResetChip, &[]) != 0 {
             uart_println!("Failed to reset Bluetooth chip");
         }
     }
 
     pub fn load_firmware(&self) {
-        if self.hci_command(
-            Ogf::Vendor,
-            Command::LoadFirmware,
-            &[],
-        ) != 0
-        {
+        if self.hci_command(Ogf::Vendor, Command::LoadFirmware, &[]) != 0 {
             uart_println!("Failed to load Bluetooth firmware");
         }
 
@@ -350,24 +351,14 @@ impl Bluetooth {
 
     pub fn set_baud(&self) {
         let data: [u8; 6] = [0x00, 0x00, 0x00, 0xc2, 0x01, 0x00]; // little endian, 115200
-        if self.hci_command(
-            Ogf::Vendor,
-            Command::SetBaud,
-            &data,
-        ) != 0
-        {
+        if self.hci_command(Ogf::Vendor, Command::SetBaud, &data) != 0 {
             uart_println!("Failed to set Bluetooth baud rate");
         }
     }
 
     pub fn set_bdaddr(&self) {
         let data: [u8; 6] = [0xee, 0xff, 0xc0, 0xee, 0xff, 0xc0]; // reversed
-        if self.hci_command(
-            Ogf::HostControl,
-            Command::SetBdAddr,
-            &data,
-        ) != 0
-        {
+        if self.hci_command(Ogf::HostControl, Command::SetBdAddr, &data) != 0 {
             uart_println!("Failed to set Bluetooth BD_ADDR");
         }
     }

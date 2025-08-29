@@ -1,10 +1,13 @@
 use core::cell::UnsafeCell;
 
-use crate::{io::mailbox::{
-    MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
-    MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
-    MBOX_TAG_SETVIRTWH,
-}, uart_println};
+use crate::{
+    io::mailbox::{
+        MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
+        MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
+        MBOX_TAG_SETVIRTWH,
+    },
+    uart_println,
+};
 
 pub struct Framebuffer {
     width: u32,
@@ -99,10 +102,14 @@ impl Framebuffer {
 
             // Clear the framebuffer
             self.clear(0x000000); // Black
-            uart_println!("Framebuffer initialized: {}x{} with pitch {}", self.width, self.height, self.pitch);
+            uart_println!(
+                "Framebuffer initialized: {}x{} with pitch {}",
+                self.width,
+                self.height,
+                self.pitch
+            );
             uart_println!("Framebuffer buffer address: {:p}", self.buffer);
             uart_println!("Framebuffer is RGB: {}", self.is_rgb);
-            
         } else {
             panic!("Failed to initialize framebuffer");
         }
