@@ -6,4 +6,4 @@ runner = "qemu-system-aarch64 -M raspi4b -chardev file,id=pl011,path=pl011_uart.
 rustflags = ["-C", "link-arg=-Tkernel.ld"]
 
 [unstable]
-build-std = ["core"]
+build-std = ["core", "alloc"]
