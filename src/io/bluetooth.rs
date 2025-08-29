@@ -1,3 +1,5 @@
+use core::cell::UnsafeCell;
+
 use crate::{
     io::{
         gpio::{GpioFunction, GpioPin},
@@ -63,7 +65,7 @@ enum HciPacketType {
 }
 
 #[repr(u8)]
-enum HciEventCode {
+pub enum HciEventCode {
     CommandComplete = 0x0e,
     ConnectComplete = 0x0f,
 }
@@ -154,7 +156,20 @@ const ARM_UART0_RIS: MmioAddress = ARM_UART0_BASE.offset(0x3C);
 const ARM_UART0_MIS: MmioAddress = ARM_UART0_BASE.offset(0x40);
 const ARM_UART0_ICR: MmioAddress = ARM_UART0_BASE.offset(0x44);
 
-struct Bluetooth;
+pub struct Bluetooth;
+pub struct BluetoothStatic(UnsafeCell<Bluetooth>);
+
+unsafe impl Sync for BluetoothStatic {}
+
+unsafe impl Sync for Bluetooth {}
+
+pub static BLUETOOTH: BluetoothStatic = BluetoothStatic(UnsafeCell::new(Bluetooth::new()));
+
+impl BluetoothStatic {
+    pub fn get(&self) -> &mut Bluetooth {
+        unsafe { &mut *self.0.get() }
+    }
+}
 
 impl Bluetooth {
 
@@ -482,7 +497,7 @@ impl Bluetooth {
         }
     }
 
-    fn set_le_advertenable(&self, state: u8) {
+    pub fn set_le_advertenable(&self, state: u8) {
         let data: [u8; 1] = [state];
         if self.hci_command(
             Ogf::LeControl,
@@ -494,7 +509,6 @@ impl Bluetooth {
         }
     }
 
-    //unsigned char type, unsigned char linterval_min, unsigned char hinterval_min, unsigned char linterval_max, unsigned char hinterval_max, unsigned char own_address_type, unsigned char filter_policy
     fn set_le_advert_parameters(
         &self,
         adv_type: LeAdvType,
