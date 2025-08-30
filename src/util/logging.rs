@@ -11,7 +11,7 @@ impl Logger{
         Logger {}
     }
 
-    fn init(&self) {
+    pub fn init(&self) {
 
     let uart = UART.get();
     uart.init();
@@ -25,7 +25,7 @@ impl log::Log for Logger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            uart_println!("{} - {}\n", record.level(), record.args());
+            uart_println!("{} - {}", record.level(), record.args());
         }
     }
 

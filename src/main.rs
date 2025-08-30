@@ -12,10 +12,14 @@ mod util;
 
 use log::info;
 
+use crate::util::logging::LOGGER;
+
 
 #[no_mangle]
 pub extern "C" fn main(dtb_addr: usize) -> ! {
-    log::set_logger(&util::logging::LOGGER).inspect_err( |e| {
+    LOGGER.init();
+    uart_println!("Logger initialized");
+    log::set_logger(&LOGGER).inspect_err( |e| {
         panic!("Failed to set logger: {}", e);
     }).unwrap();
 
