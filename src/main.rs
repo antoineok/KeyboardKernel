@@ -6,6 +6,7 @@ use crate::{io::uart::UART, time::time_manager};
 extern crate alloc;
 
 mod cpu;
+mod exceptions;
 mod graphics;
 mod io;
 mod memory;
@@ -13,13 +14,21 @@ mod panic;
 mod time;
 mod util;
 
-
 #[no_mangle]
 pub extern "C" fn main(dtb_addr: usize) -> ! {
     let uart = UART.get();
     uart.init();
-
     info!("Logger initialized");
+
+    info!("DTB address: {:#x}", dtb_addr);
+
+    let (_, privilege_level) = exceptions::current_privilege_level();
+    info!("Current privilege level: {}", privilege_level);
+
+    info!("Exception handling state:");
+    exceptions::asynchronous::print_state();
+
+
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
