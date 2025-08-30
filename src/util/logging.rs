@@ -1,33 +1,29 @@
-use crate::{io::uart::{UART}, uart_println};
 
 
-pub static LOGGER: Logger = Logger::new();
-
-pub struct Logger;
-
-impl Logger{
-
-    const fn new() -> Self {
-        Logger {}
-    }
-
-    pub fn init(&self) {
-
-    let uart = UART.get();
-    uart.init();
-    }
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => {
+        crate::uart_println!("INFO: {}", format_args!($($arg)*));
+    };
 }
 
-impl log::Log for Logger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
-    }
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => {
+        crate::uart_println!("WARN: {}", format_args!($($arg)*));
+    };
+}
 
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            uart_println!("{} - {}", record.level(), record.args());
-        }
-    }
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => {
+        crate::uart_println!("ERROR: {}", format_args!($($arg)*));
+    };
+}
 
-    fn flush(&self) {}
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        crate::uart_println!("DEBUG: {}", format_args!($($arg)*));
+    };
 }

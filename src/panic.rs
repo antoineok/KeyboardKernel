@@ -1,13 +1,13 @@
-use core::panic::PanicInfo;
+use core::{panic::PanicInfo};
 
-use crate::uart_println;
+use crate::error;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    uart_println!("Kernel Panic!");
-    uart_println!("Message: {}", info.message());
+    error!("Kernel Panic!");
+    error!("Message: {}", info.message());
     if let Some(loc) = info.location() {
-        uart_println!(
+        error!(
             "Location in file {} at {}:{}",
             loc.file(),
             loc.line(),

@@ -1,6 +1,8 @@
 #![no_main]
 #![no_std]
 
+use crate::io::uart::UART;
+
 extern crate alloc;
 
 mod cpu;
@@ -10,18 +12,11 @@ mod memory;
 mod panic;
 mod util;
 
-use log::info;
-
-use crate::util::logging::LOGGER;
-
 
 #[no_mangle]
 pub extern "C" fn main(dtb_addr: usize) -> ! {
-    LOGGER.init();
-    uart_println!("Logger initialized");
-    log::set_logger(&LOGGER).inspect_err( |e| {
-        panic!("Failed to set logger: {}", e);
-    }).unwrap();
+    let uart = UART.get();
+    uart.init();
 
     info!("Logger initialized");
     //memory::memory_init(dtb_addr);
