@@ -1,12 +1,13 @@
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, time::{self, Duration}};
+
+use aarch64_cpu::registers::DAIF::D;
 
 use crate::{
     io::{
         gpio::{GpioFunction, GpioPin},
         mmio::MmioAddress,
         PERIPHERAL_BASE,
-    },
-    uart_println,
+    }, time::time_manager, uart_println
 };
 
 const FIRMWARE: &[u8; 56508] = include_bytes!("../../data/BCM4345C0.hcd");
@@ -205,7 +206,7 @@ impl Bluetooth {
         ARM_UART0_CR.write(0xB01);
         ARM_UART0_IMSC.write(0x430);
 
-        crate::cpu::time::wait_msec(0x100000);
+        time_manager().spin_for(Duration::from_millis(100));
     }
 
     pub fn is_read_byte_ready(&self) -> bool {
@@ -345,7 +346,7 @@ impl Bluetooth {
 
             c += length;
         }
-        crate::cpu::time::wait_msec(0x100000);
+        time_manager().spin_for(Duration::from_millis(100));
         uart_println!("Bluetooth firmware loaded successfully");
     }
 
