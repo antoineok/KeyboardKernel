@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 
-use crate::io::uart::UART;
+use crate::{io::uart::UART, time::time_manager};
 
 extern crate alloc;
 
@@ -10,6 +10,7 @@ mod graphics;
 mod io;
 mod memory;
 mod panic;
+mod time;
 mod util;
 
 
@@ -19,7 +20,10 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
     uart.init();
 
     info!("Logger initialized");
-    //memory::memory_init(dtb_addr);
+
+    info!("Timer test, spinning for 1 second");
+    time_manager().spin_for(core::time::Duration::from_secs(1));
+    info!("1 second elapsed");
 
     let framebuffer = graphics::framebuffer::FRAMEBUFFER.get();
     framebuffer.init();
