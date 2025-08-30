@@ -16,3 +16,6 @@ name = "kernel"
 path = "src/main.rs"
 
 [dependencies]
+aarch64-cpu = "10.0.0"
+log = "0.4.27"
+tock-registers = "0.9.0"
