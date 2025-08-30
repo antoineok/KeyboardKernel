@@ -8,15 +8,19 @@ mod graphics;
 mod io;
 mod memory;
 mod panic;
+mod util;
 
-use crate::io::uart::UART;
+use log::info;
+
 
 #[no_mangle]
 pub extern "C" fn main(dtb_addr: usize) -> ! {
-    let uart = UART.get();
-    uart.init();
-    uart_println!("Hello, World!");
-    memory::memory_init(dtb_addr);
+    log::set_logger(&util::logging::LOGGER).inspect_err( |e| {
+        panic!("Failed to set logger: {}", e);
+    }).unwrap();
+
+    info!("Logger initialized");
+    //memory::memory_init(dtb_addr);
 
     let framebuffer = graphics::framebuffer::FRAMEBUFFER.get();
     framebuffer.init();
@@ -30,7 +34,7 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
 
     framebuffer.draw_line(100, 500, 350, 700, 0xFF0000);
     loop {
-        uart.update();
+        //uart.update();
         // Add any other functionality or loop logic here
     }
 }
