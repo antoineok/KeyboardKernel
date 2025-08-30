@@ -14,6 +14,12 @@ SECTIONS
     }
     _end = .;
 
+    /* Reserve 16 KiB for the boot core stack */
+    . = ALIGN(16);
+    __stack_start = .;
+    . += 16K;
+    __stack_top = .;
+
    /DISCARD/ : { *(.comment) *(.gnu*) *(.note*) *(.eh_frame*) }
 }
 __bss_size = (__bss_end - __bss_start)>>3;
