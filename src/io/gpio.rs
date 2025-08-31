@@ -1,9 +1,10 @@
+use crate::memory::mmu::memory_map::mmio::GPIO_START;
+
 use super::mmio::MmioAddress;
-use super::PERIPHERAL_BASE;
 
 pub const GPIO_MAX_PIN: u32 = 53;
 
-const GPFSEL0: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x200000);
+const GPFSEL0: MmioAddress = MmioAddress(GPIO_START);
 const GPSET0: MmioAddress = GPFSEL0.offset(0x1C);
 const GPCLR0: MmioAddress = GPFSEL0.offset(0x28);
 const GPPUPPDN0: MmioAddress = GPFSEL0.offset(0xE4);

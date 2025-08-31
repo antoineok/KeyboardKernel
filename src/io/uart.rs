@@ -1,12 +1,13 @@
+use crate::memory::mmu::memory_map::mmio::AUX_UART_START;
+
 use super::{
     gpio::{GpioFunction, GpioPin, GpioPull},
-    mmio::MmioAddress,
-    PERIPHERAL_BASE,
+    mmio::MmioAddress
 };
 
 use core::cell::UnsafeCell;
 
-const AUX_BASE: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x215000);
+const AUX_BASE: MmioAddress = MmioAddress(AUX_UART_START);
 const AUX_ENABLES: MmioAddress = AUX_BASE.offset(4);
 const AUX_MU_IO_REG: MmioAddress = AUX_BASE.offset(64);
 const AUX_MU_IER_REG: MmioAddress = AUX_BASE.offset(68);

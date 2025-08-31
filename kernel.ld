@@ -1,25 +1,88 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0
+ *
+ * Copyright (c) 2018-2023 Andre Richter <andre.o.richter@gmail.com>
+ */
+
+PAGE_SIZE = 64K;
+PAGE_MASK = PAGE_SIZE - 1;
+
+__rpi_phys_dram_start_addr = 0;
+
+/* The physical address at which the the kernel binary will be loaded by the Raspberry's firmware */
+__rpi_phys_binary_load_addr = 0x80000;
+
+
+ENTRY(__rpi_phys_binary_load_addr)
+
+/* Flags:
+ *     4 == R
+ *     5 == RX
+ *     6 == RW
+ *
+ * Segments are marked PT_LOAD below so that the ELF file provides virtual and physical addresses.
+ * It doesn't mean all of them need actually be loaded.
+ */
+PHDRS
+{
+    segment_boot_core_stack PT_LOAD FLAGS(6);
+    segment_code            PT_LOAD FLAGS(5);
+    segment_data            PT_LOAD FLAGS(6);
+}
+
 SECTIONS
 {
-    . = 0x80000;     /* Kernel load address for AArch64 */
-    .text : { KEEP(*(.text.boot)) *(.text .text.* .gnu.linkonce.t*) }
-    .rodata : { *(.rodata .rodata.* .gnu.linkonce.r*) }
-    PROVIDE(_data = .);
-    .data : { *(.data .data.* .gnu.linkonce.d*) }
-    .bss (NOLOAD) : {
-        . = ALIGN(16);
+    . =  __rpi_phys_dram_start_addr;
+
+    /***********************************************************************************************
+    * Boot Core Stack
+    ***********************************************************************************************/
+    .boot_core_stack (NOLOAD) :
+    {
+                                             /*   ^             */
+                                             /*   | stack       */
+        . += __rpi_phys_binary_load_addr;    /*   | growth      */
+                                             /*   | direction   */
+        __boot_core_stack_end_exclusive = .; /*   |             */
+    } :segment_boot_core_stack
+
+    ASSERT((. & PAGE_MASK) == 0, "End of boot core stack is not page aligned")
+
+    /***********************************************************************************************
+    * Code + RO Data + Global Offset Table
+    ***********************************************************************************************/
+    __code_start = .;
+    .text :
+    {
+        KEEP(*(.text._start))
+        *(.text._start_arguments) /* Constants (or statics in Rust speak) read by _start(). */
+        *(.text._start_rust)      /* The Rust entry point */
+        *(.text*)                 /* Everything else */
+    } :segment_code
+
+    .rodata : ALIGN(8) { *(.rodata*) } :segment_code
+
+    . = ALIGN(PAGE_SIZE);
+    __code_end_exclusive = .;
+
+    /***********************************************************************************************
+    * Data + BSS
+    ***********************************************************************************************/
+    .data : { *(.data*) } :segment_data
+
+    /* Section is zeroed in pairs of u64. Align start and end to 16 bytes */
+    .bss (NOLOAD) : ALIGN(16)
+    {
         __bss_start = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        __bss_end = .;
-    }
-    _end = .;
+        *(.bss*);
+        . = ALIGN(16);
+        __bss_end_exclusive = .;
+    } :segment_data
 
-    /* Reserve 16 KiB for the boot core stack */
-    . = ALIGN(16);
-    __stack_start = .;
-    . += 16K;
-    __stack_top = .;
+    /***********************************************************************************************
+    * Misc
+    ***********************************************************************************************/
+    .got : { *(.got*) }
+    ASSERT(SIZEOF(.got) == 0, "Relocation support not expected")
 
-   /DISCARD/ : { *(.comment) *(.gnu*) *(.note*) *(.eh_frame*) }
+    /DISCARD/ : { *(.comment*) }
 }
-__bss_size = (__bss_end - __bss_start)>>3;

@@ -1,10 +1,9 @@
 use core::cell::UnsafeCell;
 
-use crate::io::mmio::MmioAddress;
+use crate::{io::mmio::MmioAddress, memory::mmu::memory_map::mmio::MBOX_START};
 
-use super::PERIPHERAL_BASE;
 
-const VIDEOCORE_MBOX: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x0000B880);
+const VIDEOCORE_MBOX: MmioAddress = MmioAddress(MBOX_START);
 const MBOX_READ: MmioAddress = VIDEOCORE_MBOX.offset(0);
 const MBOX_POLL: MmioAddress = VIDEOCORE_MBOX.offset(0x10);
 const MBOX_SENDER: MmioAddress = VIDEOCORE_MBOX.offset(0x14);

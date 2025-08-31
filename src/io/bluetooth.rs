@@ -6,8 +6,7 @@ use crate::{
     io::{
         gpio::{GpioFunction, GpioPin},
         mmio::MmioAddress,
-        PERIPHERAL_BASE,
-    }, time::time_manager, uart_println
+    }, memory::mmu::memory_map::mmio::PL011_UART_START, time::time_manager, uart_println
 };
 
 const FIRMWARE: &[u8; 56508] = include_bytes!("../../data/BCM4345C0.hcd");
@@ -156,7 +155,7 @@ impl LeAdvType {
     }
 }
 
-const ARM_UART0_BASE: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x201000);
+const ARM_UART0_BASE: MmioAddress = MmioAddress(PL011_UART_START);
 const ARM_UART0_DR: MmioAddress = ARM_UART0_BASE.offset(0x0);
 const ARM_UART0_FR: MmioAddress = ARM_UART0_BASE.offset(0x18);
 const ARM_UART0_IBRD: MmioAddress = ARM_UART0_BASE.offset(0x24);

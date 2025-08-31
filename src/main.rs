@@ -1,29 +1,41 @@
 #![no_main]
 #![no_std]
+#![feature(core_intrinsics)]
 
-use crate::{io::uart::UART, time::time_manager};
-
-extern crate alloc;
+use crate::{io::uart::UART, memory::mmu::interface::MMU, time::time_manager};
 
 mod cpu;
 mod exceptions;
 mod graphics;
 mod io;
-mod memory;
 mod panic;
 mod time;
+mod memory;
 mod util;
 
 #[no_mangle]
 pub extern "C" fn main(dtb_addr: usize) -> ! {
+    unsafe { exceptions::handling_init() };
+    if let Err(string) = unsafe { memory::mmu::mmu().enable_mmu_and_caching() } {
+        panic!("MMU: {}", string);
+    }
+
     let uart = UART.get();
     uart.init();
     info!("Logger initialized");
 
-    info!("DTB address: {:#x}", dtb_addr);
+    info!("MMU online. Special regions:");
+    crate::memory::mmu::bsp_mmu::virt_mem_layout().print_layout();
 
     let (_, privilege_level) = exceptions::current_privilege_level();
     info!("Current privilege level: {}", privilege_level);
+
+
+
+    info!("DTB address: {:#x}", dtb_addr);
+
+    //let (_, privilege_level) = exceptions::current_privilege_level();
+    //info!("Current privilege level: {}", privilege_level);
 
     info!("Exception handling state:");
     exceptions::asynchronous::print_state();

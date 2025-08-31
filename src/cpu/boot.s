@@ -1,7 +1,5 @@
 .global _start
 
-.section ".text.boot"
-
 _start:
     // On entry, x0 = FDT pointer (don't clobber!)
 
@@ -21,12 +19,12 @@ _start:
     mov     x20, x0
 
     // Set stack to start below our code
-    ldr     x1, =__stack_top
+    ldr     x1, =__boot_core_stack_end_exclusive
     mov     sp, x1
 
     // Clean the BSS
     ldr     x1, =__bss_start
-    ldr     w2, =__bss_size
+    ldr     w2, =__bss_end_exclusive
 3:  cbz     w2, 4f
     str     xzr, [x1], #8
     sub     w2, w2, #1
@@ -53,3 +51,7 @@ _start:
 .L_parking_loop:
     wfe
     b .L_parking_loop
+
+.size	_start, . - _start
+.type	_start, function
+.global	_start
