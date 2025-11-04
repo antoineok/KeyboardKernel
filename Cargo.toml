@@ -16,8 +16,8 @@ name = "kernel"
 path = "src/main.rs"
 
 [dependencies]
-aarch64-cpu = "10.0.0"
-tock-registers = "0.9.0"
+aarch64-cpu = "11.1.0"
+tock-registers = "0.10.0"
 
 [features]
 jtag = []
