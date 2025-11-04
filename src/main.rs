@@ -9,7 +9,6 @@ mod cpu;
 mod exceptions;
 mod graphics;
 mod io;
-mod memory;
 mod panic;
 mod time;
 mod util;
@@ -27,8 +26,6 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
 
     info!("Exception handling state:");
     exceptions::asynchronous::print_state();
-
-
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
