@@ -9,6 +9,8 @@ mod cpu;
 mod exceptions;
 mod graphics;
 mod io;
+#[cfg(feature = "jtag")]
+mod jtag;
 mod panic;
 mod time;
 mod util;
