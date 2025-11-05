@@ -20,6 +20,14 @@ SECTIONS
     . += 16K;
     __stack_top = .;
 
+    /* Align to 4 KiB (page boundary for safety) */
+    . = ALIGN(0x1000);
+    __heap_start = .;
+
+    /* Reserve 512 KiB for heap (tweak as you wish) */
+    . = . + 512K;
+    __heap_end = .;
+
    /DISCARD/ : { *(.comment) *(.gnu*) *(.note*) *(.eh_frame*) }
 }
 __bss_size = (__bss_end - __bss_start)>>3;

@@ -11,6 +11,7 @@ mod graphics;
 mod io;
 #[cfg(feature = "jtag")]
 mod jtag;
+mod memory;
 mod panic;
 mod time;
 mod util;
@@ -32,6 +33,8 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
+
+    memory::init_heap();
 
     let framebuffer = graphics::framebuffer::FRAMEBUFFER.get();
     framebuffer.init();
