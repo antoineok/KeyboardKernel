@@ -22,6 +22,12 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
     uart.init();
     info!("Logger initialized");
 
+    #[cfg(feature = "jtag")]
+    {
+        jtag::init_jtag();
+        info!("JTAG initialized");
+    }
+
     info!("DTB address: {:#x}", dtb_addr);
 
     let (_, privilege_level) = exceptions::current_privilege_level();
@@ -33,6 +39,12 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
+
+    #[cfg(feature = "jtag")]
+    {
+        info!("Waiting for debug");
+        jtag::breakpoint();
+    }
 
     memory::init_heap();
 
