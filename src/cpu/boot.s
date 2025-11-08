@@ -4,9 +4,6 @@
 
 _start:
 
-    // Save x0 (device tree pointer) to x19 for later use
-    mov     x19, x0
-
     // Check processor ID is zero (executing on main core), else hang
     mrs     x1, mpidr_el1
     and     x1, x1, #3
@@ -29,8 +26,6 @@ _start:
     cbnz    w2, 3b               // Loop if non-zero
 
     // Jump to our el2_start() routine in Rust (make sure it doesn't return)
-    // Also sends the device tree pointer in x0
-    mov     x0, x19
 4:  bl      el2_start
     // In case it does return, halt the master core too
     b       1b
