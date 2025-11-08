@@ -21,6 +21,8 @@ pub fn init_jtag() {
     GpioPin::new(27).set_function(crate::io::gpio::GpioFunction::Alt4); // GPIO27 = ARM_TMS
 
     crate::info!("Waiting for debugger to attach...");
+
     unsafe { wait_for_debugger() };
+
     crate::info!("Debugger attached, continuing boot");
 }
