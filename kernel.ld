@@ -14,11 +14,17 @@ SECTIONS
     }
     _end = .;
 
-    /* Reserve 16 KiB for the boot core stack */
+    /* Reserve 16 KiB for the el2 stack */
     . = ALIGN(16);
-    __stack_start = .;
+    __el2_stack_start = .;
     . += 16K;
-    __stack_top = .;
+    __el2_stack_top = .;
+
+    /* Reserve 64 KiB for the el1 stack */
+    . = ALIGN(16);
+    __el1_stack_start = .;
+    . += 64K;
+    __el1_stack_top = .;
 
     /* Align to 4 KiB (page boundary for safety) */
     . = ALIGN(0x1000);
