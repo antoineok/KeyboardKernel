@@ -14,3 +14,12 @@ script = [
 
 [tasks.clear]
 script = ["cargo clean", "rm -f kernel8.img"]
+
+[tasks.openocd]
+script = ["openocd"]
+
+[tasks.gdb]
+script = "RUST_GDB=aarch64-none-elf-gdb rust-gdb"
+
+[tasks.gdbgui]
+script = "RUST_GDB=aarch64-none-elf-gdb rust-gdbgui target/aarch64-unknown-none/debug/kernel"
