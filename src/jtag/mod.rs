@@ -7,9 +7,9 @@ extern "C" {
 }
 
 #[no_mangle]
-pub extern "C" fn breakpoint() {
-    unsafe { core::arch::asm!("brk 0", options(nomem, nostack)) }
-}
+#[inline(never)] // Prevent inlining to ensure a stable breakpoint location
+pub extern "C" fn breakpoint() { /* nothing */ }
+
 
 pub fn init_jtag() {
     use crate::io::gpio::GpioPin;
