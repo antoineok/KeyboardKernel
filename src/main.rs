@@ -1,7 +1,9 @@
 #![no_main]
 #![no_std]
 
-use crate::{io::uart::UART, time::time_manager};
+use aarch64_cpu::asm::nop;
+
+use crate::{io::uart::UART, jtag::breakpoint, time::time_manager};
 
 extern crate alloc;
 
@@ -17,18 +19,12 @@ mod time;
 mod util;
 
 #[no_mangle]
-pub extern "C" fn main(dtb_addr: usize) -> ! {
-    let uart = UART.get();
-    uart.init();
-    info!("Logger initialized");
+pub extern "C" fn main() -> ! {
+
+    dump_el1_regs();
 
     #[cfg(feature = "jtag")]
-    {
-        jtag::init_jtag();
-        info!("JTAG initialized");
-    }
-
-    info!("DTB address: {:#x}", dtb_addr);
+    breakpoint();
 
     let (_, privilege_level) = exceptions::current_privilege_level();
     info!("Current privilege level: {}", privilege_level);
@@ -40,13 +36,7 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
 
-    #[cfg(feature = "jtag")]
-    {
-        info!("Waiting for debug");
-        jtag::breakpoint();
-    }
-
-    memory::init_heap();
+    
 
     let framebuffer = graphics::framebuffer::FRAMEBUFFER.get();
     framebuffer.init();
@@ -62,5 +52,24 @@ pub extern "C" fn main(dtb_addr: usize) -> ! {
     loop {
         //uart.update();
         // Add any other functionality or loop logic here
+        info!("Idle loop iteration");
+        time_manager().spin_for(core::time::Duration::from_secs(5));
+        nop();
     }
+}
+
+
+pub fn dump_el1_regs() {
+    let mut el: u64;
+    let mut sctlr: u64;
+    let mut vbar: u64;
+    unsafe {
+        core::arch::asm!("mrs {0}, CurrentEL", out(reg) el);
+        core::arch::asm!("mrs {0}, SCTLR_EL1", out(reg) sctlr);
+        core::arch::asm!("mrs {0}, VBAR_EL1", out(reg) vbar);
+    }
+    crate::info!(
+        "CurrentEL = {:#x}, SCTLR_EL1 = {:#x}, VBAR_EL1 = {:#x}",
+        el, sctlr, vbar
+    );
 }
