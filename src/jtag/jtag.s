@@ -6,7 +6,7 @@ wait_for_debugger:
 1:
     ldr w1, [x0]
     cbnz w1, 2f      // If flag set, continue
-    wfe              // Otherwise, sleep until event
+    nop              // Otherwise, sleep until event
     b 1b
 2:
     ret
