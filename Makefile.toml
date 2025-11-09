@@ -19,7 +19,7 @@ script = ["cargo clean", "rm -f kernel8.img"]
 script = ["openocd"]
 
 [tasks.gdb]
-script = "RUST_GDB=aarch64-none-elf-gdb rust-gdb"
+script = "RUST_GDB=/home/antoineok/binutils-gdb/build/gdb/gdb rust-gdb"
 
 [tasks.gdbgui]
 script = '''
