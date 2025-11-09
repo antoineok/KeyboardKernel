@@ -39,7 +39,14 @@ pub extern "C" fn main() -> ! {
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
 
-    
+    let fdt = unsafe { fdt::Fdt::from_ptr(DTB_ADDR.load(core::sync::atomic::Ordering::Relaxed) as *const u8).unwrap() };
+    info!("This is a devicetree representation of a {}", fdt.root().model());
+    info!("...which is compatible with at least: {}", fdt.root().compatible().first());
+    info!("...and has {} CPU(s)", fdt.cpus().count());
+    info!(
+        "...and has at least one memory location at: {:#X}\n",
+        fdt.memory().regions().next().unwrap().starting_address as usize
+    );
 
     let framebuffer = graphics::framebuffer::FRAMEBUFFER.get();
     framebuffer.init();
