@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 aarch64-cpu = "11.1.0"
+fdt = "0.1.5"
 linked_list_allocator = "0.10.5"
 tock-registers = "0.10.0"
 
