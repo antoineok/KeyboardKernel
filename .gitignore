@@ -21,3 +21,7 @@ Cargo.lock
 *.log
 
 kernel8.img
+
+bcm2711-rpi-cm4.dtb
+
+devicetree.dts
