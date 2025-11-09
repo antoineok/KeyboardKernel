@@ -10,10 +10,10 @@ target extended-remote localhost:3333
 b breakpoint
 
 # Show where the flag lives (for verification)
-info address debugger_flag
+info address DEBUGGER_FLAG
 
 # Set the debugger flag to 1 to wake firmware
-set {int}&debugger_flag = 1
+set DEBUGGER_FLAG = 1
 
 # Confirm it changed (optional)
-x/w &debugger_flag
+x/w &DEBUGGER_FLAG

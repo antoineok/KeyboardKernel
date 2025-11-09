@@ -1,15 +1,27 @@
-use core::arch::global_asm;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-global_asm!(include_str!("jtag.s"));
+use aarch64_cpu::asm::nop;
 
-extern "C" {
-    fn wait_for_debugger();
+// Global flag that GDB will poke.
+#[no_mangle]
+#[used]
+pub static mut DEBUGGER_FLAG: u32 = 0;
+
+
+/// Spin until the debugger sets `DEBUGGER_FLAG` to 1.
+#[inline(never)]
+pub unsafe fn wait_for_debugger() {
+    while core::ptr::read_volatile(&DEBUGGER_FLAG) == 0 {
+        // Prevent aggressive optimization and yield the pipeline a bit.
+        nop();
+    }
+    core::ptr::write_volatile(&mut DEBUGGER_FLAG, 0); // reset for next time
 }
 
 #[no_mangle]
 #[inline(never)] // Prevent inlining to ensure a stable breakpoint location
-pub extern "C" fn breakpoint() { /* nothing */ }
-
+pub extern "C" fn breakpoint() { /* nothing */
+}
 
 pub fn init_jtag() {
     use crate::io::gpio::GpioPin;
@@ -22,7 +34,15 @@ pub fn init_jtag() {
 
     crate::info!("Waiting for debugger to attach...");
 
-    unsafe { wait_for_debugger() };
+    unsafe {
+        core::ptr::write_volatile(&mut DEBUGGER_FLAG, 0);
+
+        crate::info!("current DEBUGGER_FLAG value: {}", core::ptr::read_volatile(&DEBUGGER_FLAG));
+
+        wait_for_debugger();
+
+        crate::info!("DEBUGGER_FLAG new value: {}", core::ptr::read_volatile(&DEBUGGER_FLAG));
+    }
 
     crate::info!("Debugger attached, continuing boot");
 }
