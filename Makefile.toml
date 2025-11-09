@@ -54,3 +54,90 @@ script = '''
             -iex \"add-auto-load-safe-path /run/media/antoineok/DATA2/Keyboard/kernel/.gdbinit\" \
             -iex \"set substitute-path /rustc/$RUSTC_COMMIT_HASH $RUSTC_SYSROOT/lib/rustlib/src/rust\""
 '''
+
+[tasks.deploy-cm4]
+description = "Build and deploy kernel8.img to Raspberry Pi CM4 via rpiboot"
+script_runner = "bash"
+script = [
+    '''
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # --- Configuration ---
+    BUILD_TASK="${CARGO_MAKE_TASK_BUILD:-build-img}"
+    LABEL="bootfs"
+    RPIBOOT_LOG="/tmp/rpiboot.log"
+
+    echo "[INFO] === Raspberry Pi CM4 Deploy Task ==="
+    echo "[INFO] Using build task: ${BUILD_TASK}"
+
+    # --- Start rpiboot in the background if not already running ---
+    if pgrep -x rpiboot >/dev/null; then
+        echo "[INFO] rpiboot already running."
+    else
+        echo "[INFO] Starting rpiboot..."
+        rpiboot >"$RPIBOOT_LOG" 2>&1 &
+        RPIBOOT_PID=$!
+    fi
+
+    # --- Run the build ---
+    echo "[INFO] Running cargo make ${BUILD_TASK}..."
+    cargo make "${BUILD_TASK}"
+
+    # --- Wait for the device to appear ---
+    echo "[INFO] Waiting for device labeled 'bootfs'..."
+    for _ in {1..60}; do
+        DEV=$(lsblk -o NAME,LABEL -P 2>/dev/null | grep 'LABEL="bootfs"' | awk -F'"' '{print $2}' || true)
+        if [[ -n "${DEV}" ]]; then
+            echo "[INFO] Found device: /dev/${DEV}"
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ -z "${DEV:-}" ]]; then
+        echo "[ERROR] No device labeled 'bootfs' detected after 60s."
+        [[ -n "${RPIBOOT_PID:-}" ]] && kill "${RPIBOOT_PID}" || true
+        exit 1
+    fi
+
+    DEV_PATH="/dev/${DEV}"
+
+    # --- Mount as user ---
+    echo "[INFO] Mounting ${DEV_PATH}..."
+    udisksctl mount -b "${DEV_PATH}" >/tmp/cm4_mount.txt
+
+    # Auto-detect actual mount point (works for /media or /run/media)
+    MOUNT_POINT=$(findmnt -n -o TARGET -S "${DEV_PATH}")
+    echo "[INFO] Mounted at ${MOUNT_POINT}"
+
+
+    # --- Find the built kernel8.img automatically ---
+    KERNEL_IMG="kernel8.img"
+    if [[ ! -f "${KERNEL_IMG}" ]]; then
+        echo "[ERROR] ${KERNEL_IMG} not found in project root!"
+        exit 1
+    fi
+
+    echo "[INFO] Copying ${KERNEL_IMG} → ${MOUNT_POINT}/kernel8.img"
+    cp -v "${KERNEL_IMG}" "${MOUNT_POINT}/kernel8.img"
+    sync
+
+    # --- Unmount and clean up ---
+    echo "[INFO] Unmounting ${MOUNT_POINT}..."
+    udisksctl unmount -b "${DEV_PATH}"
+
+    if [[ -n "${RPIBOOT_PID:-}" ]] && ps -p "${RPIBOOT_PID}" >/dev/null 2>&1; then
+        echo "[INFO] Stopping rpiboot..."
+        kill "${RPIBOOT_PID}" || true
+    fi
+
+    echo "[SUCCESS] kernel8.img successfully deployed to CM4 bootfs!"
+    '''
+]
+
+
+[tasks.deploy-cm4-jtag]
+description = "Deploy JTAG build of kernel8.img"
+env = { CARGO_MAKE_TASK_BUILD = "build-img-jtag" }
+run_task = "deploy-cm4"
