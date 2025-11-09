@@ -3,7 +3,10 @@
 
 use aarch64_cpu::asm::nop;
 
-use crate::{io::uart::UART, jtag::breakpoint, time::time_manager};
+use crate::{cpu::DTB_ADDR, time::time_manager};
+
+#[cfg(feature = "jtag")]
+use crate::jtag::breakpoint;
 
 extern crate alloc;
 
