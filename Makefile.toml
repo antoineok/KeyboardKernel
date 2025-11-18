@@ -19,40 +19,46 @@ script = ["cargo clean", "rm -f kernel8.img"]
 script = ["openocd"]
 
 [tasks.gdb]
-script = "RUST_GDB=/home/antoineok/binutils-gdb/build/gdb/gdb rust-gdb"
+script = "RUST_GDB=aarch64-none-elf-gdb rust-gdb -iex \"add-auto-load-safe-path /run/media/antoineok/DATA2/Keyboard/kernel/.gdbinit\""
 
 [tasks.gdbgui]
 script = '''
-    #!/bin/sh
-    # Exit if anything fails
-    set -e
+#!/usr/bin/env sh
+set -eu
 
-    # Prefer rustc in the same directory as this script
-    DIR="$(dirname "$0")"
-    if [ -x "$DIR/rustc" ]; then
-    RUSTC="$DIR/rustc"
-    else
-    RUSTC="rustc"
-    fi
+# Prefer rustc in the same directory as this script
+DIR="$(dirname "$0")"
+if [ -x "$DIR/rustc" ]; then
+  RUSTC="$DIR/rustc"
+else
+  RUSTC="rustc"
+fi
 
-    RUSTC_SYSROOT="$("$RUSTC" --print=sysroot)"
-    GDB_PYTHON_MODULE_DIRECTORY="$RUSTC_SYSROOT/lib/rustlib/etc"
-    # Get the commit hash for path remapping
-    RUSTC_COMMIT_HASH="$("$RUSTC" -vV | sed -n 's/commit-hash: \([a-zA-Z0-9_]*\)/\1/p')"
+RUSTC_SYSROOT="$("$RUSTC" --print sysroot)"
+GDB_PYTHON_MODULE_DIRECTORY="$RUSTC_SYSROOT/lib/rustlib/etc"
+RUSTC_COMMIT_HASH="$("$RUSTC" -vV | awk '/commit-hash:/ {print $2}')"
 
-    # Run GDB with the additional arguments that load the pretty printers
-    # Set the environment variable `RUST_GDB` to overwrite the call to a
-    # different/specific command (defaults to `gdb`).
-    RUST_GDB="${RUST_GDB:-gdb}"
-    PORT="${GDBGUI_PORT:-5000}"
-    HOST="${GDBGUI_HOST:-127.0.0.1}"
-    PYTHONPATH="$PYTHONPATH:$GDB_PYTHON_MODULE_DIRECTORY" exec /home/antoineok/gdb-frontend/gdbfrontend \
-        -H ${HOST} -p "${PORT}" \
-        -g "${RUST_GDB}" \
-        -G  "--directory=\"$GDB_PYTHON_MODULE_DIRECTORY\" \
-            -iex \"add-auto-load-safe-path $GDB_PYTHON_MODULE_DIRECTORY\" \
-            -iex \"add-auto-load-safe-path /run/media/antoineok/DATA2/Keyboard/kernel/.gdbinit\" \
-            -iex \"set substitute-path /rustc/$RUSTC_COMMIT_HASH $RUSTC_SYSROOT/lib/rustlib/src/rust\""
+RUST_GDB="${RUST_GDB:-aarch64-none-elf-gdb}"
+TMUX="${TMUX_EXE:-tmux}"
+PORT="${GDBGUI_PORT:-5000}"
+HOST="${GDBGUI_HOST:-0.0.0.0}"
+
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$GDB_PYTHON_MODULE_DIRECTORY"
+
+GDB_ARGS="
+--directory=$GDB_PYTHON_MODULE_DIRECTORY
+-iex 'add-auto-load-safe-path $GDB_PYTHON_MODULE_DIRECTORY'
+-iex 'add-auto-load-safe-path /run/media/antoineok/DATA2/Keyboard/kernel/.gdbinit'
+-iex 'set substitute-path /rustc/$RUSTC_COMMIT_HASH $RUSTC_SYSROOT/lib/rustlib/src/rust'
+"
+TMUX_TMPDIR=/home/antoine/ gdbfrontend -V \
+  -H "$HOST" \
+  -p "$PORT" \
+  -g "$RUST_GDB" \
+  -G "$GDB_ARGS" \
+  -tmux "$TMUX"
+
+
 '''
 
 [tasks.deploy-cm4]
@@ -133,7 +139,7 @@ script = [
     fi
 
     echo "[SUCCESS] kernel8.img successfully deployed to CM4 bootfs!"
-    '''
+    ''',
 ]
 
 
