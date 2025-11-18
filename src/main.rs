@@ -23,7 +23,6 @@ mod util;
 
 #[no_mangle]
 pub extern "C" fn main() -> ! {
-
     dump_el1_regs();
 
     #[cfg(feature = "jtag")]
@@ -39,9 +38,18 @@ pub extern "C" fn main() -> ! {
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
 
-    let fdt = unsafe { fdt::Fdt::from_ptr(DTB_ADDR.load(core::sync::atomic::Ordering::Relaxed) as *const u8).unwrap() };
-    info!("This is a devicetree representation of a {}", fdt.root().model());
-    info!("...which is compatible with at least: {}", fdt.root().compatible().first());
+    let fdt = unsafe {
+        fdt::Fdt::from_ptr(DTB_ADDR.load(core::sync::atomic::Ordering::Relaxed) as *const u8)
+            .unwrap()
+    };
+    info!(
+        "This is a devicetree representation of a {}",
+        fdt.root().model()
+    );
+    info!(
+        "...which is compatible with at least: {}",
+        fdt.root().compatible().first()
+    );
     info!("...and has {} CPU(s)", fdt.cpus().count());
     info!(
         "...and has at least one memory location at: {:#X}\n",
@@ -68,7 +76,6 @@ pub extern "C" fn main() -> ! {
     }
 }
 
-
 pub fn dump_el1_regs() {
     let mut el: u64;
     let mut sctlr: u64;
@@ -80,6 +87,8 @@ pub fn dump_el1_regs() {
     }
     crate::info!(
         "CurrentEL = {:#x}, SCTLR_EL1 = {:#x}, VBAR_EL1 = {:#x}",
-        el, sctlr, vbar
+        el,
+        sctlr,
+        vbar
     );
 }
