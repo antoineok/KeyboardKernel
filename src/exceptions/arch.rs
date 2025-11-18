@@ -72,8 +72,8 @@ pub extern "C" fn el1_handler(exception_number: u64, sp: u64, regs: *const Regis
         info!("x{:02}: {:#018x}", i, reg);
     }
 
-    //#[cfg(feature = "jtag")]
-    //crate::jtag::breakpoint();
+    #[cfg(feature = "jtag")]
+    crate::jtag::breakpoint();
 
     loop {
         unsafe { core::arch::asm!("nop", options(nomem, nostack)) }
