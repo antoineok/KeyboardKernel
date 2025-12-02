@@ -64,10 +64,3 @@ impl GpioPin {
         reg.write(1 << (self.pin % 32));
     }
 }
-
-// --- Add this to your mmio.rs for the offset method ---
-impl MmioAddress {
-    pub const fn offset(self, offset: usize) -> MmioAddress {
-        MmioAddress(self.0 + offset)
-    }
-}
