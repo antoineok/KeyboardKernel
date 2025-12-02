@@ -1,4 +1,3 @@
-
 #[macro_export]
 macro_rules! log {
     ($level:expr, $($arg:tt)*) => {
@@ -27,6 +26,7 @@ macro_rules! error {
     };
 }
 
+#[cfg(feature = "jtag")]
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {
