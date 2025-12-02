@@ -1,21 +1,10 @@
 use super::{
     gpio::{GpioFunction, GpioPin, GpioPull},
     mmio::MmioAddress,
-    PERIPHERAL_BASE,
 };
 
 use core::cell::UnsafeCell;
 
-const AUX_BASE: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x215000);
-const AUX_ENABLES: MmioAddress = AUX_BASE.offset(4);
-const AUX_MU_IO_REG: MmioAddress = AUX_BASE.offset(64);
-const AUX_MU_IER_REG: MmioAddress = AUX_BASE.offset(68);
-const AUX_MU_IIR_REG: MmioAddress = AUX_BASE.offset(72);
-const AUX_MU_LCR_REG: MmioAddress = AUX_BASE.offset(76);
-const AUX_MU_MCR_REG: MmioAddress = AUX_BASE.offset(80);
-const AUX_MU_LSR_REG: MmioAddress = AUX_BASE.offset(84);
-const AUX_MU_CNTL_REG: MmioAddress = AUX_BASE.offset(96);
-const AUX_MU_BAUD_REG: MmioAddress = AUX_BASE.offset(104);
 const AUX_UART_CLOCK: u32 = 500_000_000;
 const UART_MAX_QUEUE: usize = 16 * 1024;
 
@@ -27,6 +16,16 @@ pub struct Uart {
     output_queue: [u8; UART_MAX_QUEUE],
     output_queue_write: usize,
     output_queue_read: usize,
+    aux_base: MmioAddress,        // = MmioAddress(PERIPHERAL_BASE + 0x215000);
+    aux_enable: MmioAddress,      // = aux_base.offset(4);
+    aux_mu_io_reg: MmioAddress,   // = aux_base.offset(64);
+    aux_mu_ier_reg: MmioAddress,  // = aux_base.offset(68);
+    aux_mu_iir_reg: MmioAddress,  // = aux_base.offset(72);
+    aux_mu_lcr_reg: MmioAddress,  // = aux_base.offset(76);
+    aux_mu_mcr_reg: MmioAddress,  // = aux_base.offset(80);
+    aux_mu_lsr_reg: MmioAddress,  // = aux_base.offset(84);
+    aux_mu_cntl_reg: MmioAddress, // = aux_base.offset(96);
+    aux_mu_baud_reg: MmioAddress, // = aux_base.offset(104);
 }
 pub struct UartStatic(UnsafeCell<Uart>);
 
@@ -46,22 +45,47 @@ impl Uart {
             output_queue: [0; UART_MAX_QUEUE],
             output_queue_write: 0,
             output_queue_read: 0,
+            aux_base: MmioAddress(0),
+            aux_enable: MmioAddress(0),
+            aux_mu_io_reg: MmioAddress(0),
+            aux_mu_ier_reg: MmioAddress(0),
+            aux_mu_iir_reg: MmioAddress(0),
+            aux_mu_lcr_reg: MmioAddress(0),
+            aux_mu_mcr_reg: MmioAddress(0),
+            aux_mu_lsr_reg: MmioAddress(0),
+            aux_mu_cntl_reg: MmioAddress(0),
+            aux_mu_baud_reg: MmioAddress(0),
         }
     }
 
-    pub fn init(&self) {
-        // Enable Mini UART
-        AUX_ENABLES.write(1);
+    pub fn init(&mut self, mmio_entry: Option<&crate::fdt::MmioEntry>) {
+        let base_addr = match mmio_entry {
+            Some(entry) => entry.arm_phys,
+            None => panic!("UART MMIO entry not found in device tree"),
+        };
+        // Initialize MMIO addresses
+        self.aux_base.set_address(base_addr);
+        self.aux_enable = self.aux_base.offset(4);
+        self.aux_mu_io_reg = self.aux_base.offset(64);
+        self.aux_mu_ier_reg = self.aux_base.offset(68);
+        self.aux_mu_iir_reg = self.aux_base.offset(72);
+        self.aux_mu_lcr_reg = self.aux_base.offset(76);
+        self.aux_mu_mcr_reg = self.aux_base.offset(80);
+        self.aux_mu_lsr_reg = self.aux_base.offset(84);
+        self.aux_mu_cntl_reg = self.aux_base.offset(96);
+        self.aux_mu_baud_reg = self.aux_base.offset(104);
 
+        // Enable Mini UART
+        self.aux_enable.write(1);
         // Disable interrupts & control lines, clear FIFO
-        AUX_MU_IER_REG.write(0);
-        AUX_MU_CNTL_REG.write(0);
-        AUX_MU_LCR_REG.write(3); // 8 bits
-        AUX_MU_MCR_REG.write(0);
-        AUX_MU_IIR_REG.write(0xC6); // Disable interrupts
+        self.aux_mu_ier_reg.write(0);
+        self.aux_mu_cntl_reg.write(0);
+        self.aux_mu_lcr_reg.write(3); // 8 bits
+        self.aux_mu_mcr_reg.write(0);
+        self.aux_mu_iir_reg.write(0xC6); // Disable interrupts
 
         // Set baud rate
-        AUX_MU_BAUD_REG.write(aux_mu_baud(115200));
+        self.aux_mu_baud_reg.write(aux_mu_baud(115200));
 
         // Set GPIO14 and GPIO15 to ALT5 (TXD1/RXD1), no pull-up/down
         let tx = GpioPin::new(14);
@@ -72,25 +96,25 @@ impl Uart {
         rx.set_function(GpioFunction::Alt5);
 
         // Enable transmitter and receiver
-        AUX_MU_CNTL_REG.write(3);
+        self.aux_mu_cntl_reg.write(3);
     }
 
     fn is_write_ready(&self) -> bool {
-        AUX_MU_LSR_REG.read() & 0x20 != 0
+        self.aux_mu_lsr_reg.read() & 0x20 != 0
     }
 
     fn is_read_ready(&self) -> bool {
-        AUX_MU_LSR_REG.read() & 0x01 != 0
+        self.aux_mu_lsr_reg.read() & 0x01 != 0
     }
 
     pub fn write_byte(&self, byte: u8) {
         while !self.is_write_ready() {}
-        AUX_MU_IO_REG.write(byte as u32);
+        self.aux_mu_io_reg.write(byte as u32);
     }
 
     pub fn read_byte(&self) -> u8 {
         while !self.is_read_ready() {}
-        (AUX_MU_IO_REG.read() & 0xFF) as u8
+        (self.aux_mu_io_reg.read() & 0xFF) as u8
     }
 
     pub fn write_text(&self, text: &str) {
