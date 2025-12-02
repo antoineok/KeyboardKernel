@@ -25,6 +25,13 @@ _start:
     sub     w2, w2, #1
     cbnz    w2, 3b               // Loop if non-zero
 
+    adrp	x1, ARCH_TIMER_COUNTER_FREQUENCY
+	add	x1, x1, #:lo12:ARCH_TIMER_COUNTER_FREQUENCY
+	mrs	x2, CNTFRQ_EL0
+	cmp	x2, xzr
+	b.eq	.L_parking_loop
+	str	w2, [x1]
+
     // Jump to our el2_start() routine in Rust (make sure it doesn't return)
 4:  bl      el2_start
     // In case it does return, halt the master core too
