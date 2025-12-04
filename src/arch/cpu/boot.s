@@ -29,7 +29,7 @@ _start:
 	add	x1, x1, #:lo12:ARCH_TIMER_COUNTER_FREQUENCY
 	mrs	x2, CNTFRQ_EL0
 	cmp	x2, xzr
-	b.eq	.L_parking_loop
+	b.eq	park
 	str	w2, [x1]
 
     // Jump to our el2_start() routine in Rust (make sure it doesn't return)
