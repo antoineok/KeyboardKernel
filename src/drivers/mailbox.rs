@@ -1,16 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::drivers::mmio::MmioAddress;
-
-use super::PERIPHERAL_BASE;
-
-const VIDEOCORE_MBOX: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x0000B880);
-const MBOX_READ: MmioAddress = VIDEOCORE_MBOX.offset(0);
-const MBOX_POLL: MmioAddress = VIDEOCORE_MBOX.offset(0x10);
-const MBOX_SENDER: MmioAddress = VIDEOCORE_MBOX.offset(0x14);
-const MBOX_STATUS: MmioAddress = VIDEOCORE_MBOX.offset(0x18);
-const MBOX_CONFIG: MmioAddress = VIDEOCORE_MBOX.offset(0x1C);
-const MBOX_WRITE: MmioAddress = VIDEOCORE_MBOX.offset(0x20);
+use crate::{drivers::mmio::MmioAddress, fdt::MmioEntry};
 
 const MBOX_RESPONSE: u32 = 0x80000000;
 const MBOX_FULL: u32 = 0x80000000;
@@ -40,7 +30,15 @@ pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 pub const MBOX_TAG_LAST: u32 = 0;
 
 #[repr(C, align(16))]
-pub struct MailboxBuffer(pub [u32; 36]);
+pub struct MailboxBuffer {
+    pub(crate) buffer: [u32; 36],
+    mbox_read: MmioAddress,
+    mbox_poll: MmioAddress,
+    mbox_sender: MmioAddress,
+    mbox_status: MmioAddress,
+    mbox_config: MmioAddress,
+    mbox_write: MmioAddress,
+}
 
 pub struct MailboxStatic(pub(crate) UnsafeCell<MailboxBuffer>);
 
@@ -58,15 +56,37 @@ impl MailboxStatic {
 
 impl MailboxBuffer {
     pub const fn new() -> Self {
-        MailboxBuffer([0; 36])
+        MailboxBuffer {
+            buffer: [0; 36],
+            mbox_read: MmioAddress(0),
+            mbox_poll: MmioAddress(0),
+            mbox_sender: MmioAddress(4),
+            mbox_status: MmioAddress(8),
+            mbox_config: MmioAddress(0),
+            mbox_write: MmioAddress(0),
+        }
+    }
+
+    pub fn init(&mut self, mmio: Option<&MmioEntry>) {
+        let base_addr = match mmio {
+            Some(entry) => entry.arm_phys,
+            None => panic!("Mailbox MMIO entry not found"),
+        };
+
+        self.mbox_read.set_address(base_addr);
+        self.mbox_poll.set_address(base_addr + 0x10);
+        self.mbox_sender.set_address(base_addr + 0x14);
+        self.mbox_status.set_address(base_addr + 0x18);
+        self.mbox_config.set_address(base_addr + 0x1C);
+        self.mbox_write.set_address(base_addr + 0x20);
     }
 
     pub fn as_mut_ptr(&mut self) -> *mut u32 {
-        self.0.as_mut_ptr()
+        self.buffer.as_mut_ptr()
     }
 
     pub fn as_ptr(&self) -> *const u32 {
-        self.0.as_ptr()
+        self.buffer.as_ptr()
     }
 
     pub fn call(&mut self, channel: u8) -> bool {
@@ -75,21 +95,20 @@ impl MailboxBuffer {
         let addr = (mbox_ptr & !0xF) | (channel as u32 & 0xF);
 
         // Wait until we can write
-        while MBOX_STATUS.read() & MBOX_FULL != 0 {}
+        while self.mbox_status.read() & MBOX_FULL != 0 {}
 
         // Write the address of our buffer to the mailbox with the channel appended
-        MBOX_WRITE.write(addr);
+        self.mbox_write.write(addr);
 
         loop {
             // Is there a reply?
-            while MBOX_STATUS.read() & MBOX_EMPTY != 0 {}
+            while self.mbox_status.read() & MBOX_EMPTY != 0 {}
 
             // Is it a reply to our message?
-            if MBOX_READ.read() == addr {
+            if self.mbox_read.read() == addr {
                 // Is it successful?
-                return unsafe { core::ptr::read_volatile(&self.0[1]) } == MBOX_RESPONSE;
+                return unsafe { core::ptr::read_volatile(&self.buffer[1]) } == MBOX_RESPONSE;
             }
         }
-        false
     }
 }

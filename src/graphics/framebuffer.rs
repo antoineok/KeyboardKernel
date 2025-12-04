@@ -45,7 +45,7 @@ impl Framebuffer {
     pub fn init(&mut self) {
         {
             let mbox = MAILBOX.get();
-            let mbox_buf = &mut mbox.0;
+            let mbox_buf = &mut mbox.buffer;
             mbox_buf[0] = 35 * 4; // Length of message in bytes
             mbox_buf[1] = MBOX_REQUEST;
 
@@ -92,13 +92,13 @@ impl Framebuffer {
         }
 
         let mbox = MAILBOX.get();
-        if mbox.call(MBOX_CH_PROP) && mbox.0[20] == 32 && mbox.0[28] != 0 {
-            mbox.0[28] &= 0x3FFFFFFF; // Convert GPU address to ARM address
-            self.width = mbox.0[5];
-            self.height = mbox.0[6];
-            self.pitch = mbox.0[33];
-            self.is_rgb = mbox.0[24] == 1;
-            self.buffer = mbox.0[28] as *mut u8;
+        if mbox.call(MBOX_CH_PROP) && mbox.buffer[20] == 32 && mbox.buffer[28] != 0 {
+            mbox.buffer[28] &= 0x3FFFFFFF; // Convert GPU address to ARM address
+            self.width = mbox.buffer[5];
+            self.height = mbox.buffer[6];
+            self.pitch = mbox.buffer[33];
+            self.is_rgb = mbox.buffer[24] == 1;
+            self.buffer = mbox.buffer[28] as *mut u8;
 
             // Clear the framebuffer
             self.clear(0x000000); // Black
