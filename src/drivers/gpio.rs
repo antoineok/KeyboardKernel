@@ -1,12 +1,43 @@
+use crate::fdt::MmioEntry;
+
 use super::mmio::MmioAddress;
-use super::PERIPHERAL_BASE;
 
 pub const GPIO_MAX_PIN: u32 = 53;
 
-const GPFSEL0: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x200000);
-const GPSET0: MmioAddress = GPFSEL0.offset(0x1C);
-const GPCLR0: MmioAddress = GPFSEL0.offset(0x28);
-const GPPUPPDN0: MmioAddress = GPFSEL0.offset(0xE4);
+pub struct GpioRegisters {
+    sel_0: MmioAddress,
+    set_0: MmioAddress,
+    clr_0: MmioAddress,
+    pup_pdn_0: MmioAddress,
+}
+
+impl GpioRegisters {
+    pub const fn new() -> Self {
+        GpioRegisters {
+            sel_0: MmioAddress(0),
+            set_0: MmioAddress(0),
+            clr_0: MmioAddress(0),
+            pup_pdn_0: MmioAddress(0),
+        }
+    }
+
+    pub fn init(&mut self, mmio_entry: Option<&MmioEntry>) {
+        let base_addr = match mmio_entry {
+            Some(entry) => entry.arm_phys,
+            None => panic!("GPIO MMIO entry not found in device tree"),
+        };
+        self.sel_0.set_address(base_addr);
+        self.set_0 = self.sel_0.offset(0x1C);
+        self.clr_0 = self.sel_0.offset(0x28);
+        self.pup_pdn_0 = self.sel_0.offset(0xE4);
+    }
+}
+
+static mut GPIO_REGS: GpioRegisters = GpioRegisters::new();
+
+pub const fn regs() -> &'static mut GpioRegisters {
+    unsafe { &mut GPIO_REGS }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub enum GpioFunction {
@@ -33,11 +64,15 @@ pub struct GpioPin {
 
 impl GpioPin {
     pub const fn new(pin: u32) -> Self {
+        assert!(pin <= GPIO_MAX_PIN);
+        if regs().sel_0.0 == 0 {
+            panic!("GPIO registers not initialized");
+        }
         GpioPin { pin }
     }
 
     pub fn set_function(&self, func: GpioFunction) {
-        let reg = GPFSEL0.offset(((self.pin / 10) * 4) as usize);
+        let reg = regs().sel_0.offset(((self.pin / 10) * 4) as usize);
         let shift = (self.pin % 10) * 3;
         let mut val = reg.read();
         val &= !(0b111 << shift);
@@ -46,7 +81,7 @@ impl GpioPin {
     }
 
     pub fn set_pull(&self, pull: GpioPull) {
-        let reg = GPPUPPDN0.offset(((self.pin / 16) * 4) as usize);
+        let reg = regs().pup_pdn_0.offset(((self.pin / 16) * 4) as usize);
         let shift = (self.pin % 16) * 2;
         let mut val = reg.read();
         val &= !(0b11 << shift);
@@ -55,12 +90,12 @@ impl GpioPin {
     }
 
     pub fn set_high(&self) {
-        let reg = GPSET0.offset(((self.pin / 32) * 4) as usize);
+        let reg = regs().set_0.offset(((self.pin / 32) * 4) as usize);
         reg.write(1 << (self.pin % 32));
     }
 
     pub fn set_low(&self) {
-        let reg = GPCLR0.offset(((self.pin / 32) * 4) as usize);
+        let reg = regs().clr_0.offset(((self.pin / 32) * 4) as usize);
         reg.write(1 << (self.pin % 32));
     }
 }
