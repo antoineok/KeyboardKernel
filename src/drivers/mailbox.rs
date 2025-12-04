@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::io::mmio::MmioAddress;
+use crate::drivers::mmio::MmioAddress;
 
 use super::PERIPHERAL_BASE;
 

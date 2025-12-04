@@ -107,4 +107,14 @@ impl<'a> MmioTable<'a> {
     pub fn get(&self, alias: &str) -> Option<MmioEntry> {
         self.entries.get(alias).copied()
     }
+
+    pub fn log(&self) {
+        info!("MMIO Table:");
+        for (alias, entry) in self.entries.iter() {
+            info!(
+                "  {:<10} => VC: {:#010x}, ARM: {:#010x}, Size: {:#x}",
+                alias, entry.vc_addr, entry.arm_phys, entry.size
+            );
+        }
+    }
 }

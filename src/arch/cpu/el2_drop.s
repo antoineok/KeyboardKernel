@@ -44,8 +44,8 @@ el1_drop:
     mov     x2, #(0x3c0 | 0x5)
     msr     spsr_el2, x2
 
-    // --- ELR_EL2 -> EL1 entry point (main) ---
-    ldr     x2, =main
+    // --- ELR_EL2 -> EL1 entry point (el1_entry) ---
+    ldr     x2, =el1_entry
     msr     elr_el2, x2
 
     // --- Synchronize and drop ---

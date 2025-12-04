@@ -1,7 +1,7 @@
 use fdt::Fdt;
 
-use crate::{fdt::MmioTable, info, io::uart::UART};
-use core::{arch::global_asm, mem::MaybeUninit, ptr::addr_of_mut};
+use crate::{drivers::uart::UART, fdt::MmioTable, info};
+use core::{arch::global_asm, mem::MaybeUninit};
 global_asm!(include_str!("boot.s"));
 global_asm!(include_str!("el2_drop.s"));
 global_asm!(
@@ -45,13 +45,7 @@ pub extern "C" fn el2_start(device_tree_ptr: usize) -> ! {
     uart.init(mmio_table.entries.get("aux"));
     info!("Logger initialized");
 
-    info!("device_tree_ptr: {:#x}", device_tree_ptr);
-    for (alias, entry) in mmio_table.entries.iter() {
-        info!(
-            "MMIO Alias: {:<8} → VC Addr: {:#X}, ARM Phys: {:#X}, Size: {:#X}",
-            alias, entry.vc_addr, entry.arm_phys, entry.size
-        );
-    }
+    mmio_table.log();
 
     #[cfg(feature = "jtag")]
     {

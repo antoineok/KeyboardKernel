@@ -11,8 +11,6 @@ pub fn heap_bounds() -> (usize, usize) {
         )
     }
 }
-
-use core::alloc::{GlobalAlloc, Layout};
 use linked_list_allocator::LockedHeap;
 
 #[global_allocator]

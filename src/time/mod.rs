@@ -4,9 +4,6 @@
 
 //! Timer primitives.
 
-#[cfg(target_arch = "aarch64")]
-mod arch_time;
-
 use core::time::Duration;
 
 //--------------------------------------------------------------------------------------------------
@@ -39,18 +36,18 @@ impl TimeManager {
 
     /// The timer's resolution.
     pub fn resolution(&self) -> Duration {
-        arch_time::resolution()
+        crate::arch::time::resolution()
     }
 
     /// The uptime since power-on of the device.
     ///
     /// This includes time consumed by firmware and bootloaders.
     pub fn uptime(&self) -> Duration {
-        arch_time::uptime()
+        crate::arch::time::uptime()
     }
 
     /// Spin for a given duration.
     pub fn spin_for(&self, duration: Duration) {
-        arch_time::spin_for(duration)
+        crate::arch::time::spin_for(duration)
     }
 }

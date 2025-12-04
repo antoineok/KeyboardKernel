@@ -1,7 +1,7 @@
 use core::cell::UnsafeCell;
 
 use crate::{
-    io::mailbox::{
+    drivers::mailbox::{
         MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
         MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
         MBOX_TAG_SETVIRTWH,

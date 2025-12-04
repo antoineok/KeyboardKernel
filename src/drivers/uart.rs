@@ -164,7 +164,7 @@ unsafe impl Sync for Uart {}
 
 #[macro_export]
 macro_rules! uart_print {
-    ($($arg:tt)*) => ($crate::io::uart::_uart_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::drivers::uart::_uart_print(format_args!($($arg)*)));
 }
 
 //macro for println!

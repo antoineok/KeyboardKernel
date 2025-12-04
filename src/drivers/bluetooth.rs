@@ -1,13 +1,18 @@
-use core::{cell::UnsafeCell, time::{self, Duration}};
+use core::{
+    cell::UnsafeCell,
+    time::{self, Duration},
+};
 
 use aarch64_cpu::registers::DAIF::D;
 
 use crate::{
-    io::{
+    drivers::{
         gpio::{GpioFunction, GpioPin},
         mmio::MmioAddress,
         PERIPHERAL_BASE,
-    }, time::time_manager, uart_println
+    },
+    time::time_manager,
+    uart_println,
 };
 
 const FIRMWARE: &[u8; 56508] = include_bytes!("../../data/BCM4345C0.hcd");
