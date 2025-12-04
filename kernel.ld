@@ -1,6 +1,7 @@
 SECTIONS
 {
     . = 0x80000;     /* Kernel load address for AArch64 */
+    __kernel_start = .;
     .text : { KEEP(*(.text.boot)) *(.text .text.* .gnu.linkonce.t*) }
     .rodata : { *(.rodata .rodata.* .gnu.linkonce.r*) }
     PROVIDE(_data = .);
@@ -12,7 +13,7 @@ SECTIONS
         *(COMMON)
         __bss_end = .;
     }
-    _end = .;
+    __kernel_end = .;
 
     /* Reserve 16 KiB for the el2 stack */
     . = ALIGN(16);
