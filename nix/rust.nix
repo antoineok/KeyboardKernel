@@ -1,5 +1,5 @@
 {rust-bin}:
-rust-bin.stable.latest.default.override {
+rust-bin.nightly.latest.default.override {
   extensions = [
     "rustfmt"
     "clippy"
