@@ -1,6 +1,6 @@
-use core::{panic::PanicInfo};
-
 use crate::error;
+use core::alloc::Layout;
+use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -15,4 +15,11 @@ fn panic(info: &PanicInfo) -> ! {
         );
     }
     loop {}
+}
+
+#[alloc_error_handler]
+fn alloc_error(_layout: Layout) -> ! {
+    // You can log via UART and then panic.
+    error!("Allocation error!");
+    panic!("allocation error") // or whatever your panic path is
 }
