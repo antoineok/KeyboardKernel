@@ -1,16 +1,11 @@
-use core::{
-    cell::UnsafeCell,
-    time::{self, Duration},
-};
-
-use aarch64_cpu::registers::DAIF::D;
+use core::{cell::UnsafeCell, time::Duration};
 
 use crate::{
     drivers::{
         gpio::{GpioFunction, GpioPin},
         mmio::MmioAddress,
-        PERIPHERAL_BASE,
     },
+    fdt::MmioEntry,
     time::time_manager,
     uart_println,
 };
@@ -161,20 +156,19 @@ impl LeAdvType {
     }
 }
 
-const ARM_UART0_BASE: MmioAddress = MmioAddress(PERIPHERAL_BASE + 0x201000);
-const ARM_UART0_DR: MmioAddress = ARM_UART0_BASE.offset(0x0);
-const ARM_UART0_FR: MmioAddress = ARM_UART0_BASE.offset(0x18);
-const ARM_UART0_IBRD: MmioAddress = ARM_UART0_BASE.offset(0x24);
-const ARM_UART0_FBRD: MmioAddress = ARM_UART0_BASE.offset(0x28);
-const ARM_UART0_LCRH: MmioAddress = ARM_UART0_BASE.offset(0x2C);
-const ARM_UART0_CR: MmioAddress = ARM_UART0_BASE.offset(0x30);
-const ARM_UART0_IFLS: MmioAddress = ARM_UART0_BASE.offset(0x34);
-const ARM_UART0_IMSC: MmioAddress = ARM_UART0_BASE.offset(0x38);
-const ARM_UART0_RIS: MmioAddress = ARM_UART0_BASE.offset(0x3C);
-const ARM_UART0_MIS: MmioAddress = ARM_UART0_BASE.offset(0x40);
-const ARM_UART0_ICR: MmioAddress = ARM_UART0_BASE.offset(0x44);
-
-pub struct Bluetooth;
+pub struct Bluetooth {
+    uart0_dr: MmioAddress,
+    uart0_fr: MmioAddress,
+    uart0_ibrd: MmioAddress,
+    uart0_fbrd: MmioAddress,
+    uart0_lcrh: MmioAddress,
+    uart0_cr: MmioAddress,
+    uart0_ifls: MmioAddress,
+    uart0_imsc: MmioAddress,
+    uart0_ris: MmioAddress,
+    uart0_mis: MmioAddress,
+    uart0_icr: MmioAddress,
+}
 pub struct BluetoothStatic(UnsafeCell<Bluetooth>);
 
 unsafe impl Sync for BluetoothStatic {}
@@ -191,10 +185,39 @@ impl BluetoothStatic {
 
 impl Bluetooth {
     pub const fn new() -> Self {
-        Bluetooth
+        Bluetooth {
+            uart0_dr: MmioAddress(0),
+            uart0_fr: MmioAddress(0),
+            uart0_ibrd: MmioAddress(0),
+            uart0_fbrd: MmioAddress(0),
+            uart0_lcrh: MmioAddress(0),
+            uart0_cr: MmioAddress(0),
+            uart0_ifls: MmioAddress(0),
+            uart0_imsc: MmioAddress(0),
+            uart0_ris: MmioAddress(0),
+            uart0_mis: MmioAddress(0),
+            uart0_icr: MmioAddress(0),
+        }
     }
 
-    pub fn init(&self) {
+    pub fn init(&mut self, mmio_entry: Option<&MmioEntry>) {
+        let base_addr = match mmio_entry {
+            Some(entry) => entry.arm_phys,
+            None => panic!("UART0 MMIO entry not found in device tree"),
+        };
+
+        self.uart0_dr.set_address(base_addr);
+        self.uart0_fr = self.uart0_dr.offset(0x18);
+        self.uart0_ibrd = self.uart0_dr.offset(0x24);
+        self.uart0_fbrd = self.uart0_dr.offset(0x28);
+        self.uart0_lcrh = self.uart0_dr.offset(0x2C);
+        self.uart0_cr = self.uart0_dr.offset(0x30);
+        self.uart0_ifls = self.uart0_dr.offset(0x34);
+        self.uart0_imsc = self.uart0_dr.offset(0x38);
+        self.uart0_ris = self.uart0_dr.offset(0x3C);
+        self.uart0_mis = self.uart0_dr.offset(0x40);
+        self.uart0_icr = self.uart0_dr.offset(0x44);
+
         GpioPin::new(30).set_function(GpioFunction::Alt3);
         GpioPin::new(31).set_function(GpioFunction::Alt3);
         GpioPin::new(32).set_function(GpioFunction::Alt3);
@@ -202,28 +225,28 @@ impl Bluetooth {
 
         self.flush_rx();
 
-        ARM_UART0_IMSC.write(0x0);
-        ARM_UART0_ICR.write(0x7FF);
-        ARM_UART0_IBRD.write(0x1A);
-        ARM_UART0_FBRD.write(0x03);
-        ARM_UART0_IFLS.write(0x08);
-        ARM_UART0_LCRH.write(0x70); // 8 data bits,
-        ARM_UART0_CR.write(0xB01);
-        ARM_UART0_IMSC.write(0x430);
+        self.uart0_imsc.write(0x0);
+        self.uart0_icr.write(0x7FF);
+        self.uart0_ibrd.write(0x1A);
+        self.uart0_fbrd.write(0x03);
+        self.uart0_ifls.write(0x08);
+        self.uart0_lcrh.write(0x70); // 8 data bits,
+        self.uart0_cr.write(0xB01);
+        self.uart0_imsc.write(0x430);
 
         time_manager().spin_for(Duration::from_millis(100));
     }
 
     pub fn is_read_byte_ready(&self) -> bool {
-        ARM_UART0_FR.read() & 0x10 == 0
+        self.uart0_fr.read() & 0x10 == 0
     }
 
     pub fn is_write_byte_ready(&self) -> bool {
-        ARM_UART0_FR.read() & 0x20 == 0
+        self.uart0_fr.read() & 0x20 == 0
     }
 
     pub fn read_byte(&self) -> u8 {
-        ARM_UART0_DR.read().lo().lo()
+        self.uart0_dr.read().lo().lo()
     }
 
     fn wait_read_byte(&self) -> u8 {
@@ -233,7 +256,7 @@ impl Bluetooth {
     }
 
     fn write_byte(&self, val: u8) {
-        ARM_UART0_DR.write(val as u32);
+        self.uart0_dr.write(val as u32);
     }
 
     pub fn wait_write_byte(&self, val: u8) {
