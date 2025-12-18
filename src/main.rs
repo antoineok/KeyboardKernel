@@ -12,5 +12,6 @@ mod jtag;
 mod kernel;
 mod memory;
 mod panic;
+mod reader;
 mod time;
 mod util;
