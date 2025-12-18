@@ -67,7 +67,7 @@ impl MailboxBuffer {
         }
     }
 
-    pub fn init(&mut self, mmio: Option<&MmioEntry>) {
+    pub fn init(&mut self, mmio: Option<AliasEntry>) {
         let base_addr = match mmio {
             Some(entry) => entry.arm_phys,
             None => panic!("Mailbox MMIO entry not found"),

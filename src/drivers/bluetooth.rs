@@ -5,7 +5,7 @@ use crate::{
         address::Address,
         gpio::{GpioFunction, GpioPin},
     },
-    fdt::MmioEntry,
+    fdt::aliases::AliasEntry,
     time::time_manager,
     uart_println,
 };
@@ -200,7 +200,7 @@ impl Bluetooth {
         }
     }
 
-    pub fn init(&mut self, mmio_entry: Option<&MmioEntry>) {
+    pub fn init(&mut self, mmio_entry: Option<&AliasEntry>) {
         let base_addr = match mmio_entry {
             Some(entry) => entry.arm_phys,
             None => panic!("UART0 MMIO entry not found in device tree"),

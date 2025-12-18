@@ -1,4 +1,4 @@
-use crate::fdt::MmioEntry;
+use crate::fdt::aliases::AliasEntry;
 
 use super::address::Address;
 
@@ -21,10 +21,12 @@ impl GpioRegisters {
         }
     }
 
-    pub fn init(&mut self, mmio_entry: Option<&MmioEntry>) {
+    pub fn init(&mut self, mmio_entry: Option<AliasEntry>) {
         let base_addr = match mmio_entry {
             Some(entry) => entry.arm_phys,
-            None => panic!("GPIO MMIO entry not found in device tree"),
+            None => {
+                panic!("GPIO MMIO entry not found in device tree")
+            }
         };
         self.sel_0.set_address(base_addr);
         self.set_0 = self.sel_0.offset(0x1C);
