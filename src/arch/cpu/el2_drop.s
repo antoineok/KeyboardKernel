@@ -3,6 +3,7 @@
     .global el1_drop
 
 el1_drop:
+
     // --- Prepare EL1 stack and vectors ---
     ldr     x1, =__el1_stack_top
     msr     sp_el1, x1
@@ -51,3 +52,8 @@ el1_drop:
     // --- Synchronize and drop ---
     isb
     eret
+
+.global park
+park:
+    wfi
+    b park

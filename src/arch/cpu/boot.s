@@ -32,7 +32,7 @@ _start:
 	b.eq	park
 	str	w2, [x1]
 
-    // Jump to our el2_start() routine in Rust (make sure it doesn't return)
-4:  bl      el2_start
+    // Jump to our el1_drop
+4:  bl      el1_drop
     // In case it does return, halt the master core too
     b       1b
