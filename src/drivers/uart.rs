@@ -13,6 +13,7 @@ fn aux_mu_baud(baud: u32) -> u32 {
 }
 
 pub struct Uart {
+    initialized: bool,
     output_queue: [u8; UART_MAX_QUEUE],
     output_queue_write: usize,
     output_queue_read: usize,
@@ -42,6 +43,7 @@ impl UartStatic {
 impl Uart {
     pub const fn new() -> Self {
         Uart {
+            initialized: false,
             output_queue: [0; UART_MAX_QUEUE],
             output_queue_write: 0,
             output_queue_read: 0,
@@ -97,6 +99,7 @@ impl Uart {
 
         // Enable transmitter and receiver
         self.aux_mu_cntl_reg.write(3);
+        self.initialized = true;
     }
 
     fn is_write_ready(&self) -> bool {
@@ -151,12 +154,16 @@ impl Uart {
         self.load_output_fifo();
         if self.is_read_ready() {
             let byte = self.read_byte();
-            if (byte == b'\r') {
+            if byte == b'\r' {
                 self.write_text("\n");
             } else {
                 self.write_blocking_byte(byte);
             }
         }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
     }
 }
 
