@@ -257,6 +257,43 @@ impl Framebuffer {
         }
     }
 
+    /// Copy a rectangular pixel buffer into the framebuffer.
+    ///
+    /// - `x`, `y`: top-left corner
+    /// - `w`, `h`: size
+    /// - `pixels`: source buffer (ARGB8888 or RGB8888 depending on config)
+    pub fn blit(&mut self, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) {
+        let pitch = self.pitch as usize;
+
+        for row in 0..h {
+            let fb_y = y + row;
+            if fb_y >= self.height {
+                break;
+            }
+
+            let dst = unsafe { self.buffer.add((fb_y as usize * pitch) + (x as usize * 4)) };
+            let src = &pixels[(row as usize * w as usize * 4)..];
+
+            if self.is_rgb {
+                // Fast memcpy
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src.as_ptr(), dst, (w as usize) * 4);
+                }
+            } else {
+                // BGRA framebuffer: swap R/B
+                for i in 0..w as usize {
+                    let s = i * 4;
+                    unsafe {
+                        *dst.add(s) = src[s + 2]; // B
+                        *dst.add(s + 1) = src[s + 1]; // G
+                        *dst.add(s + 2) = src[s]; // R
+                        *dst.add(s + 3) = src[s + 3]; // A
+                    }
+                }
+            }
+        }
+    }
+
     pub fn clear(&mut self, color: u32) {
         self.draw_rect(0, 0, self.width, self.height, color, true);
     }
