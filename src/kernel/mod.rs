@@ -13,10 +13,10 @@ use crate::info;
 use crate::jtag::breakpoint;
 
 #[no_mangle]
-pub extern "C" fn el1_entry() -> ! {
+pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     // We are now in EL1, with a basic stack (set by EL2 code).
     unsafe {
-        init::early_el1_init();
+        init::early_el1_init(device_tree_ptr);
     }
 
     #[cfg(feature = "jtag")]
