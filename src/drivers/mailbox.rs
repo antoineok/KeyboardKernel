@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::{drivers::mmio::MmioAddress, fdt::MmioEntry};
+use crate::{drivers::address::Address, fdt::aliases::AliasEntry};
 
 const MBOX_RESPONSE: u32 = 0x80000000;
 const MBOX_FULL: u32 = 0x80000000;
@@ -32,12 +32,12 @@ pub const MBOX_TAG_LAST: u32 = 0;
 #[repr(C, align(16))]
 pub struct MailboxBuffer {
     pub(crate) buffer: [u32; 36],
-    mbox_read: MmioAddress,
-    mbox_poll: MmioAddress,
-    mbox_sender: MmioAddress,
-    mbox_status: MmioAddress,
-    mbox_config: MmioAddress,
-    mbox_write: MmioAddress,
+    mbox_read: Address,
+    mbox_poll: Address,
+    mbox_sender: Address,
+    mbox_status: Address,
+    mbox_config: Address,
+    mbox_write: Address,
 }
 
 pub struct MailboxStatic(pub(crate) UnsafeCell<MailboxBuffer>);
@@ -58,12 +58,12 @@ impl MailboxBuffer {
     pub const fn new() -> Self {
         MailboxBuffer {
             buffer: [0; 36],
-            mbox_read: MmioAddress(0),
-            mbox_poll: MmioAddress(0),
-            mbox_sender: MmioAddress(4),
-            mbox_status: MmioAddress(8),
-            mbox_config: MmioAddress(0),
-            mbox_write: MmioAddress(0),
+            mbox_read: Address(0),
+            mbox_poll: Address(0),
+            mbox_sender: Address(4),
+            mbox_status: Address(8),
+            mbox_config: Address(0),
+            mbox_write: Address(0),
         }
     }
 

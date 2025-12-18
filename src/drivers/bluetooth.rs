@@ -2,8 +2,8 @@ use core::{cell::UnsafeCell, time::Duration};
 
 use crate::{
     drivers::{
+        address::Address,
         gpio::{GpioFunction, GpioPin},
-        mmio::MmioAddress,
     },
     fdt::MmioEntry,
     time::time_manager,
@@ -157,17 +157,17 @@ impl LeAdvType {
 }
 
 pub struct Bluetooth {
-    uart0_dr: MmioAddress,
-    uart0_fr: MmioAddress,
-    uart0_ibrd: MmioAddress,
-    uart0_fbrd: MmioAddress,
-    uart0_lcrh: MmioAddress,
-    uart0_cr: MmioAddress,
-    uart0_ifls: MmioAddress,
-    uart0_imsc: MmioAddress,
-    uart0_ris: MmioAddress,
-    uart0_mis: MmioAddress,
-    uart0_icr: MmioAddress,
+    uart0_dr: Address,
+    uart0_fr: Address,
+    uart0_ibrd: Address,
+    uart0_fbrd: Address,
+    uart0_lcrh: Address,
+    uart0_cr: Address,
+    uart0_ifls: Address,
+    uart0_imsc: Address,
+    uart0_ris: Address,
+    uart0_mis: Address,
+    uart0_icr: Address,
 }
 pub struct BluetoothStatic(UnsafeCell<Bluetooth>);
 
@@ -186,17 +186,17 @@ impl BluetoothStatic {
 impl Bluetooth {
     pub const fn new() -> Self {
         Bluetooth {
-            uart0_dr: MmioAddress(0),
-            uart0_fr: MmioAddress(0),
-            uart0_ibrd: MmioAddress(0),
-            uart0_fbrd: MmioAddress(0),
-            uart0_lcrh: MmioAddress(0),
-            uart0_cr: MmioAddress(0),
-            uart0_ifls: MmioAddress(0),
-            uart0_imsc: MmioAddress(0),
-            uart0_ris: MmioAddress(0),
-            uart0_mis: MmioAddress(0),
-            uart0_icr: MmioAddress(0),
+            uart0_dr: Address(0),
+            uart0_fr: Address(0),
+            uart0_ibrd: Address(0),
+            uart0_fbrd: Address(0),
+            uart0_lcrh: Address(0),
+            uart0_cr: Address(0),
+            uart0_ifls: Address(0),
+            uart0_imsc: Address(0),
+            uart0_ris: Address(0),
+            uart0_mis: Address(0),
+            uart0_icr: Address(0),
         }
     }
 

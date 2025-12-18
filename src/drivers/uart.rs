@@ -1,6 +1,6 @@
 use super::{
+    address::Address,
     gpio::{GpioFunction, GpioPin, GpioPull},
-    mmio::MmioAddress,
 };
 
 use core::cell::UnsafeCell;
@@ -16,16 +16,16 @@ pub struct Uart {
     output_queue: [u8; UART_MAX_QUEUE],
     output_queue_write: usize,
     output_queue_read: usize,
-    aux_base: MmioAddress,        // = MmioAddress(PERIPHERAL_BASE + 0x215000);
-    aux_enable: MmioAddress,      // = aux_base.offset(4);
-    aux_mu_io_reg: MmioAddress,   // = aux_base.offset(64);
-    aux_mu_ier_reg: MmioAddress,  // = aux_base.offset(68);
-    aux_mu_iir_reg: MmioAddress,  // = aux_base.offset(72);
-    aux_mu_lcr_reg: MmioAddress,  // = aux_base.offset(76);
-    aux_mu_mcr_reg: MmioAddress,  // = aux_base.offset(80);
-    aux_mu_lsr_reg: MmioAddress,  // = aux_base.offset(84);
-    aux_mu_cntl_reg: MmioAddress, // = aux_base.offset(96);
-    aux_mu_baud_reg: MmioAddress, // = aux_base.offset(104);
+    aux_base: Address,        // = MmioAddress(PERIPHERAL_BASE + 0x215000);
+    aux_enable: Address,      // = aux_base.offset(4);
+    aux_mu_io_reg: Address,   // = aux_base.offset(64);
+    aux_mu_ier_reg: Address,  // = aux_base.offset(68);
+    aux_mu_iir_reg: Address,  // = aux_base.offset(72);
+    aux_mu_lcr_reg: Address,  // = aux_base.offset(76);
+    aux_mu_mcr_reg: Address,  // = aux_base.offset(80);
+    aux_mu_lsr_reg: Address,  // = aux_base.offset(84);
+    aux_mu_cntl_reg: Address, // = aux_base.offset(96);
+    aux_mu_baud_reg: Address, // = aux_base.offset(104);
 }
 pub struct UartStatic(UnsafeCell<Uart>);
 
@@ -45,16 +45,16 @@ impl Uart {
             output_queue: [0; UART_MAX_QUEUE],
             output_queue_write: 0,
             output_queue_read: 0,
-            aux_base: MmioAddress(0),
-            aux_enable: MmioAddress(0),
-            aux_mu_io_reg: MmioAddress(0),
-            aux_mu_ier_reg: MmioAddress(0),
-            aux_mu_iir_reg: MmioAddress(0),
-            aux_mu_lcr_reg: MmioAddress(0),
-            aux_mu_mcr_reg: MmioAddress(0),
-            aux_mu_lsr_reg: MmioAddress(0),
-            aux_mu_cntl_reg: MmioAddress(0),
-            aux_mu_baud_reg: MmioAddress(0),
+            aux_base: Address(0),
+            aux_enable: Address(0),
+            aux_mu_io_reg: Address(0),
+            aux_mu_ier_reg: Address(0),
+            aux_mu_iir_reg: Address(0),
+            aux_mu_lcr_reg: Address(0),
+            aux_mu_mcr_reg: Address(0),
+            aux_mu_lsr_reg: Address(0),
+            aux_mu_cntl_reg: Address(0),
+            aux_mu_baud_reg: Address(0),
         }
     }
 

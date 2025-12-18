@@ -1,23 +1,23 @@
 use crate::fdt::MmioEntry;
 
-use super::mmio::MmioAddress;
+use super::address::Address;
 
 pub const GPIO_MAX_PIN: u32 = 53;
 
 pub struct GpioRegisters {
-    sel_0: MmioAddress,
-    set_0: MmioAddress,
-    clr_0: MmioAddress,
-    pup_pdn_0: MmioAddress,
+    sel_0: Address,
+    set_0: Address,
+    clr_0: Address,
+    pup_pdn_0: Address,
 }
 
 impl GpioRegisters {
     pub const fn new() -> Self {
         GpioRegisters {
-            sel_0: MmioAddress(0),
-            set_0: MmioAddress(0),
-            clr_0: MmioAddress(0),
-            pup_pdn_0: MmioAddress(0),
+            sel_0: Address(0),
+            set_0: Address(0),
+            clr_0: Address(0),
+            pup_pdn_0: Address(0),
         }
     }
 
