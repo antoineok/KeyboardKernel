@@ -26,6 +26,13 @@ macro_rules! error {
     };
 }
 
+#[macro_export]
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        crate::log!("TRACE", "{}", format_args!($($arg)*))
+    };
+}
+
 #[cfg(feature = "jtag")]
 #[macro_export]
 macro_rules! debug {
