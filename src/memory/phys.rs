@@ -104,11 +104,11 @@ impl PhysAllocator {
 
         // 4) Mark all Usable regions as free.
         timeit!("PhysAllocator: mark usable regions", {
-        for region in mm.iter() {
-            if region.kind == MemoryRegionKind::Usable {
-                self.mark_range(region.start, region.end(), true);
+            for region in mm.iter() {
+                if region.kind == MemoryRegionKind::Usable {
+                    self.mark_range(region.start, region.end(), true);
+                }
             }
-        }
         });
 
         // 5) Mark Reserved / NoMap / Dma as allocated again.
@@ -260,26 +260,74 @@ impl PhysAllocator {
         let last_page_excl =
             ((e - self.arena_start + self.page_size - 1) / self.page_size) as usize;
 
-        for page_index in first_page..last_page_excl {
-            let word_index = page_index / 64;
-            let bit_pos = page_index % 64;
+        if first_page >= last_page_excl {
+            return;
+        }
 
-            if word_index >= self.bitmap_len {
-                break;
-            }
+        let first_bit = first_page;
+        let last_bit_excl = last_page_excl;
 
-            unsafe {
-                let word = core::ptr::read_volatile(self.bitmap.add(word_index));
-                let mask = 1u64 << bit_pos;
+        let first_word = first_bit / 64;
+        let last_word = (last_bit_excl - 1) / 64;
 
-                let new_word = if free {
-                    word & !mask // 0 → free
+        let first_off = first_bit % 64;
+        let last_off_excl = last_bit_excl % 64;
+
+        if first_word >= self.bitmap_len {
+            return;
+        }
+        if last_word >= self.bitmap_len {
+            // Clamp to bitmap length
+            // (shouldn’t happen if arena/bitmap math is consistent, but safe)
+            return;
+        }
+
+        unsafe {
+            let bmp = self.bitmap;
+
+            // Helper: apply a mask to a single word
+            #[inline(always)]
+            unsafe fn apply_mask(word_ptr: *mut u64, mask: u64, free: bool) {
+                let w = word_ptr.read();
+                let new_w = if free {
+                    w & !mask // 0 = free
                 } else {
-                    word | mask // 1 → allocated
+                    w | mask // 1 = allocated
                 };
-
-                core::ptr::write_volatile(self.bitmap.add(word_index), new_word);
+                word_ptr.write(new_w);
             }
+
+            if first_word == last_word {
+                // Range fits in one word
+                let width = last_bit_excl - first_bit; // 1..=64
+                let mask = if width == 64 {
+                    u64::MAX
+                } else {
+                    ((1u64 << width) - 1) << first_off
+                };
+                apply_mask(bmp.add(first_word), mask, free);
+                return;
+            }
+
+            // 1) Partial first word
+            let first_mask = u64::MAX << first_off;
+            apply_mask(bmp.add(first_word), first_mask, free);
+
+            // 2) Full middle words
+            if first_word + 1 <= last_word.saturating_sub(1) {
+                let fill_val = if free { 0u64 } else { u64::MAX };
+                for wi in (first_word + 1)..last_word {
+                    bmp.add(wi).write(fill_val);
+                }
+            }
+
+            // 3) Partial last word
+            let last_mask = if last_off_excl == 0 {
+                u64::MAX
+            } else {
+                (1u64 << last_off_excl) - 1
+            };
+            apply_mask(bmp.add(last_word), last_mask, free);
         }
     }
 }
