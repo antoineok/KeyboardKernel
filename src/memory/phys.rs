@@ -250,8 +250,8 @@ impl PhysAllocator {
             return;
         }
 
-        let s = max(start, self.arena_start);
-        let e = min(end, self.arena_end);
+        let s = core::cmp::max(start, self.arena_start);
+        let e = core::cmp::min(end, self.arena_end);
         if s >= e {
             return;
         }
