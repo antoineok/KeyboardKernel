@@ -105,7 +105,7 @@ unsafe fn init_boot_allocator() {
 unsafe fn init_phys_allocator() {
     let mm = MEMORY_MANAGER.map();
     timeit!("Physical allocator init", {
-    PHYS_ALLOCATOR.init_from_memory_map(mm);
+        PHYS_ALLOCATOR.init_from_memory_map(mm);
     });
     if let Some((start, end, bytes)) = PHYS_ALLOCATOR.info() {
         info!(
@@ -116,7 +116,7 @@ unsafe fn init_phys_allocator() {
 
     // 6) Kernel heap
     timeit!("Initialize the heap", {
-    heap::init_heap();
+        heap::init_heap();
     });
     info!("Kernel heap initialized.");
 }
