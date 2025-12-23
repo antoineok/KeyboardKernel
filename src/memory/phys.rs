@@ -93,9 +93,7 @@ impl PhysAllocator {
         let bitmap_ptr = bitmap_phys as *mut u64;
 
         // 3) Initialize bitmap: everything allocated (1) by default.
-        for i in 0..bitmap_u64s {
-            core::ptr::write_volatile(bitmap_ptr.add(i), u64::MAX);
-        }
+        core::ptr::write_bytes(bitmap_ptr as *mut u8, 0xFF, bitmap_u64s * 8);
 
         self.arena_start = arena_start;
         self.arena_end = arena_end;
