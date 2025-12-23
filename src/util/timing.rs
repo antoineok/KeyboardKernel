@@ -24,7 +24,7 @@ macro_rules! timeit {
         let t = $crate::util::timing::TimeSpan::start();
         let result = { $block };
         let dur = t.elapsed();
-        info!(
+        crate::info!(
             "[TIME][{}] {:?} sec {:?} ns",
             $label,
             dur.as_secs(),
