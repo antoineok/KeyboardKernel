@@ -294,7 +294,58 @@ impl Framebuffer {
         }
     }
 
+    #[inline(always)]
+    fn pack_pixel(&self, color: u32) -> u32 {
+        // input assumed 0xAARRGGBB based on your shifts
+        let a = (color >> 24) & 0xFF;
+        let r = (color >> 16) & 0xFF;
+        let g = (color >> 8) & 0xFF;
+        let b = color & 0xFF;
+
+        if self.is_rgb {
+            // bytes in memory: R G B A
+            (a << 24) | (b << 16) | (g << 8) | r
+        } else {
+            // bytes in memory: B G R A
+            (a << 24) | (r << 16) | (g << 8) | b
+        }
+    }
+
     pub fn clear(&mut self, color: u32) {
-        self.draw_rect(0, 0, self.width, self.height, color, true);
+
+        let pix = self.pack_pixel(color);
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let pitch = self.pitch as usize;
+        let base = self.buffer as *mut u8;
+
+        let bytes = pix. to_ne_bytes();
+    if bytes[0] == bytes[1] && bytes[1] == bytes[2] && bytes[2] == bytes[3] {
+        // All bytes are the same, use write_bytes (memset)
+        self.clear_same(bytes[0]);
+    } else {
+        // Use slice filling
+        unsafe {
+            for y in 0..h {
+                let row = base.add(y * pitch) as *mut u32;
+                core::slice::from_raw_parts_mut(row, w).fill(pix);
+            }
+        }
+    }
+    }
+
+
+
+    /***
+     * Clear the framebuffer with a color that has same byte value for all bytes.
+     * For example, black (0x00000000) or white (0xFFFFFFFF).
+     * This is much faster than the general clear function.
+     * @param color The byte value to fill the framebuffer with.
+     */
+    fn clear_same(&mut self, color: u8) {
+        let len = (self.pitch as usize) * (self.height as usize);
+        unsafe {
+            core::ptr::write_bytes(self.buffer, color, len);
+        }
     }
 }
