@@ -6,7 +6,7 @@ use crate::{
         MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
         MBOX_TAG_SETVIRTWH,
     },
-    uart_println,
+    timeit, uart_println,
 };
 
 pub struct Framebuffer {
@@ -92,7 +92,8 @@ impl Framebuffer {
         }
 
         let mbox = MAILBOX.get();
-        if mbox.call(MBOX_CH_PROP) && mbox.buffer[20] == 32 && mbox.buffer[28] != 0 {
+        let result = timeit!("Mailbox framebuffer call", { mbox.call(MBOX_CH_PROP) });
+        if result && mbox.buffer[20] == 32 && mbox.buffer[28] != 0 {
             mbox.buffer[28] &= 0x3FFFFFFF; // Convert GPU address to ARM address
             self.width = mbox.buffer[5];
             self.height = mbox.buffer[6];
@@ -101,7 +102,9 @@ impl Framebuffer {
             self.buffer = mbox.buffer[28] as *mut u8;
 
             // Clear the framebuffer
-            self.clear(0x000000); // Black
+            timeit!("Framebuffer clear", {
+                self.clear_same(0);
+            });
             uart_println!(
                 "Framebuffer initialized: {}x{} with pitch {}",
                 self.width,
