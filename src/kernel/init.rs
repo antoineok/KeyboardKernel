@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use fdt::Fdt;
 
 use crate::{
@@ -38,8 +37,19 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     uart.init(mmio_table.get("aux"));
     info!("Logger initialized");
 
+    #[cfg(feature = "jtag")]
+    {
+        crate::jtag::init_jtag();
+        crate::info!("JTAG initialized");
+    }
+
     let mailbox = mailbox::MAILBOX.get();
     timeit!("Mailbox init", { mailbox.init(mmio_table.get("mailbox")) });
+
+    let framebuffer = FRAMEBUFFER.get();
+    timeit!("Framebuffer init", {
+        framebuffer.init();
+    });
 
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
     //bt.init(mmio_table.entries.get("bluetooth"));
@@ -82,20 +92,6 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     });
 
     init_phys_allocator();
-
-    let mut v = Vec::new();
-    v.push(42u32);
-    v.push(1337u32);
-    info!("Vec test: {:?} {:?}", v[0], v[1]);
-
-    #[cfg(feature = "jtag")]
-    {
-        crate::jtag::init_jtag();
-        crate::info!("JTAG initialized");
-    }
-
-    let framebuffer = FRAMEBUFFER.get();
-    framebuffer.init();
 }
 
 unsafe fn init_boot_allocator() {
@@ -108,8 +104,9 @@ unsafe fn init_boot_allocator() {
 
 unsafe fn init_phys_allocator() {
     let mm = MEMORY_MANAGER.map();
+    timeit!("Physical allocator init", {
     PHYS_ALLOCATOR.init_from_memory_map(mm);
-
+    });
     if let Some((start, end, bytes)) = PHYS_ALLOCATOR.info() {
         info!(
             "PhysAllocator arena: [0x{:016x} - 0x{:016x}) size = {:#x}",
@@ -118,6 +115,8 @@ unsafe fn init_phys_allocator() {
     }
 
     // 6) Kernel heap
+    timeit!("Initialize the heap", {
     heap::init_heap();
+    });
     info!("Kernel heap initialized.");
 }
