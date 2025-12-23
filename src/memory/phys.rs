@@ -13,6 +13,8 @@
 
 use core::cmp::{max, min};
 
+use crate::timeit;
+
 use super::boot::BOOT_ALLOCATOR;
 use super::{MemoryMap, MemoryRegionKind, PhysAddr, PhysSize};
 
@@ -103,11 +105,13 @@ impl PhysAllocator {
         self.initialized = true;
 
         // 4) Mark all Usable regions as free.
+        timeit!("PhysAllocator: mark usable regions", {
         for region in mm.iter() {
             if region.kind == MemoryRegionKind::Usable {
                 self.mark_range(region.start, region.end(), true);
             }
         }
+        });
 
         // 5) Mark Reserved / NoMap / Dma as allocated again.
         for region in mm.iter() {
