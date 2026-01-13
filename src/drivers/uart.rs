@@ -35,8 +35,12 @@ unsafe impl Sync for UartStatic {}
 pub static UART: UartStatic = UartStatic(UnsafeCell::new(Uart::new()));
 
 impl UartStatic {
-    pub fn get(&self) -> &mut Uart {
+    pub fn get_mut(&self) -> &mut Uart {
         unsafe { &mut *self.0.get() }
+    }
+
+    pub fn get(&self) -> &Uart {
+        unsafe { &*self.0.get() }
     }
 }
 
@@ -183,7 +187,7 @@ macro_rules! uart_println {
 
 pub fn _uart_print(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    let uart = UART.get();
+    let uart = UART.get_mut();
     uart.write_fmt(args).unwrap();
 }
 

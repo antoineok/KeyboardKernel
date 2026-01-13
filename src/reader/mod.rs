@@ -1,4 +1,4 @@
-use core::ptr;
+use alloc::vec::Vec;
 
 #[derive(Copy, Clone)]
 pub struct Reader {
@@ -14,12 +14,18 @@ pub enum Endian {
 
 impl Reader {
     /// Create a new reader for an FDT located at the given physical `addr`
-    pub unsafe fn new(addr: u64, len: usize) -> Self {
+    pub fn new(addr: u64, len: usize) -> Self {
         Self {
             base: addr as *const u8,
             pos: 0,
             len,
         }
+    }
+
+    pub fn from_vec<T>(vec: Vec<T>) -> Self {
+        let len = vec.len() * core::mem::size_of::<T>();
+        let base = vec.as_ptr() as *const u8;
+        Self { base, pos: 0, len }
     }
 
     // Core reads

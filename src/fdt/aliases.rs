@@ -1,7 +1,7 @@
 use fdt::Fdt;
-
+use core::fmt::Debug;
 /// One MMIO entry describing a block in the device tree.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct AliasEntry {
     /// VC MMIO address (0x7E000000 range)
     pub vc_addr: u64,
@@ -11,6 +11,16 @@ pub struct AliasEntry {
 
     /// Region size in bytes
     pub size: u64,
+}
+
+impl Debug for AliasEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "AliasEntry {{ vc_addr: 0x{:x}, arm_phys: 0x{:x}, size: 0x{:x} }}",
+            self.vc_addr, self.arm_phys, self.size
+        )
+    }
 }
 
 /// Table of MMIO entries indexed by DT aliases like "uart0", "gpio", "spi1", etc.

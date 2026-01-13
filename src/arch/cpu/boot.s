@@ -12,7 +12,6 @@ _start:
 1:  wfe
     b       1b
 2:  // We're on the main core!
-
     // Set stack to start below our code
     ldr     x1, =__el2_stack_top
     mov     sp, x1

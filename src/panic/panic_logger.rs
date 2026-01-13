@@ -1,3 +1,5 @@
+use core::fmt;
+
 #[inline(always)]
 fn mmio_read(addr: usize) -> u32 {
     unsafe { core::ptr::read_volatile(addr as *const u32) }
@@ -116,4 +118,79 @@ pub fn early_aux_print_hex_u32(value: u32) {
         };
         early_aux_putc(c);
     }
+}
+
+pub fn early_aux_print_u64(mut value: u64) {
+    // Special case for 0
+    if value == 0 {
+        early_aux_putc(b'0');
+        return;
+    }
+
+    // u64 max is 20 digits
+    let mut buf = [0u8; 20];
+    let mut i = 0;
+
+    while value > 0 {
+        buf[i] = b'0' + (value % 10) as u8;
+        value /= 10;
+        i += 1;
+    }
+
+    // Digits are reversed
+    while i > 0 {
+        i -= 1;
+        early_aux_putc(buf[i]);
+    }
+}
+
+pub fn early_aux_print_hex_u64(value: u64) {
+    early_aux_write_str("0x");
+
+    for i in (0..16).rev() {
+        let nibble = (value >> (i * 4)) & 0xF;
+        let c = match nibble {
+            0..=9 => b'0' + nibble as u8,
+            _ => b'a' + (nibble as u8 - 10),
+        };
+        early_aux_putc(c);
+    }
+}
+
+pub fn early_aux_print_usize(value: usize) {
+    #[cfg(target_pointer_width = "64")]
+    {
+        early_aux_print_u64(value as u64);
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    {
+        early_aux_print_u32(value as u32);
+    }
+}
+pub fn early_aux_print_hex_usize(value: usize) {
+    #[cfg(target_pointer_width = "64")]
+    {
+        early_aux_print_hex_u64(value as u64);
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    {
+        early_aux_print_hex_u32(value as u32);
+    }
+}
+
+struct EarlyUart;
+
+impl fmt::Write for EarlyUart {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        early_aux_write_str(s);
+        Ok(())
+    }
+}
+
+#[inline]
+pub fn early_aux_write_fmt(args: fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = EarlyUart.write_fmt(args);
 }

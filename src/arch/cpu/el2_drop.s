@@ -49,6 +49,8 @@ el1_drop:
     ldr     x2, =el1_entry
     msr     elr_el2, x2
 
+    
+
     // --- Synchronize and drop ---
     isb
     eret

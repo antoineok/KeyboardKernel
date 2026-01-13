@@ -5,11 +5,23 @@ script = [
     "aarch64-none-elf-objcopy -O binary target/aarch64-unknown-none/debug/kernel kernel8.img",
 ]
 
+[tasks.run-qemu]
+dependencies = ["build-img"]
+script = [
+    "qemu-system-aarch64 -M raspi4b,secure=off,dtb=\"bcm2711-rpi-cm4.dtb\" -chardev file,id=pl011,path=pl011_uart.log -serial chardev:pl011 -serial stdio -kernel kernel8.img",
+]
+
 [tasks.build-img-jtag]
 dependencies = ["clear"]
 script = [
     "cargo build --features jtag",
     "aarch64-none-elf-objcopy -O binary target/aarch64-unknown-none/debug/kernel kernel8.img",
+]
+
+[tasks.run-qemu-jtag]
+dependencies = ["build-img-jtag"]
+script = [
+    "qemu-system-aarch64 -M raspi4b,secure=off,dtb=\"bcm2711-rpi-cm4.dtb\" -s -S -chardev file,id=pl011,path=pl011_uart.log -serial chardev:pl011 -serial stdio -kernel kernel8.img",
 ]
 
 [tasks.clear]
