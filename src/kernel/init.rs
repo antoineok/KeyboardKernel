@@ -33,7 +33,7 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let gpio = crate::drivers::gpio::regs();
     gpio.init(mmio_table.get("gpio"));
 
-    let uart = UART.get();
+    let uart = UART.get_mut();
     uart.init(mmio_table.get("aux"));
     info!("Logger initialized");
 
