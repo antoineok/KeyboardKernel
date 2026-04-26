@@ -109,15 +109,19 @@ impl KernelHeap {
             let alloc_start = header_ptr;
 
             // Check for overflow of user area.
-            let alloc_end = match user_ptr.checked_add(size) {
+            let raw_alloc_end = match user_ptr.checked_add(size) {
                 Some(v) => v,
                 None => {
-                    // try next block
                     prev = curr;
                     curr = (*curr).next;
                     continue;
                 }
             };
+
+            let alloc_end = align_up(
+                raw_alloc_end,
+                core::mem::align_of::<FreeBlock>(),
+            );
 
             if alloc_end > block_end {
                 // Doesn't fit in this block; try next.
@@ -236,6 +240,7 @@ impl KernelHeap {
 
 /// Simple align_up helper.
 fn align_up(addr: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
     let mask = align - 1;
     (addr + mask) & !mask
 }
