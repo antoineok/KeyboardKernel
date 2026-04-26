@@ -1,4 +1,5 @@
 pub mod create;
+pub mod delete;
 pub mod rename;
 pub mod bpb;
 pub mod fat;
