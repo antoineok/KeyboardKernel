@@ -4,3 +4,4 @@ pub mod emmc;
 pub mod gpio;
 pub mod mailbox;
 pub mod uart;
+pub mod watchdog;

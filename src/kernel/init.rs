@@ -1,7 +1,7 @@
 use fdt::Fdt;
 
 use crate::{
-    drivers::{emmc::EMMC, mailbox, uart::UART}, fdt::aliases::AliasesTable, graphics::framebuffer::FRAMEBUFFER, info, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}, timeit
+    drivers::{emmc::EMMC, mailbox, uart::UART, watchdog}, fdt::aliases::AliasesTable, graphics::framebuffer::FRAMEBUFFER, info, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}, timeit
 };
 
 extern "C" {
@@ -52,6 +52,14 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     });
     if !emmc.is_initialized() {
         panic!("EMMC FAILED TO INITIALIZE!");
+    }
+
+    let watchdog = crate::drivers::watchdog::WATCHDOG.get_mut();
+    timeit!("Watchdog init from FDT", {
+        watchdog.init(mmio_table.get("watchdog"));
+    });
+    if !watchdog.is_initialized() {
+        panic!("Watchdog FAILED TO INITIALIZE!");
     }
 
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
