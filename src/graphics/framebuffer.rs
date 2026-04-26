@@ -5,8 +5,7 @@ use crate::{
         MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
         MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
         MBOX_TAG_SETVIRTWH,
-    },
-    timeit, uart_println,
+    }, timeit, uart_println, warn
 };
 
 pub struct Framebuffer {
@@ -114,7 +113,11 @@ impl Framebuffer {
             uart_println!("Framebuffer buffer address: {:p}", self.buffer);
             uart_println!("Framebuffer is RGB: {}", self.is_rgb);
         } else {
-            panic!("Failed to initialize framebuffer");
+            warn!("No framebuffer available, continuing headless");
+            self.buffer = core::ptr::null_mut();
+            self.width = 0;
+            self.height = 0;
+            self.pitch = 0;
         }
     }
 
@@ -139,6 +142,9 @@ impl Framebuffer {
     }
 
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
+        if self.buffer.is_null() {
+            return;
+        }
         if x < self.width() && y < self.height() {
             let offset = (y * self.pitch() + x * 4) as usize;
             unsafe {
@@ -161,6 +167,9 @@ impl Framebuffer {
     }
 
     pub fn draw_rect(&mut self, x1: u32, y1: u32, x2: u32, y2: u32, color: u32, fill: bool) {
+        if self.buffer.is_null() {
+            return;
+        }
         // Clamp rectangle to framebuffer size
         let max_x = self.width.saturating_sub(1);
         let max_y = self.height.saturating_sub(1);
@@ -179,6 +188,9 @@ impl Framebuffer {
     }
 
     pub fn draw_line(&mut self, x1: u32, y1: u32, x2: u32, y2: u32, color: u32) {
+        if self.buffer.is_null() {
+            return;
+        }
         let dx = (x2 as i32 - x1 as i32).abs();
         let dy = (y2 as i32 - y1 as i32).abs();
         let sx = if x1 < x2 { 1 } else { -1 };
@@ -206,6 +218,9 @@ impl Framebuffer {
     }
 
     pub fn draw_circle(&mut self, x0: u32, y0: u32, radius: u32, color: u32, fill: bool) {
+        if self.buffer.is_null() {
+            return;
+        }
         let mut x = radius as i32;
         let mut y = 0;
         let mut err = 0;
@@ -266,6 +281,9 @@ impl Framebuffer {
     /// - `w`, `h`: size
     /// - `pixels`: source buffer (ARGB8888 or RGB8888 depending on config)
     pub fn blit(&mut self, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) {
+        if self.buffer.is_null() {
+            return;
+        }
         let pitch = self.pitch as usize;
 
         for row in 0..h {
@@ -315,29 +333,29 @@ impl Framebuffer {
     }
 
     pub fn clear(&mut self, color: u32) {
-
+        if self.buffer.is_null() {
+            return;
+        }
         let pix = self.pack_pixel(color);
         let w = self.width as usize;
         let h = self.height as usize;
         let pitch = self.pitch as usize;
         let base = self.buffer as *mut u8;
 
-        let bytes = pix. to_ne_bytes();
-    if bytes[0] == bytes[1] && bytes[1] == bytes[2] && bytes[2] == bytes[3] {
-        // All bytes are the same, use write_bytes (memset)
-        self.clear_same(bytes[0]);
-    } else {
-        // Use slice filling
-        unsafe {
-            for y in 0..h {
-                let row = base.add(y * pitch) as *mut u32;
-                core::slice::from_raw_parts_mut(row, w).fill(pix);
+        let bytes = pix.to_ne_bytes();
+        if bytes[0] == bytes[1] && bytes[1] == bytes[2] && bytes[2] == bytes[3] {
+            // All bytes are the same, use write_bytes (memset)
+            self.clear_same(bytes[0]);
+        } else {
+            // Use slice filling
+            unsafe {
+                for y in 0..h {
+                    let row = base.add(y * pitch) as *mut u32;
+                    core::slice::from_raw_parts_mut(row, w).fill(pix);
+                }
             }
         }
     }
-    }
-
-
 
     /***
      * Clear the framebuffer with a color that has same byte value for all bytes.
@@ -346,6 +364,9 @@ impl Framebuffer {
      * @param color The byte value to fill the framebuffer with.
      */
     fn clear_same(&mut self, color: u8) {
+        if self.buffer.is_null() {
+            return;
+        }
         let len = (self.pitch as usize) * (self.height as usize);
         unsafe {
             core::ptr::write_bytes(self.buffer, color, len);
