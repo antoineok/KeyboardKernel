@@ -29,3 +29,5 @@ bcm2711-rpi-cm4.dtb
 devicetree.dts
 
 flake-profile*
+
+.direnv
