@@ -134,6 +134,14 @@ impl Fat32Volume {
         Ok(out_off)
     }
 
+        pub fn exists(
+            &self,
+            dev: &dyn BlockDevice,
+            path: &str,
+        ) -> bool {
+            self.resolve_path(dev, path).is_ok()
+        }
+
     //----------------------------------------------------------------------------------------------
     // Write (phase 1): overwrite existing file, no allocation
     //----------------------------------------------------------------------------------------------

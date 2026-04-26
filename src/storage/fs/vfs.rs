@@ -118,6 +118,33 @@ impl<'a> Vfs<'a> {
     // Open APIs
     //----------------------------------------------------------------------------------------------
 
+    pub fn exists_fs(
+        &self,
+        fs: FsId,
+        path: &str,
+    ) -> bool {
+        let path = match normalize_path(path) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+
+        let m = match self.get_mount(fs) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+
+        m.vol.exists(m.dev, &path)
+    }
+
+    pub fn exists_uri(&self, uri: &str) -> bool {
+        let (fs, path) = match parse_uri(uri) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        self.exists_fs(fs, path)
+    }
+
     /// Open by (drive, path). Path is root-relative (no scheme), e.g. "exemple/test.txt".
     pub fn open_fs(&self, fs: FsId, path: &str) -> Result<FileHandle, VfsError> {
         let path = normalize_path(path)?;
