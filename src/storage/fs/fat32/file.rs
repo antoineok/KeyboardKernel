@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 use crate::storage::fs::fat32::fat::FatLink;
@@ -251,6 +252,88 @@ impl Fat32Volume {
 
         // Flush device (no-op for now, but keeps layering correct).
         dev.flush().map_err(Self::map_block_err)?;
+
+        Ok(())
+    }
+
+    pub fn write_file_all_growing(
+        &self,
+        dev: &dyn BlockDevice,
+        file: &FatFile,
+        data: &[u8],
+    ) -> Result<(), Fat32Error> {
+        if file.first_cluster < 2 {
+            return Err(Fat32Error::Invalid("file has invalid first_cluster"));
+        }
+
+        let bytes_per_cluster = self.bpb.sec_per_clus as usize * SECTOR_SIZE;
+        let needed_clusters = core::cmp::max(
+            1,
+            (data.len() + bytes_per_cluster - 1) / bytes_per_cluster,
+        );
+
+        let mut chain = Vec::new();
+        let mut cur = file.first_cluster;
+
+        loop {
+            chain.push(cur);
+
+            match self.fat32_get_link(dev, cur)? {
+                FatLink::Next(n) => cur = n,
+                FatLink::Eoc => break,
+                FatLink::Bad => return Err(Fat32Error::Invalid("BAD cluster in file chain")),
+                FatLink::Free => return Err(Fat32Error::Invalid("FREE cluster in file chain")),
+                FatLink::Reserved(_) => break,
+            }
+        }
+
+        while chain.len() < needed_clusters {
+            let new_cluster = self.fat32_alloc_cluster(dev)?;
+            let last = *chain.last().unwrap();
+            self.fat32_set_next(dev, last, new_cluster)?;
+            self.fat32_set_eoc(dev, new_cluster)?;
+            chain.push(new_cluster);
+        }
+
+        if chain.len() > needed_clusters {
+            let first_extra = chain[needed_clusters];
+            self.fat32_set_eoc(dev, chain[needed_clusters - 1])?;
+
+            let mut cur = first_extra;
+            loop {
+                let next = self.fat32_get_link(dev, cur)?;
+                self.fat32_set_free(dev, cur)?;
+
+                match next {
+                    FatLink::Next(n) => cur = n,
+                    FatLink::Eoc => break,
+                    _ => break,
+                }
+            }
+
+            chain.truncate(needed_clusters);
+        }
+
+        let mut pos = 0usize;
+
+        for &cluster in &chain {
+            let base = self.cluster_to_lba(cluster)?;
+
+            for s in 0..self.bpb.sec_per_clus as u64 {
+                let mut sec = [0u8; SECTOR_SIZE];
+
+                if pos < data.len() {
+                    let take = core::cmp::min(SECTOR_SIZE, data.len() - pos);
+                    sec[..take].copy_from_slice(&data[pos..pos + take]);
+                    pos += take;
+                }
+
+                dev.write_sector(base + s, &sec)?;
+            }
+        }
+
+        self.update_dirent_size(dev, file.dirent_lba, file.dirent_off, data.len() as u32)?;
+        dev.flush().ok();
 
         Ok(())
     }

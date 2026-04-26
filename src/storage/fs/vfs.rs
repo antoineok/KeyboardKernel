@@ -3,12 +3,13 @@ extern crate alloc;
 use core::cell::UnsafeCell;
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use alloc::vec;
 
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
-use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
 use crate::storage::fs::fat32::file::FatFile;
+use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
 use crate::{info, warn};
 
 use crate::reader::Reader; // adjust path if your Reader is elsewhere
@@ -90,7 +91,10 @@ pub struct Vfs<'a> {
 
 impl<'a> Vfs<'a> {
     pub const fn new() -> Self {
-        Self { boot: None, rom: None }
+        Self {
+            boot: None,
+            rom: None,
+        }
     }
 
     /// Mount a FAT32 volume for a given FsId.
@@ -137,6 +141,25 @@ impl<'a> Vfs<'a> {
         let (fs, path) = parse_uri(uri)?;
         self.open_fs(fs, path)
     }
+
+    pub fn write_fs(&self, fs: FsId, path: &str, data: &[u8]) -> Result<(), VfsError> {
+        let path = normalize_path(path)?;
+        let m = self.get_mount(fs)?;
+
+        let file = match m.vol.open_file_path(m.dev, &path) {
+            Ok(f) => f,
+            Err(_) => m.vol.create_file_83(m.dev, &path)?,
+        };
+
+        m.vol.write_file_all_growing(m.dev, &file, data)?;
+
+        Ok(())
+    }
+
+    pub fn write_uri(&self, uri: &str, data: &[u8]) -> Result<(), VfsError> {
+        let (fs, path) = parse_uri(uri)?;
+        self.write_fs(fs, path, data)
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -150,7 +173,9 @@ fn parse_uri(uri: &str) -> Result<(FsId, &str), VfsError> {
     //   bootfs:a/b
     //
     // We'll normalize by stripping the scheme and leading slashes.
-    let (scheme, rest) = uri.split_once(':').ok_or(VfsError::InvalidPath("missing ':' in uri"))?;
+    let (scheme, rest) = uri
+        .split_once(':')
+        .ok_or(VfsError::InvalidPath("missing ':' in uri"))?;
 
     let fs = match scheme.to_ascii_lowercase().as_str() {
         "bootfs" => FsId::Boot,

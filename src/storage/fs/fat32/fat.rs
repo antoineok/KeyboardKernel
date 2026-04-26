@@ -9,6 +9,8 @@ const FAT32_FREE: u32 = 0x0000_0000;
 const FAT32_BAD: u32  = 0x0FFF_FFF7;
 const FAT32_EOC_MIN: u32 = 0x0FFF_FFF8; // End-of-chain threshold
 
+const FAT32_EOC: u32 = 0x0FFF_FFFF;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FatLink {
     /// Next cluster in chain.
@@ -110,5 +112,72 @@ impl Fat32Volume {
         }
 
         Err(Fat32Error::Invalid("FAT32: cluster chain too long (possible loop/corruption)"))
+    }
+
+    fn fat32_set_raw(&self, dev: &dyn BlockDevice, cluster: u32, value: u32) -> Result<(), Fat32Error> {
+        if cluster < 2 {
+            return Err(Fat32Error::Invalid("FAT32: cluster < 2"));
+        }
+
+        let byte_off = cluster as u64 * 4;
+        let sector_off = byte_off / SECTOR_SIZE as u64;
+        let in_sector = (byte_off % SECTOR_SIZE as u64) as usize;
+
+        let val = value & FAT32_MASK;
+
+        for fat_index in 0..self.bpb.num_fats {
+            let lba = self.fat1_lba
+                + fat_index as u64 * self.bpb.fat_sz as u64
+                + sector_off;
+
+            let mut sec = [0u8; SECTOR_SIZE];
+            dev.read_sector(lba, &mut sec)?;
+            sec[in_sector..in_sector + 4].copy_from_slice(&val.to_le_bytes());
+            dev.write_sector(lba, &sec)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn fat32_set_eoc(&self, dev: &dyn BlockDevice, cluster: u32) -> Result<(), Fat32Error> {
+        self.fat32_set_raw(dev, cluster, FAT32_EOC)
+    }
+
+    pub fn fat32_set_next(&self, dev: &dyn BlockDevice, cluster: u32, next: u32) -> Result<(), Fat32Error> {
+        self.fat32_set_raw(dev, cluster, next)
+    }
+
+    pub fn fat32_set_free(&self, dev: &dyn BlockDevice, cluster: u32) -> Result<(), Fat32Error> {
+        self.fat32_set_raw(dev, cluster, FAT32_FREE)
+    }
+
+    pub fn fat32_find_free_cluster(&self, dev: &dyn BlockDevice) -> Result<u32, Fat32Error> {
+        let max_clusters = self.bpb.tot_sec / self.bpb.sec_per_clus as u32;
+
+        for cluster in 2..max_clusters {
+            if self.fat32_get_link(dev, cluster)? == FatLink::Free {
+                return Ok(cluster);
+            }
+        }
+
+        Err(Fat32Error::Invalid("FAT32: no free cluster"))
+    }
+
+    pub fn fat32_alloc_cluster(&self, dev: &dyn BlockDevice) -> Result<u32, Fat32Error> {
+        let cluster = self.fat32_find_free_cluster(dev)?;
+        self.fat32_set_eoc(dev, cluster)?;
+        self.clear_cluster(dev, cluster)?;
+        Ok(cluster)
+    }
+
+    pub fn clear_cluster(&self, dev: &dyn BlockDevice, cluster: u32) -> Result<(), Fat32Error> {
+        let base = self.cluster_to_lba(cluster)?;
+        let zero = [0u8; SECTOR_SIZE];
+
+        for s in 0..self.bpb.sec_per_clus as u64 {
+            dev.write_sector(base + s, &zero)?;
+        }
+
+        Ok(())
     }
 }
