@@ -6,7 +6,7 @@ const FAT32_MASK: u32 = 0x0FFF_FFFF;
 
 /// FAT32 special values (masked to 28-bit domain).
 const FAT32_FREE: u32 = 0x0000_0000;
-const FAT32_BAD: u32  = 0x0FFF_FFF7;
+const FAT32_BAD: u32 = 0x0FFF_FFF7;
 const FAT32_EOC_MIN: u32 = 0x0FFF_FFF8; // End-of-chain threshold
 
 const FAT32_EOC: u32 = 0x0FFF_FFFF;
@@ -29,7 +29,11 @@ impl Fat32Volume {
     /// Read one FAT32 entry for `cluster` from FAT#1.
     ///
     /// Returns a classified link (Next/Eoc/etc).
-    pub fn fat32_get_link(&self, dev: &dyn BlockDevice, cluster: u32) -> Result<FatLink, Fat32Error> {
+    pub fn fat32_get_link(
+        &self,
+        dev: &dyn BlockDevice,
+        cluster: u32,
+    ) -> Result<FatLink, Fat32Error> {
         if cluster < 2 {
             return Err(Fat32Error::Invalid("FAT32: cluster < 2"));
         }
@@ -47,23 +51,33 @@ impl Fat32Volume {
 
         if in_sector + 4 > SECTOR_SIZE {
             // Should never happen for 4-byte entries in 512-byte sectors, but guard anyway.
-            return Err(Fat32Error::Invalid("FAT32: FAT entry crosses sector boundary"));
+            return Err(Fat32Error::Invalid(
+                "FAT32: FAT entry crosses sector boundary",
+            ));
         }
 
-        let raw = u32::from_le_bytes([sec[in_sector], sec[in_sector + 1], sec[in_sector + 2], sec[in_sector + 3]]);
+        let raw = u32::from_le_bytes([
+            sec[in_sector],
+            sec[in_sector + 1],
+            sec[in_sector + 2],
+            sec[in_sector + 3],
+        ]);
         let val = raw & FAT32_MASK;
 
-        let link = if val == FAT32_FREE {
+        let link = if val == 0x0000_0000 {
             FatLink::Free
-        } else if val == FAT32_BAD {
-            FatLink::Bad
-        } else if val >= FAT32_EOC_MIN {
-            FatLink::Eoc
-        } else if val == 0x0000_0001 || (0x0000_0002..=0x0000_000F).contains(&val) {
-            // Reserved range-ish (implementation-defined). Treat cautiously.
+        } else if val == 0x0000_0001 {
             FatLink::Reserved(val)
-        } else {
+        } else if val >= 0x0000_0002 && val <= 0x0FFF_FFEF {
             FatLink::Next(val)
+        } else if val >= 0x0FFF_FFF0 && val <= 0x0FFF_FFF6 {
+            FatLink::Reserved(val)
+        } else if val == 0x0FFF_FFF7 {
+            FatLink::Bad
+        } else if val >= 0x0FFF_FFF8 {
+            FatLink::Eoc
+        } else {
+            FatLink::Reserved(val)
         };
 
         Ok(link)
@@ -102,7 +116,11 @@ impl Fat32Volume {
                 }
                 FatLink::Eoc => return Ok(()),
                 FatLink::Bad => return Err(Fat32Error::Invalid("FAT32: encountered BAD cluster")),
-                FatLink::Free => return Err(Fat32Error::Invalid("FAT32: encountered FREE cluster in chain")),
+                FatLink::Free => {
+                    return Err(Fat32Error::Invalid(
+                        "FAT32: encountered FREE cluster in chain",
+                    ))
+                }
                 FatLink::Reserved(v) => {
                     // Conservative: treat reserved as end-of-chain rather than walking into garbage
                     let _ = v;
@@ -111,10 +129,17 @@ impl Fat32Volume {
             }
         }
 
-        Err(Fat32Error::Invalid("FAT32: cluster chain too long (possible loop/corruption)"))
+        Err(Fat32Error::Invalid(
+            "FAT32: cluster chain too long (possible loop/corruption)",
+        ))
     }
 
-    fn fat32_set_raw(&self, dev: &dyn BlockDevice, cluster: u32, value: u32) -> Result<(), Fat32Error> {
+    fn fat32_set_raw(
+        &self,
+        dev: &dyn BlockDevice,
+        cluster: u32,
+        value: u32,
+    ) -> Result<(), Fat32Error> {
         if cluster < 2 {
             return Err(Fat32Error::Invalid("FAT32: cluster < 2"));
         }
@@ -126,9 +151,7 @@ impl Fat32Volume {
         let val = value & FAT32_MASK;
 
         for fat_index in 0..self.bpb.num_fats {
-            let lba = self.fat1_lba
-                + fat_index as u64 * self.bpb.fat_sz as u64
-                + sector_off;
+            let lba = self.fat1_lba + fat_index as u64 * self.bpb.fat_sz as u64 + sector_off;
 
             let mut sec = [0u8; SECTOR_SIZE];
             dev.read_sector(lba, &mut sec)?;
@@ -143,7 +166,12 @@ impl Fat32Volume {
         self.fat32_set_raw(dev, cluster, FAT32_EOC)
     }
 
-    pub fn fat32_set_next(&self, dev: &dyn BlockDevice, cluster: u32, next: u32) -> Result<(), Fat32Error> {
+    pub fn fat32_set_next(
+        &self,
+        dev: &dyn BlockDevice,
+        cluster: u32,
+        next: u32,
+    ) -> Result<(), Fat32Error> {
         self.fat32_set_raw(dev, cluster, next)
     }
 
