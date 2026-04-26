@@ -13,5 +13,6 @@ mod kernel;
 mod memory;
 mod panic;
 mod reader;
+mod storage;
 mod time;
 mod util;
