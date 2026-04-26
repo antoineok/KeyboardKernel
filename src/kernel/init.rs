@@ -1,12 +1,7 @@
 use fdt::Fdt;
 
 use crate::{
-    drivers::{mailbox, uart::UART},
-    fdt::aliases::AliasesTable,
-    graphics::framebuffer::FRAMEBUFFER,
-    info,
-    memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR},
-    timeit,
+    drivers::{emmc::EMMC, mailbox, uart::UART}, fdt::aliases::AliasesTable, graphics::framebuffer::FRAMEBUFFER, info, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}, timeit
 };
 
 extern "C" {
@@ -51,6 +46,14 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         framebuffer.init();
     });
 
+    let emmc = &mut EMMC.get_mut();
+    timeit!("eMMC init from FDT", {
+        emmc.init(mmio_table.get("mmc0"));
+    });
+    if !emmc.is_initialized() {
+        panic!("EMMC FAILED TO INITIALIZE!");
+    }
+
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
     //bt.init(mmio_table.entries.get("bluetooth"));
 
@@ -92,6 +95,11 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     });
 
     init_phys_allocator();
+
+        timeit!("VFS init", {
+        init_vfs();
+    });
+
 }
 
 unsafe fn init_boot_allocator() {
@@ -119,4 +127,31 @@ unsafe fn init_phys_allocator() {
         heap::init_heap();
     });
     info!("Kernel heap initialized.");
+}
+
+pub fn init_storage_slices() {
+    let dev = EMMC_DEV.get();
+
+    let parts = mbr::read_partitions(dev).unwrap();
+
+    let boot_part = parts.iter().find(|p| p.index == 1).unwrap();
+    let rom_part = parts.iter().find(|p| p.index == 2).unwrap();
+
+    // Build slices that borrow the global dev => now slices can be 'static-borrowed
+    let boot = boot_part.as_block_device(dev);
+    let rom = rom_part.as_block_device(dev);
+
+    *BOOT_SLICE.get_mut() = Some(boot);
+    *ROM_SLICE.get_mut() = Some(rom);
+}
+
+pub fn init_vfs() {
+    init_storage_slices();
+
+    let boot = BOOT_SLICE.get().as_ref().unwrap();
+    let rom = ROM_SLICE.get().as_ref().unwrap();
+
+    let vfs = VFS.get_mut();
+    vfs.mount_fat32(FsId::Boot, boot).unwrap();
+    vfs.mount_fat32(FsId::Rom, rom).unwrap();
 }
