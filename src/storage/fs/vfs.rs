@@ -159,6 +159,40 @@ impl<'a> Vfs<'a> {
         let (fs, path) = parse_uri(uri)?;
         self.write_fs(fs, path, data)
     }
+
+    pub fn rename_fs(
+        &self,
+        fs: FsId,
+        old_path: &str,
+        new_path: &str,
+    ) -> Result<(), VfsError> {
+        let old_path = normalize_path(old_path)?;
+        let new_path = normalize_path(new_path)?;
+
+        let m = self.get_mount(fs)?;
+
+        m.vol.rename_file_83(m.dev, &old_path, &new_path)?;
+
+        Ok(())
+    }
+
+    pub fn rename_uri(
+        &self,
+        old_uri: &str,
+        new_uri: &str,
+    ) -> Result<(), VfsError> {
+        let (old_fs, old_path) = parse_uri(old_uri)?;
+        let (new_fs, new_path) = parse_uri(new_uri)?;
+
+        if old_fs != new_fs {
+            return Err(VfsError::InvalidPath(
+                "cross-filesystem rename not supported",
+            ));
+        }
+
+        self.rename_fs(old_fs, old_path, new_path)
+    }
+
 }
 
 //--------------------------------------------------------------------------------------------------

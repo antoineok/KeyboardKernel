@@ -57,7 +57,7 @@ fn split_parent(path: &str) -> Result<(Vec<&str>, &str), Fat32Error> {
 }
 
 impl Fat32Volume {
-    fn resolve_dir_cluster_from_components(
+    pub(crate) fn resolve_dir_cluster_from_components(
         &self,
         dev: &dyn BlockDevice,
         comps: &[&str],
