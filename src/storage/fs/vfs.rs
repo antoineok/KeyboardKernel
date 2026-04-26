@@ -5,7 +5,6 @@ use core::cell::UnsafeCell;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::vec;
 
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 use crate::storage::fs::fat32::file::FatFile;
@@ -67,7 +66,7 @@ impl FileHandle {
 
     /// Safe Reader view tied to self lifetime (no leaks).
     pub fn reader(&self) -> Reader {
-        Reader::new(self.data.as_ptr() as u64, self.data.len())
+        Reader::from_slice(&self.data)
     }
 
     /// Optional helper for text files.
