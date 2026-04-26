@@ -5,7 +5,7 @@ use crate::{
     fdt::aliases::AliasesTable,
     graphics::framebuffer::FRAMEBUFFER,
     info,
-    memory::{boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER},
+    memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR},
     timeit,
 };
 
