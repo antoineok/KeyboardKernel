@@ -15,4 +15,5 @@ mod panic;
 mod reader;
 mod storage;
 mod time;
+mod update;
 mod util;

@@ -13,6 +13,9 @@ SECTIONS
         *(COMMON)
         __bss_end = .;
     }
+    .update_magic : {
+        KEEP(*(.update_magic))
+    }
     __kernel_end = .;
 
     /* Reserve 16 KiB for the el2 stack */
