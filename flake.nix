@@ -68,6 +68,8 @@
 
           # Useful utilities for serial communication
           tmux
+          python3
+          python3Packages.pyserial
 
           bash
         ];
