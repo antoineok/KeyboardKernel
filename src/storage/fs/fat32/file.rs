@@ -370,7 +370,6 @@ impl Fat32Volume {
             sector[dirent_off + 30],
             sector[dirent_off + 31],
         ]);
-        info!("FAT32: dirent size {} -> {}", old_size, new_size);
 
 
         // Sanity: ensure entry is valid
