@@ -4,6 +4,7 @@ use aarch64_cpu::asm::nop;
 
 use crate::arch::exceptions::PrivilegeLevel;
 
+use crate::drivers::uart::UART;
 use crate::graphics::framebuffer::FRAMEBUFFER;
 use crate::time::time_manager;
 
@@ -41,11 +42,17 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     framebuffer.set_pixel(250, 250, 0xFFFFFF);
 
     framebuffer.draw_line(100, 500, 350, 700, 0xFF0000);
+
     loop {
-        //uart.update();
-        // Add any other functionality or loop logic here
-        info!("Idle loop iteration");
-        time_manager().spin_for(core::time::Duration::from_secs(5));
+        let updater = crate::update::uart::UART_UPDATE.get_mut();
+
+        updater.poll();
+
+        if updater.is_binary_mode() {
+            continue;
+        }
+
+        UART.get_mut().flush_tx();
         nop();
     }
 }
