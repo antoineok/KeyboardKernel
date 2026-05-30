@@ -32,6 +32,8 @@ pub struct Fat32Volume {
 
     /// Partition-relative LBA where the data region starts (cluster #2).
     pub data_lba: u64,
+
+    next_free_hint: u32,
 }
 
 impl Fat32Volume {
@@ -46,7 +48,7 @@ impl Fat32Volume {
         let data_lba =
             fat1_lba + (bpb.num_fats as u64) * (bpb.fat_sz as u64);
 
-        Ok(Self { bpb, fat1_lba, data_lba })
+        Ok(Self { bpb, fat1_lba, data_lba, next_free_hint: 2 })
     }
 
     /// Convert a cluster number to a partition-relative LBA (first sector of that cluster).

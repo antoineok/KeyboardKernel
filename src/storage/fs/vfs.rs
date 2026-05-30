@@ -114,6 +114,13 @@ impl<'a> Vfs<'a> {
         }
     }
 
+    fn get_mount_mut(&mut self, fs: FsId) -> Result<&mut FatMount<'a>, VfsError> {
+        match fs {
+            FsId::Boot => self.boot.as_mut().ok_or(VfsError::NotMounted(FsId::Boot)),
+            FsId::Rom => self.rom.as_mut().ok_or(VfsError::NotMounted(FsId::Rom)),
+        }
+    }
+
     //----------------------------------------------------------------------------------------------
     // Open APIs
     //----------------------------------------------------------------------------------------------
@@ -168,9 +175,9 @@ impl<'a> Vfs<'a> {
         self.open_fs(fs, path)
     }
 
-    pub fn write_fs(&self, fs: FsId, path: &str, data: &[u8]) -> Result<(), VfsError> {
+    pub fn write_fs(&mut self, fs: FsId, path: &str, data: &[u8]) -> Result<(), VfsError> {
         let path = normalize_path(path)?;
-        let m = self.get_mount(fs)?;
+        let m = self.get_mount_mut(fs)?;
 
         let file = match m.vol.open_file_path(m.dev, &path) {
             Ok(f) => f,
@@ -182,7 +189,7 @@ impl<'a> Vfs<'a> {
         Ok(())
     }
 
-    pub fn write_uri(&self, uri: &str, data: &[u8]) -> Result<(), VfsError> {
+    pub fn write_uri(&mut self, uri: &str, data: &[u8]) -> Result<(), VfsError> {
         let (fs, path) = parse_uri(uri)?;
         self.write_fs(fs, path, data)
     }
@@ -220,17 +227,17 @@ impl<'a> Vfs<'a> {
         self.rename_fs(old_fs, old_path, new_path)
     }
 
-    pub fn delete_fs(&self, fs: FsId, path: &str) -> Result<(), VfsError> {
+    pub fn delete_fs(&mut self, fs: FsId, path: &str) -> Result<(), VfsError> {
         let path = normalize_path(path)?;
 
-        let m = self.get_mount(fs)?;
+        let m = self.get_mount_mut(fs)?;
 
         m.vol.delete_file_83(m.dev, &path)?;
 
         Ok(())
     }
 
-    pub fn delete_uri(&self, uri: &str) -> Result<(), VfsError> {
+    pub fn delete_uri(&mut self, uri: &str) -> Result<(), VfsError> {
         let (fs, path) = parse_uri(uri)?;
 
         self.delete_fs(fs, path)

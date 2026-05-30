@@ -6,7 +6,7 @@ const ATTR_DIRECTORY: u8 = 0x10;
 
 impl Fat32Volume {
     pub fn delete_file_83(
-        &self,
+        &mut self,
         dev: &dyn BlockDevice,
         path: &str,
     ) -> Result<(), Fat32Error> {
@@ -41,7 +41,7 @@ impl Fat32Volume {
     }
 
     pub fn free_cluster_chain(
-        &self,
+        &mut self,
         dev: &dyn BlockDevice,
         start: u32,
     ) -> Result<(), Fat32Error> {
@@ -58,6 +58,11 @@ impl Fat32Volume {
 
             self.fat32_set_free(dev, cur)?;
 
+            // Reuse newly-freed space sooner.
+            if cur < self.next_free_hint {
+                self.next_free_hint = cur;
+            }
+
             match next {
                 FatLink::Next(n) => {
                     if n == cur {
@@ -66,11 +71,14 @@ impl Fat32Volume {
 
                     cur = n;
                 }
+
                 FatLink::Eoc => return Ok(()),
                 FatLink::Free => return Ok(()),
+
                 FatLink::Bad => {
                     return Err(Fat32Error::Invalid("FAT32: BAD cluster in delete chain"));
                 }
+
                 FatLink::Reserved(_) => return Ok(()),
             }
         }

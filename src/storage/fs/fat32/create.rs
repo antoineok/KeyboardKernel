@@ -117,7 +117,7 @@ impl Fat32Volume {
     }
 
     pub fn create_file_83(
-        &self,
+        &mut self,
         dev: &dyn BlockDevice,
         path: &str,
     ) -> Result<FatFile, Fat32Error> {

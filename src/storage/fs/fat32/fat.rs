@@ -179,11 +179,21 @@ impl Fat32Volume {
         self.fat32_set_raw(dev, cluster, FAT32_FREE)
     }
 
-    pub fn fat32_find_free_cluster(&self, dev: &dyn BlockDevice) -> Result<u32, Fat32Error> {
+    pub fn fat32_find_free_cluster(&mut self, dev: &dyn BlockDevice) -> Result<u32, Fat32Error> {
         let max_clusters = self.bpb.tot_sec / self.bpb.sec_per_clus as u32;
 
-        for cluster in 2..max_clusters {
+        let start = self.next_free_hint.max(2);
+
+        for cluster in start..max_clusters {
             if self.fat32_get_link(dev, cluster)? == FatLink::Free {
+                self.next_free_hint = cluster + 1;
+                return Ok(cluster);
+            }
+        }
+
+        for cluster in 2..start {
+            if self.fat32_get_link(dev, cluster)? == FatLink::Free {
+                self.next_free_hint = cluster + 1;
                 return Ok(cluster);
             }
         }
@@ -191,7 +201,7 @@ impl Fat32Volume {
         Err(Fat32Error::Invalid("FAT32: no free cluster"))
     }
 
-    pub fn fat32_alloc_cluster(&self, dev: &dyn BlockDevice) -> Result<u32, Fat32Error> {
+    pub fn fat32_alloc_cluster(&mut self, dev: &dyn BlockDevice) -> Result<u32, Fat32Error> {
         let cluster = self.fat32_find_free_cluster(dev)?;
         self.fat32_set_eoc(dev, cluster)?;
         self.clear_cluster(dev, cluster)?;

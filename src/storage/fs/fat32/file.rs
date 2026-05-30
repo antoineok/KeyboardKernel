@@ -265,7 +265,7 @@ impl Fat32Volume {
     }
 
     pub fn write_file_all_growing(
-        &self,
+        &mut self,
         dev: &dyn BlockDevice,
         file: &FatFile,
         data: &[u8],
