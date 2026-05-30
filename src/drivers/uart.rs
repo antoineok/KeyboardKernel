@@ -124,6 +124,18 @@ impl Uart {
         (self.aux_mu_io_reg.read() & 0xFF) as u8
     }
 
+    pub fn try_read_byte(&self) -> Option<u8> {
+        if self.is_read_ready() {
+            Some((self.aux_mu_io_reg.read() & 0xFF) as u8)
+        } else {
+            None
+        }
+    }
+
+    pub fn flush_tx(&mut self) {
+        self.load_output_fifo();
+    }
+
     pub fn write_text(&self, text: &str) {
         for byte in text.bytes() {
             if byte == b'\n' {
