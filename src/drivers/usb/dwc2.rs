@@ -38,6 +38,7 @@ pub enum Dwc2Error {
     },
     InvalidCoreId(u32),
     NotInitialized,
+    Ep0PacketTooLarge(usize),
     Timeout {
         register: usize,
         mask: u32,
@@ -200,7 +201,10 @@ impl Dwc2 {
             Duration::from_millis(100),
         )?;
 
-        self.modify_raw(GRSTCTL, |value| value | GRSTCTL_CSFTRST);
+        // GRSTCTL contains command/status bits. Do not replay a value read
+        // from it; issue only the core-soft-reset command.
+        self.write_raw(GRSTCTL, GRSTCTL_CSFTRST);
+        self.device_barrier();
 
         self.wait_for_bits(
             GRSTCTL,
@@ -313,6 +317,333 @@ impl Dwc2 {
         self.device_barrier();
 
         Ok(())
+    }
+
+    /// Configures the device-global registers and endpoint zero for a
+    /// polling-only USB device stack. The device remains soft-disconnected.
+    pub fn initialize_device_controller(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        self.disconnect()?;
+
+        // Start in programmed-I/O mode. Keep the controller's global
+        // interrupt gate open even though the CPU still polls GINTSTS with
+        // DAIF masked.
+        self.modify_raw(GAHBCFG, |value| {
+            (value & !GAHBCFG_DMA_EN) | GAHBCFG_GLBL_INTR_EN
+        });
+
+        // Disable HNP/SRP and use the maximum turnaround calibration.
+        self.modify_raw(GUSBCFG, |mut value| {
+            value &= !(GUSBCFG_TOUTCAL_MASK | GUSBCFG_SRPCAP | GUSBCFG_HNPCAP);
+            value |= GUSBCFG_TOUTCAL_7;
+            value
+        });
+
+        self.modify_raw(DCFG, |mut value| {
+            value &= !(DCFG_DEVSPD_MASK | DCFG_DEVADDR_MASK);
+            value |= DCFG_DEVSPD_HIGH;
+            value
+        });
+
+        self.configure_device_fifos()?;
+
+        self.write_raw(DIEPMSK, DIEPINT_XFRC | DIEPINT_TOC);
+        self.write_raw(DOEPMSK, DOEPINT_XFRC | DOEPINT_STUP);
+        self.write_raw(DAINTMSK, DAINT_IN_EP0 | DAINT_OUT_EP0);
+
+        // These masks affect the interrupt summary bits even though global
+        // CPU interrupt output remains disabled and the stack polls GINTSTS.
+        self.write_raw(
+            GINTMSK,
+            GINT_USBRST | GINT_ENUMDONE | GINT_RXFLVL | GINT_IEPINT | GINT_OEPINT,
+        );
+
+        self.write_raw(diepint(0), u32::MAX);
+        self.write_raw(doepint(0), u32::MAX);
+        self.clear_pending_interrupts()?;
+        self.configure_ep0_max_packet(64)?;
+
+        // Required DWC2 device-programming pulse.
+        self.modify_raw(DCTL, |value| value | DCTL_PWRONPRGDONE);
+        self.device_barrier();
+        self.delay(Duration::from_micros(10));
+        self.modify_raw(DCTL, |value| value & !DCTL_PWRONPRGDONE);
+
+        // Clear global endpoint NAK state left by reset.
+        self.modify_raw(DCTL, |value| value | DCTL_CGOUTNAK | DCTL_CGNPINNAK);
+        self.device_barrier();
+
+        Ok(())
+    }
+
+    /// Restores endpoint-zero state after a USB bus reset.
+    pub fn handle_usb_reset(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+
+        self.modify_raw(DCFG, |value| value & !DCFG_DEVADDR_MASK);
+        self.modify_raw(DCTL, |value| value & !DCTL_RMTWKUPSIG);
+
+        self.write_raw(DIEPMSK, DIEPINT_XFRC | DIEPINT_TOC);
+        self.write_raw(DOEPMSK, DOEPINT_XFRC | DOEPINT_STUP);
+        self.write_raw(DAINTMSK, DAINT_IN_EP0 | DAINT_OUT_EP0);
+        self.write_raw(diepint(0), u32::MAX);
+        self.write_raw(doepint(0), u32::MAX);
+
+        self.flush_tx_fifo_all()?;
+        self.flush_rx_fifo()?;
+        self.configure_ep0_max_packet(64)?;
+
+        self.modify_raw(DCTL, |value| value | DCTL_CGOUTNAK | DCTL_CGNPINNAK);
+        self.device_barrier();
+
+        self.arm_ep0_setup()?;
+
+        Ok(())
+    }
+
+    /// Applies endpoint-zero sizing after the host has established bus speed.
+    pub fn handle_enumeration_done(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+
+        let speed = (self.read_raw(DSTS) & DSTS_ENUMSPD_MASK) >> DSTS_ENUMSPD_SHIFT;
+        let packet_size = if speed == DSTS_ENUMSPD_LOW_6 { 8 } else { 64 };
+        self.configure_ep0_max_packet(packet_size)
+    }
+
+    /// Arms endpoint zero OUT to receive one eight-byte setup packet.
+    pub fn arm_ep0_setup(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+
+        self.write_raw(
+            doeptsiz(0),
+            8 | DEPTSIZ0_PKTCNT_ONE | DOEPTSIZ0_SUPCNT_ONE,
+        );
+
+        self.modify_raw(doepctl(0), |mut value| {
+            value &= !(DEPCTL0_MPS_MASK | DEPCTL_STALL);
+            value |=
+                DEPCTL0_MPS_64 | DEPCTL_USBACTEP | DEPCTL_CNAK | DEPCTL_EPENA;
+            value
+        });
+        self.device_barrier();
+
+        Ok(())
+    }
+
+    /// Arms the zero-length OUT status stage of a control-read transfer.
+    pub fn arm_ep0_status_out(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        self.write_raw(doeptsiz(0), DEPTSIZ0_PKTCNT_ONE);
+        self.modify_raw(doepctl(0), |mut value| {
+            value &= !(DEPCTL0_MPS_MASK | DEPCTL_STALL);
+            value |= DEPCTL0_MPS_64 | DEPCTL_USBACTEP | DEPCTL_CNAK | DEPCTL_EPENA;
+            value
+        });
+        self.device_barrier();
+        Ok(())
+    }
+
+    /// Starts one endpoint-zero IN packet. Enumeration descriptors in the
+    /// current stack are deliberately limited to a single 64-byte packet.
+    pub fn start_ep0_in(&mut self, data: &[u8]) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        if data.len() > 64 {
+            return Err(Dwc2Error::Ep0PacketTooLarge(data.len()));
+        }
+
+        self.wait_for_ep0_tx_space((data.len() + 3) / 4)?;
+        self.write_raw(
+            dieptsiz(0),
+            (data.len() as u32 & DEPTSIZ0_XFERSIZE_MASK) | DEPTSIZ0_PKTCNT_ONE,
+        );
+
+        self.modify_raw(diepctl(0), |mut value| {
+            value &= !(DEPCTL0_MPS_MASK | DEPCTL_STALL | DEPCTL_TXFNUM_MASK);
+            value |= DEPCTL0_MPS_64 | DEPCTL_USBACTEP | DEPCTL_CNAK | DEPCTL_EPENA;
+            value
+        });
+        self.device_barrier();
+
+        for chunk in data.chunks(4) {
+            let mut word = 0u32;
+            for (index, byte) in chunk.iter().enumerate() {
+                word |= u32::from(*byte) << (index * 8);
+            }
+            self.write_raw(fifo(0), word);
+        }
+        self.device_barrier();
+
+        Ok(())
+    }
+
+    #[inline]
+    pub fn start_ep0_status_in(&mut self) -> Result<(), Dwc2Error> {
+        self.start_ep0_in(&[])
+    }
+
+    pub fn set_device_address(&mut self, address: u8) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        self.modify_raw(DCFG, |mut value| {
+            value &= !DCFG_DEVADDR_MASK;
+            value |= (u32::from(address) << DCFG_DEVADDR_SHIFT) & DCFG_DEVADDR_MASK;
+            value
+        });
+        self.device_barrier();
+        Ok(())
+    }
+
+    pub fn stall_ep0(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        self.modify_raw(diepctl(0), |value| value | DEPCTL_STALL | DEPCTL_USBACTEP);
+        self.modify_raw(doepctl(0), |value| value | DEPCTL_STALL | DEPCTL_USBACTEP);
+        self.device_barrier();
+        Ok(())
+    }
+
+    pub fn clear_ep0_stall(&mut self) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+
+        // Do not force DATA0 on endpoint zero. The SETUP transaction resets
+        // the control-transfer toggle and the core must send the data/status
+        // PID selected by that state machine.
+        self.modify_raw(diepctl(0), |value| {
+            (value & !DEPCTL_STALL) | DEPCTL_USBACTEP
+        });
+        self.modify_raw(doepctl(0), |value| {
+            (value & !DEPCTL_STALL) | DEPCTL_USBACTEP
+        });
+        self.device_barrier();
+        Ok(())
+    }
+
+    #[inline]
+    pub fn pop_rx_status(&self) -> Result<u32, Dwc2Error> {
+        self.ensure_initialized()?;
+        Ok(self.read_raw(GRXSTSP))
+    }
+
+    #[inline]
+    pub fn read_fifo_word(&self, endpoint: usize) -> Result<u32, Dwc2Error> {
+        self.ensure_initialized()?;
+        Ok(self.read_raw(fifo(endpoint)))
+    }
+
+    pub fn discard_fifo_bytes(
+        &self,
+        _endpoint: usize,
+        byte_count: usize,
+    ) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        for _ in 0..byte_count.div_ceil(4) {
+            let _ = self.read_raw(fifo(0));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub fn ep0_in_interrupts(&self) -> Result<u32, Dwc2Error> {
+        self.ensure_initialized()?;
+        Ok(self.read_raw(diepint(0)))
+    }
+
+    #[inline]
+    pub fn ep0_out_interrupts(&self) -> Result<u32, Dwc2Error> {
+        self.ensure_initialized()?;
+        Ok(self.read_raw(doepint(0)))
+    }
+
+    pub fn acknowledge_ep0_in_interrupts(&mut self, bits: u32) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        self.write_raw(diepint(0), bits);
+        self.device_barrier();
+        Ok(())
+    }
+
+    pub fn acknowledge_ep0_out_interrupts(&mut self, bits: u32) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        self.write_raw(doepint(0), bits);
+        self.device_barrier();
+        Ok(())
+    }
+
+    fn configure_device_fifos(&mut self) -> Result<(), Dwc2Error> {
+        const RX_FIFO_WORDS: u32 = 256;
+        const EP0_TX_FIFO_WORDS: u32 = 128;
+
+        self.write_raw(GRXFSIZ, RX_FIFO_WORDS);
+        self.write_raw(
+            GNPTXFSIZ,
+            (RX_FIFO_WORDS & FIFOSIZE_STARTADDR_MASK)
+                | ((EP0_TX_FIFO_WORDS << FIFOSIZE_DEPTH_SHIFT) & FIFOSIZE_DEPTH_MASK),
+        );
+        self.device_barrier();
+
+        self.flush_rx_fifo()?;
+        self.flush_tx_fifo_all()?;
+        Ok(())
+    }
+
+    fn flush_rx_fifo(&mut self) -> Result<(), Dwc2Error> {
+        self.write_raw(GRSTCTL, GRSTCTL_RXFFLSH);
+        self.device_barrier();
+        self.wait_for_bits(
+            GRSTCTL,
+            GRSTCTL_RXFFLSH,
+            false,
+            Duration::from_millis(100),
+        )
+    }
+
+    fn flush_tx_fifo_all(&mut self) -> Result<(), Dwc2Error> {
+        self.write_raw(GRSTCTL, GRSTCTL_TXFFLSH | GRSTCTL_TXFNUM_ALL);
+        self.device_barrier();
+        self.wait_for_bits(
+            GRSTCTL,
+            GRSTCTL_TXFFLSH,
+            false,
+            Duration::from_millis(100),
+        )
+    }
+
+    fn configure_ep0_max_packet(&mut self, packet_size: usize) -> Result<(), Dwc2Error> {
+        self.ensure_initialized()?;
+        let encoded = match packet_size {
+            64 => DEPCTL0_MPS_64,
+            32 => DEPCTL0_MPS_32,
+            16 => DEPCTL0_MPS_16,
+            _ => DEPCTL0_MPS_8,
+        };
+
+        self.modify_raw(diepctl(0), |value| {
+            (value & !DEPCTL0_MPS_MASK) | encoded | DEPCTL_USBACTEP
+        });
+        self.modify_raw(doepctl(0), |value| {
+            (value & !DEPCTL0_MPS_MASK) | encoded | DEPCTL_USBACTEP
+        });
+        self.device_barrier();
+        Ok(())
+    }
+
+    fn wait_for_ep0_tx_space(&self, required_words: usize) -> Result<(), Dwc2Error> {
+        let started = uptime();
+        let timeout = Duration::from_millis(100);
+
+        loop {
+            let available = (self.read_raw(dtxfsts(0)) & DTXFSTS_INEPTFSAV_MASK) as usize;
+            if available >= required_words {
+                return Ok(());
+            }
+
+            if uptime().saturating_sub(started) >= timeout {
+                return Err(Dwc2Error::Timeout {
+                    register: dtxfsts(0),
+                    mask: required_words as u32,
+                    expected_set: true,
+                });
+            }
+
+            spin_loop();
+        }
     }
 
     #[inline(always)]

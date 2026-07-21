@@ -53,7 +53,23 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
     framebuffer.draw_line(100, 500, 350, 700, 0xFF0000);
 
+    unsafe {
+        let controller = crate::drivers::usb::USB.get_mut();
+        crate::usb::USB_DEVICE
+            .get_mut()
+            .initialize(controller)
+            .expect("USB device initialization failed");
+    }
+
     loop {
+        unsafe {
+            let controller = crate::drivers::usb::USB.get_mut();
+            crate::usb::USB_DEVICE
+                .get_mut()
+                .poll(controller)
+                .expect("USB device polling failed");
+        }
+
         let updater = crate::update::uart::UART_UPDATE.get_mut();
 
         updater.poll();
