@@ -53,39 +53,53 @@ script = '''
 #!/usr/bin/env sh
 set -eu
 
-# Prefer rustc in the same directory as this script
-DIR="$(dirname "$0")"
-if [ -x "$DIR/rustc" ]; then
-  RUSTC="$DIR/rustc"
-else
-  RUSTC="rustc"
-fi
+RUSTC="$(command -v rustc)"
+
+RUST_GDB="${RUST_GDB:-aarch64-none-elf-gdb}"
+RUST_GDB="$(command -v "$RUST_GDB")"
+
+TMUX="${TMUX_EXE:-tmux}"
+TMUX="$(command -v "$TMUX")"
 
 RUSTC_SYSROOT="$("$RUSTC" --print sysroot)"
 GDB_PYTHON_MODULE_DIRECTORY="$RUSTC_SYSROOT/lib/rustlib/etc"
 RUSTC_COMMIT_HASH="$("$RUSTC" -vV | awk '/commit-hash:/ {print $2}')"
 
-RUST_GDB="${RUST_GDB:-aarch64-none-elf-gdb}"
-TMUX="${TMUX_EXE:-tmux}"
 PORT="${GDBGUI_PORT:-5000}"
-HOST="${GDBGUI_HOST:-0.0.0.0}"
+HOST="${GDBGUI_HOST:-127.0.0.1}"
+LISTEN="${GDBGUI_LISTEN:-127.0.0.1}"
+TERMINAL_ID="${GDBGUI_TERMINAL_ID:-keywork-gdb}"
+
+PROJECT_GDBINIT="$PWD/.gdbinit"
+GDB_COMMAND_FILE="$(mktemp -t keywork-gdbfrontend.XXXXXX.gdb)"
+
+cleanup() {
+    rm -f "$GDB_COMMAND_FILE"
+}
+trap cleanup EXIT INT TERM
+
+cat >"$GDB_COMMAND_FILE" <<EOF
+directory $GDB_PYTHON_MODULE_DIRECTORY
+add-auto-load-safe-path $GDB_PYTHON_MODULE_DIRECTORY
+add-auto-load-safe-path $PROJECT_GDBINIT
+set substitute-path /rustc/$RUSTC_COMMIT_HASH $RUSTC_SYSROOT/lib/rustlib/src/rust
+source $PROJECT_GDBINIT
+EOF
 
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$GDB_PYTHON_MODULE_DIRECTORY"
 
-GDB_ARGS="
---directory=$GDB_PYTHON_MODULE_DIRECTORY
--iex 'add-auto-load-safe-path $GDB_PYTHON_MODULE_DIRECTORY'
--iex 'add-auto-load-safe-path /run/media/antoineok/DATA2/Keyboard/kernel/.gdbinit'
--iex 'set substitute-path /rustc/$RUSTC_COMMIT_HASH $RUSTC_SYSROOT/lib/rustlib/src/rust'
-"
-TMUX_TMPDIR=/home/antoine/ gdbfrontend -V \
-  -H "$HOST" \
-  -p "$PORT" \
-  -g "$RUST_GDB" \
-  -G "$GDB_ARGS" \
-  -tmux "$TMUX"
+# Clean up only this frontend's previous session.
+"$TMUX" kill-session -t "$TERMINAL_ID" 2>/dev/null || true
 
-
+gdbfrontend -V \
+    -H "$HOST" \
+    -l "$LISTEN" \
+    -p "$PORT" \
+    -g "$RUST_GDB" \
+    -G "-x $GDB_COMMAND_FILE" \
+    -tmux "$TMUX" \
+    -t "$TERMINAL_ID" \
+    -w "$PWD"
 '''
 
 [tasks.deploy-cm4]
