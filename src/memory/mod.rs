@@ -5,6 +5,8 @@ pub mod boot;
 pub mod heap;
 pub mod phys;
 
+use core::cell::UnsafeCell;
+
 use crate::fdt::{
     MemoryKind as BootMemoryKind,
     MemoryLayout as BootMemoryLayout,
@@ -431,5 +433,18 @@ impl Default for MemoryManager {
 /// Access remains unsafe, matching the existing kernel API. This can later be
 /// wrapped in the same `UnsafeCell`-based singleton abstraction as the other
 /// early-boot drivers.
-pub static mut MEMORY_MANAGER: MemoryManager = MemoryManager::new();
+pub struct MemStatic(UnsafeCell<MemoryManager>);
 
+unsafe impl Sync for MemStatic {}
+
+pub static MEMORY_MANAGER: MemStatic = MemStatic(UnsafeCell::new(MemoryManager::new()));
+
+impl MemStatic {
+    pub fn get_mut(&self) -> &mut MemoryManager {
+        unsafe { &mut *self.0.get() }
+    }
+
+    pub fn get(&self) -> &MemoryManager {
+        unsafe { &*self.0.get() }
+    }
+}

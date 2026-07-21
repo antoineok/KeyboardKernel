@@ -14,8 +14,7 @@
 
 use core::ptr;
 
-use crate::memory::boot::BOOT_ALLOCATOR;
-use crate::memory::{MemoryRegionKind, PhysAddr, PhysSize, MEMORY_MANAGER};
+use crate::memory::{MEMORY_MANAGER, MemoryRegionKind, PhysAddr, PhysSize, boot::BOOT_ALLOCATOR};
 
 /// 4 KiB page size.
 const PAGE_SIZE: u64 = 4096;
@@ -80,7 +79,7 @@ pub struct Mmu {
 impl Mmu {
     /// Allocate and zero the L1 root table.
     pub unsafe fn new() -> Self {
-        let l1_phys = BOOT_ALLOCATOR
+        let l1_phys = BOOT_ALLOCATOR.get_mut()
             .alloc(PAGE_SIZE, PAGE_SIZE)
             .expect("BOOT_ALLOCATOR: out of memory for L1 table");
 
@@ -211,7 +210,7 @@ impl Mmu {
             next_pa as *mut u64
         } else {
             // Allocate a new table page.
-            let next_pa = BOOT_ALLOCATOR
+            let next_pa = BOOT_ALLOCATOR.get_mut()
                 .alloc(PAGE_SIZE, PAGE_SIZE)
                 .expect("BOOT_ALLOCATOR: out of memory for page table");
             let next_ptr = next_pa as *mut u64;
@@ -237,7 +236,7 @@ impl Mmu {
 pub unsafe fn map_kernel_and_mmio() -> Mmu {
     let mut mmu = Mmu::new();
 
-    let mm = MEMORY_MANAGER.map();
+    let mm = MEMORY_MANAGER.get().map();
 
     // Map all usable RAM as normal memory.
     for region in mm.iter() {

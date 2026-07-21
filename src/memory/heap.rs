@@ -10,6 +10,7 @@
 //! and allow `Vec`, `Box`, etc. to work without leaking everything.
 
 use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
 use core::ptr::null_mut;
 
 use crate::memory::phys::PHYS_ALLOCATOR;
@@ -29,7 +30,7 @@ struct AllocHeader {
     size: usize, // total size of this allocation (header + payload + padding)
 }
 
-struct KernelHeap {
+pub struct KernelHeap {
     start: usize,
     end: usize,
     free_list: *mut FreeBlock,
@@ -57,7 +58,7 @@ impl KernelHeap {
         }
 
         let pages = HEAP_PAGES;
-        let pa = PHYS_ALLOCATOR
+        let pa = PHYS_ALLOCATOR.get_mut()
             .alloc_contiguous(pages)
             .expect("KernelHeap: failed to allocate heap region from PHYS_ALLOCATOR");
 
@@ -244,18 +245,31 @@ fn align_up(addr: usize, align: usize) -> usize {
     let mask = align - 1;
     (addr + mask) & !mask
 }
+pub struct KernelHeapStatic(UnsafeCell<KernelHeap>);
 
-static mut KERNEL_HEAP: KernelHeap = KernelHeap::new();
+unsafe impl Sync for KernelHeapStatic {}
+
+pub static KERNEL_HEAP: KernelHeapStatic = KernelHeapStatic(UnsafeCell::new(KernelHeap::new()));
+
+impl KernelHeapStatic {
+    pub fn get_mut(&self) -> &mut KernelHeap {
+        unsafe { &mut *self.0.get() }
+    }
+
+    pub fn get(&self) -> &KernelHeap {
+        unsafe { &*self.0.get() }
+    }
+}
 
 pub struct KernelAllocator;
 
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        KERNEL_HEAP.alloc(layout)
+        KERNEL_HEAP.get_mut().alloc(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        KERNEL_HEAP.dealloc(ptr, layout)
+        KERNEL_HEAP.get_mut().dealloc(ptr, layout)
     }
 }
 
@@ -264,5 +278,5 @@ static GLOBAL_ALLOCATOR: KernelAllocator = KernelAllocator;
 
 /// Public init entry for the heap.
 pub unsafe fn init_heap() {
-    KERNEL_HEAP.init();
+    KERNEL_HEAP.get_mut().init();
 }

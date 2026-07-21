@@ -9,6 +9,8 @@
 //!
 //! Must only be used during early boot, before a real page allocator exists.
 
+use core::cell::UnsafeCell;
+
 use super::{PhysAddr, PhysSize};
 
 pub struct BootAllocator {
@@ -96,42 +98,18 @@ impl BootAllocator {
         (addr + mask) & !mask
     }
 }
+pub struct BootStatic(UnsafeCell<BootAllocator>);
 
-/// Global boot allocator instance.
-///
-/// Typical usage in your init code:
-///
-/// ```ignore
-/// use crate::memory::{MEMORY_MANAGER, MemoryRegionKind};
-/// use crate::memory::boot::BOOT_ALLOCATOR;
-///
-/// unsafe {
-///     // Example: choose a range starting after __heap_end,
-///     // inside the first Usable region.
-///     extern "C" {
-///         static __heap_end: u8;
-///     }
-///
-///     let base = &__heap_end as *const u8 as u64;
-///     let mm = MEMORY_MANAGER.map();
-///
-///     let mut limit = None;
-///     for region in mm.iter() {
-///         if region.kind == MemoryRegionKind::Usable
-///             && base >= region.start
-///             && base < region.end()
-///         {
-///             limit = Some(region.end());
-///             break;
-///         }
-///     }
-///
-///     let limit = limit.expect("No usable region for boot allocator");
-///     BOOT_ALLOCATOR.init(base, limit);
-///
-///     let pt_phys = BOOT_ALLOCATOR
-///         .alloc(0x1000, 0x1000)
-///         .expect("boot alloc failed");
-/// }
-/// ```
-pub static mut BOOT_ALLOCATOR: BootAllocator = BootAllocator::new();
+unsafe impl Sync for BootStatic {}
+
+pub static BOOT_ALLOCATOR: BootStatic = BootStatic(UnsafeCell::new(BootAllocator::new()));
+
+impl BootStatic {
+    pub fn get_mut(&self) -> &mut BootAllocator {
+        unsafe { &mut *self.0.get() }
+    }
+
+    pub fn get(&self) -> &BootAllocator {
+        unsafe { &*self.0.get() }
+    }
+}

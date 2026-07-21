@@ -11,6 +11,8 @@
 //! - Bit = 0 → free
 //! - Bit = 1 → allocated / reserved
 
+use core::cell::UnsafeCell;
+
 use crate::{early_timeit};
 
 use super::boot::BOOT_ALLOCATOR;
@@ -83,7 +85,7 @@ impl PhysAllocator {
         let bitmap_u64s = (bitmap_bits + 63) / 64;
         let bitmap_bytes = (bitmap_u64s * core::mem::size_of::<u64>()) as u64;
 
-        let bitmap_phys = BOOT_ALLOCATOR
+        let bitmap_phys = BOOT_ALLOCATOR.get_mut()
             .alloc(bitmap_bytes, 8)
             .expect("PhysAllocator: failed to allocate bitmap from boot allocator");
 
@@ -330,4 +332,18 @@ impl PhysAllocator {
     }
 }
 
-pub static mut PHYS_ALLOCATOR: PhysAllocator = PhysAllocator::new();
+pub struct PhysStatic(UnsafeCell<PhysAllocator>);
+
+unsafe impl Sync for PhysStatic {}
+
+pub static PHYS_ALLOCATOR: PhysStatic = PhysStatic(UnsafeCell::new(PhysAllocator::new()));
+
+impl PhysStatic {
+    pub fn get_mut(&self) -> &mut PhysAllocator {
+        unsafe { &mut *self.0.get() }
+    }
+
+    pub fn get(&self) -> &PhysAllocator {
+        unsafe { &*self.0.get() }
+    }
+}

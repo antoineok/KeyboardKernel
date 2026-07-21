@@ -1,3 +1,5 @@
+use core::cell::UnsafeCell;
+
 use crate::fdt::AliasEntry;
 
 use super::address::Address;
@@ -35,11 +37,22 @@ impl GpioRegisters {
     }
 }
 
-static mut GPIO_REGS: GpioRegisters = GpioRegisters::new();
+pub struct GpioRegsStatic(UnsafeCell<GpioRegisters>);
 
-pub const fn regs() -> &'static mut GpioRegisters {
-    unsafe { &mut GPIO_REGS }
+unsafe impl Sync for GpioRegsStatic {}
+
+pub static GPIO_REGS: GpioRegsStatic = GpioRegsStatic(UnsafeCell::new(GpioRegisters::new()));
+
+impl GpioRegsStatic {
+    pub const fn get_mut(&self) -> &mut GpioRegisters {
+        unsafe { &mut *self.0.get() }
+    }
+
+    pub const fn get(&self) -> &GpioRegisters {
+        unsafe { &*self.0.get() }
+    }
 }
+
 
 #[derive(Copy, Clone, Debug)]
 pub enum GpioFunction {
@@ -67,14 +80,14 @@ pub struct GpioPin {
 impl GpioPin {
     pub const fn new(pin: u32) -> Self {
         assert!(pin <= GPIO_MAX_PIN);
-        if regs().sel_0.0 == 0 {
+        if GPIO_REGS.get().sel_0.0 == 0 {
             panic!("GPIO registers not initialized");
         }
         GpioPin { pin }
     }
 
     pub fn set_function(&self, func: GpioFunction) {
-        let reg = regs().sel_0.offset(((self.pin / 10) * 4) as usize);
+        let reg = GPIO_REGS.get().sel_0.offset(((self.pin / 10) * 4) as usize);
         let shift = (self.pin % 10) * 3;
         let mut val = reg.read();
         val &= !(0b111 << shift);
@@ -83,7 +96,7 @@ impl GpioPin {
     }
 
     pub fn set_pull(&self, pull: GpioPull) {
-        let reg = regs().pup_pdn_0.offset(((self.pin / 16) * 4) as usize);
+        let reg = GPIO_REGS.get().pup_pdn_0.offset(((self.pin / 16) * 4) as usize);
         let shift = (self.pin % 16) * 2;
         let mut val = reg.read();
         val &= !(0b11 << shift);
@@ -92,12 +105,12 @@ impl GpioPin {
     }
 
     pub fn set_high(&self) {
-        let reg = regs().set_0.offset(((self.pin / 32) * 4) as usize);
+        let reg = GPIO_REGS.get().set_0.offset(((self.pin / 32) * 4) as usize);
         reg.write(1 << (self.pin % 32));
     }
 
     pub fn set_low(&self) {
-        let reg = regs().clr_0.offset(((self.pin / 32) * 4) as usize);
+        let reg = GPIO_REGS.get().clr_0.offset(((self.pin / 32) * 4) as usize);
         reg.write(1 << (self.pin % 32));
     }
 }

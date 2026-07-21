@@ -37,7 +37,7 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         }
     });
 
-    let gpio = crate::drivers::gpio::regs();
+    let gpio = GPIO_REGS.get_mut();
     early_timeit!("GPIO init", { gpio.init(boot_info.get("gpio")) });
 
     let uart = UART.get_mut();
@@ -77,11 +77,11 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     //bt.init(mmio_table.entries.get("bluetooth"));
 
     early_timeit!("Memory manager init from FDT", {
-        MEMORY_MANAGER.init_from_boot_layout(&boot_info.memory);
+        MEMORY_MANAGER.get_mut().init_from_boot_layout(&boot_info.memory);
     });
 
     early_timeit!("Kernel memory reservation", {
-        let mm = &mut MEMORY_MANAGER;
+        let mm = MEMORY_MANAGER.get_mut();
 
         // Kernel image: from load address up to _end
         // If you have _kernel_start, use that. Otherwise, assume 0x80000 for now:
@@ -126,13 +126,14 @@ unsafe fn init_boot_allocator() {
 
     // Find a usable region that contains `base`
     let limit = &__heap_end as *const u8 as u64;
-    BOOT_ALLOCATOR.init(base, limit);
+    let allocator = BOOT_ALLOCATOR.get_mut();
+    allocator.init(base, limit);
 }
 
 unsafe fn init_phys_allocator() {
-    let mm = MEMORY_MANAGER.map();
+    let mm = MEMORY_MANAGER.get().map();
     early_timeit!("Physical allocator init", {
-        PHYS_ALLOCATOR.init_from_memory_map(mm);
+        PHYS_ALLOCATOR.get_mut().init_from_memory_map(mm);
     });
 
     // 6) Kernel heap
