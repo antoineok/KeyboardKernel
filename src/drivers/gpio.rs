@@ -1,4 +1,4 @@
-use crate::fdt::aliases::AliasEntry;
+use crate::fdt::AliasEntry;
 
 use super::address::Address;
 

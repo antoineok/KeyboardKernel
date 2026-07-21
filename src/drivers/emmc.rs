@@ -348,7 +348,7 @@ impl Emmc {
     //----------------------------------------------------------------------------------------------
     // Public init
     //----------------------------------------------------------------------------------------------
-    pub fn init(&mut self, mmio_entry: Option<crate::fdt::aliases::AliasEntry>) {
+    pub fn init(&mut self, mmio_entry: Option<crate::fdt::AliasEntry>) {
         let base_addr = match mmio_entry {
             Some(entry) => entry.arm_phys,
             None => {

@@ -5,7 +5,7 @@ use crate::{
         address::Address,
         gpio::{GpioFunction, GpioPin},
     },
-    fdt::aliases::AliasEntry,
+    fdt::AliasEntry,
     time::time_manager,
     uart_println,
 };

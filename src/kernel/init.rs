@@ -1,7 +1,5 @@
-use fdt::Fdt;
-
 use crate::{
-    drivers::{emmc::EMMC, mailbox, uart::UART, watchdog}, fdt::aliases::AliasesTable, graphics::framebuffer::FRAMEBUFFER, info, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}, timeit
+    drivers::{emmc::EMMC, mailbox, uart::UART, watchdog}, early_timeit, fdt::{AliasTable, BootInfo}, graphics::framebuffer::FRAMEBUFFER, info, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}
 };
 
 extern "C" {
@@ -20,17 +18,30 @@ extern "C" {
     static __heap_end: u8;
 }
 
-pub unsafe fn early_el1_init(device_tree_ptr: usize) {
-    let fdt = unsafe { Fdt::from_ptr(device_tree_ptr as *const u8).unwrap() };
+const REQUIRED_ALIASES: &[&str] = &[
+    "gpio",
+    "aux",
+    "mailbox",
+    "mmc0",
+    "watchdog",
+];
 
-    let mmio_table = AliasesTable::new(&fdt);
+pub unsafe fn early_el1_init(device_tree_ptr: usize) {
+    let mut boot_info = early_timeit!("Parse boot FDT", {
+        unsafe {
+            BootInfo::from_ptr(
+                device_tree_ptr as *const u8,
+                REQUIRED_ALIASES,
+            )
+            .expect("Invalid boot FDT")
+        }
+    });
 
     let gpio = crate::drivers::gpio::regs();
-    gpio.init(mmio_table.get("gpio"));
+    early_timeit!("GPIO init", { gpio.init(boot_info.get("gpio")) });
 
     let uart = UART.get_mut();
-    uart.init(mmio_table.get("aux"));
-    info!("Logger initialized");
+    early_timeit!("UART init", { uart.init(boot_info.get("aux")) });
 
     #[cfg(feature = "jtag")]
     {
@@ -39,24 +50,24 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     }
 
     let mailbox = mailbox::MAILBOX.get();
-    timeit!("Mailbox init", { mailbox.init(mmio_table.get("mailbox")) });
+    early_timeit!("Mailbox init", { mailbox.init(boot_info.get("mailbox")) });
 
     let framebuffer = FRAMEBUFFER.get();
-    timeit!("Framebuffer init", {
+    early_timeit!("Framebuffer init", {
         framebuffer.init();
     });
 
     let emmc = &mut EMMC.get_mut();
-    timeit!("eMMC init from FDT", {
-        emmc.init(mmio_table.get("mmc0"));
+    early_timeit!("eMMC init from FDT", {
+        emmc.init(boot_info.get("mmc0"));
     });
     if !emmc.is_initialized() {
         panic!("EMMC FAILED TO INITIALIZE!");
     }
 
     let watchdog = crate::drivers::watchdog::WATCHDOG.get_mut();
-    timeit!("Watchdog init from FDT", {
-        watchdog.init(mmio_table.get("watchdog"));
+    early_timeit!("Watchdog init from FDT", {
+        watchdog.init(boot_info.get("watchdog"));
     });
     if !watchdog.is_initialized() {
         panic!("Watchdog FAILED TO INITIALIZE!");
@@ -65,11 +76,11 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
     //bt.init(mmio_table.entries.get("bluetooth"));
 
-    timeit!("Memory manager init from FDT", {
-        MEMORY_MANAGER.init_from_fdt(&fdt);
+    early_timeit!("Memory manager init from FDT", {
+        MEMORY_MANAGER.init_from_boot_layout(&boot_info.memory);
     });
 
-    timeit!("Kernel memory reservation", {
+    early_timeit!("Kernel memory reservation", {
         let mm = &mut MEMORY_MANAGER;
 
         // Kernel image: from load address up to _end
@@ -98,13 +109,13 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         mm.map_mut().normalize();
     });
 
-    timeit!("Boot allocator init", {
+    early_timeit!("Boot allocator init", {
         init_boot_allocator();
     });
 
     init_phys_allocator();
 
-        timeit!("VFS init", {
+    early_timeit!("VFS init", {
         init_vfs();
     });
 
@@ -120,21 +131,14 @@ unsafe fn init_boot_allocator() {
 
 unsafe fn init_phys_allocator() {
     let mm = MEMORY_MANAGER.map();
-    timeit!("Physical allocator init", {
+    early_timeit!("Physical allocator init", {
         PHYS_ALLOCATOR.init_from_memory_map(mm);
     });
-    if let Some((start, end, bytes)) = PHYS_ALLOCATOR.info() {
-        info!(
-            "PhysAllocator arena: [0x{:016x} - 0x{:016x}) size = {:#x}",
-            start, end, bytes
-        );
-    }
 
     // 6) Kernel heap
-    timeit!("Initialize the heap", {
+    early_timeit!("Initialize the heap", {
         heap::init_heap();
     });
-    info!("Kernel heap initialized.");
 }
 
 pub fn init_storage_slices() {

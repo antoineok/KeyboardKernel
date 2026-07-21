@@ -11,9 +11,7 @@
 //! - Bit = 0 → free
 //! - Bit = 1 → allocated / reserved
 
-use core::cmp::{max, min};
-
-use crate::timeit;
+use crate::{early_timeit};
 
 use super::boot::BOOT_ALLOCATOR;
 use super::{MemoryMap, MemoryRegionKind, PhysAddr, PhysSize};
@@ -103,7 +101,7 @@ impl PhysAllocator {
         self.initialized = true;
 
         // 4) Mark all Usable regions as free.
-        timeit!("PhysAllocator: mark usable regions", {
+        early_timeit!("PhysAllocator: mark usable regions", {
             for region in mm.iter() {
                 if region.kind == MemoryRegionKind::Usable {
                     self.mark_range(region.start, region.end(), true);

@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::{drivers::address::Address, fdt::aliases::AliasEntry, info};
+use crate::{drivers::address::Address, fdt::AliasEntry, info};
 
 const MBOX_RESPONSE: u32 = 0x80000000;
 const MBOX_FULL: u32 = 0x80000000;
@@ -72,9 +72,7 @@ impl MailboxBuffer {
             Some(entry) => entry.arm_phys,
             None => panic!("Mailbox MMIO entry not found"),
         };
-
-        info!("Mailbox MMIO entry data: {:?}", mmio.unwrap());
-
+        
         self.mbox_read.set_address(base_addr);
         self.mbox_poll.set_address(base_addr + 0x10);
         self.mbox_sender.set_address(base_addr + 0x14);

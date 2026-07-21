@@ -7,9 +7,16 @@ script = [
 
 [tasks.run-qemu]
 dependencies = ["build-img"]
-script = [
-    "qemu-system-aarch64 -M raspi4b,secure=off,dtb=\"bcm2711-rpi-cm4.dtb\" -chardev file,id=pl011,path=pl011_uart.log -serial chardev:pl011 -serial stdio -kernel kernel8.img",
-]
+script = '''
+    qemu-system-aarch64 -M raspi4b \
+          -kernel kernel8.img \
+          -dtb bcm2711-rpi-cm4.dtb \
+          -drive file=emmc.img,if=none,format=raw,id=emmc-img \
+          -device emmc,drive=emmc-img,bus=/generic-sdhci/sd-bus \
+          -chardev file,id=pl011,path=pl011_uart.log \
+          -serial chardev:pl011 \
+          -serial stdio
+'''
 
 [tasks.build-img-jtag]
 dependencies = ["clear"]
@@ -20,9 +27,17 @@ script = [
 
 [tasks.run-qemu-jtag]
 dependencies = ["build-img-jtag"]
-script = [
-    "qemu-system-aarch64 -M raspi4b,secure=off,dtb=\"bcm2711-rpi-cm4.dtb\" -s -S -chardev file,id=pl011,path=pl011_uart.log -serial chardev:pl011 -serial stdio -kernel kernel8.img",
-]
+script = '''
+qemu-system-aarch64 -M raspi4b \
+          -kernel kernel8.img \
+          -dtb bcm2711-rpi-cm4-qemu.dtb \
+          -drive file=emmc.img,if=none,format=raw,id=emmc-img \
+          -device emmc,drive=emmc-img,bus=/generic-sdhci/sd-bus \
+          -chardev file,id=pl011,path=pl011_uart.log \
+          -serial chardev:pl011 \
+          -serial stdio \
+          -s -S
+'''
 
 [tasks.clear]
 script = ["cargo clean", "rm -f kernel8.img"]

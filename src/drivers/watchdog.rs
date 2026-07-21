@@ -1,4 +1,7 @@
+use crate::early_timeit;
+
 use super::address::Address;
+use crate::fdt::AliasEntry;
 use core::cell::UnsafeCell;
 
 const PM_PASSWORD: u32 = 0x5a00_0000;
@@ -40,17 +43,26 @@ impl Watchdog {
         }
     }
 
-    pub fn init(&mut self, mmio_entry: Option<crate::fdt::aliases::AliasEntry>) {
-        let base_addr = match mmio_entry {
-            Some(entry) => entry.arm_phys,
-            None => panic!("Watchdog/PM MMIO entry not found in device tree"),
-        };
+    pub fn init(&mut self, mmio_entry: Option<AliasEntry>) {
+        let base_addr = mmio_entry
+            .expect("Watchdog/PM MMIO entry not found in device tree")
+            .arm_phys;
 
-        self.base.set_address(base_addr);
-        self.rstc = self.base.offset(PM_RSTC_OFFSET);
-        self.wdog = self.base.offset(PM_WDOG_OFFSET);
+        early_timeit!("Watchdog set base", {
+            self.base.set_address(base_addr);
+        });
 
-        self.initialized = true;
+        early_timeit!("Watchdog RSTC offset", {
+            self.rstc = self.base.offset(PM_RSTC_OFFSET);
+        });
+
+        early_timeit!("Watchdog WDOG offset", {
+            self.wdog = self.base.offset(PM_WDOG_OFFSET);
+        });
+
+        early_timeit!("Watchdog initialized flag", {
+            self.initialized = true;
+        });
     }
 
     pub fn reboot(&self) -> ! {
