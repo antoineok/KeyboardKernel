@@ -9,10 +9,29 @@ opt-level = 0
 debug = true
 lto = false
 
+# Final production/performance measurements
 [profile.release]
 panic = "abort"
+opt-level = 3
+debug = 0
+strip = "none"
+lto = "fat"
+codegen-units = 1
+incremental = false
+debug-assertions = false
+overflow-checks = false
 
-lto = true
+# Optimized build intended for GDB
+[profile.gdb_release]
+inherits = "release"
+
+# Still optimized, but less destructive to source-level debugging.
+opt-level = 2
+debug = 2
+strip = "none"
+lto = false
+codegen-units = 16
+incremental = false
 
 [[bin]]
 name = "kernel"

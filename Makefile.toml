@@ -1,8 +1,8 @@
 [tasks.build-img]
 dependencies = ["clear"]
 script = [
-    "cargo build",
-    "aarch64-none-elf-objcopy -O binary target/aarch64-unknown-none/debug/kernel kernel8.img",
+    "cargo build --profile release",
+    "aarch64-none-elf-objcopy -O binary target/aarch64-unknown-none/release/kernel kernel8.img",
 ]
 
 [tasks.run-qemu]
