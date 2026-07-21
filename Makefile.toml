@@ -46,7 +46,10 @@ script = ["cargo clean", "rm -f kernel8.img"]
 script = ["openocd"]
 
 [tasks.gdb]
-script = "RUST_GDB=aarch64-none-elf-gdb rust-gdb -iex \"add-auto-load-safe-path /run/media/antoineok/DATA2/Keyboard/kernel/.gdbinit\""
+script = '''
+RUST_GDB=aarch64-none-elf-gdb exec rust-gdb \
+  -x "${CARGO_MAKE_WORKING_DIRECTORY}/.gdbinit"
+'''
 
 [tasks.gdbgui]
 script = '''
