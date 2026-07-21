@@ -201,10 +201,9 @@ impl Bluetooth {
     }
 
     pub fn init(&mut self, mmio_entry: Option<&AliasEntry>) {
-        let base_addr = match mmio_entry {
-            Some(entry) => entry.arm_phys,
-            None => panic!("UART0 MMIO entry not found in device tree"),
-        };
+        let base_addr = mmio_entry
+            .unwrap_or_else(|| panic!("UART0 MMIO entry not found in device tree"))
+            .arm_phys;
 
         self.uart0_dr.set_address(base_addr);
         self.uart0_fr = self.uart0_dr.offset(0x18);

@@ -349,13 +349,9 @@ impl Emmc {
     // Public init
     //----------------------------------------------------------------------------------------------
     pub fn init(&mut self, mmio_entry: Option<crate::fdt::AliasEntry>) {
-        let base_addr = match mmio_entry {
-            Some(entry) => entry.arm_phys,
-            None => {
-                warn!("EMMC MMIO entry not found in device tree. Use alias mmc0 (/emmc2bus/mmc@7e340000).");
-                return;
-            }
-        };
+        let base_addr = mmio_entry
+            .unwrap_or_else(|| panic!("EMMC MMIO entry not found in device tree"))
+            .arm_phys;
 
         self.base.set_address(base_addr);
 

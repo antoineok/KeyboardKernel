@@ -45,8 +45,7 @@ impl Watchdog {
 
     pub fn init(&mut self, mmio_entry: Option<AliasEntry>) {
         let base_addr = mmio_entry
-            .expect("Watchdog/PM MMIO entry not found in device tree")
-            .arm_phys;
+            .unwrap_or_else(|| panic!("Watchdog/PM MMIO entry not found in device tree")).arm_phys;
 
         early_timeit!("Watchdog set base", {
             self.base.set_address(base_addr);

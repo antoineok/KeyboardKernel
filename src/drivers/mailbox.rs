@@ -68,10 +68,9 @@ impl MailboxBuffer {
     }
 
     pub fn init(&mut self, mmio: Option<AliasEntry>) {
-        let base_addr = match mmio {
-            Some(entry) => entry.arm_phys,
-            None => panic!("Mailbox MMIO entry not found"),
-        };
+        let base_addr = mmio
+            .unwrap_or_else(|| panic!("Mailbox MMIO entry not found in device tree"))
+            .arm_phys;
         
         self.mbox_read.set_address(base_addr);
         self.mbox_poll.set_address(base_addr + 0x10);

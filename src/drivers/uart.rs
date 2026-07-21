@@ -65,10 +65,9 @@ impl Uart {
     }
 
     pub fn init(&mut self, mmio_entry: Option<crate::fdt::AliasEntry>) {
-        let base_addr = match mmio_entry {
-            Some(entry) => entry.arm_phys,
-            None => panic!("UART MMIO entry not found in device tree"),
-        };
+        let base_addr = mmio_entry
+            .unwrap_or_else(|| panic!("UART MMIO entry not found in device tree"))
+            .arm_phys;
         // Initialize MMIO addresses
         self.aux_base.set_address(base_addr);
         self.aux_enable = self.aux_base.offset(4);
