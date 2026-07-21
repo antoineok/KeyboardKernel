@@ -27,7 +27,7 @@ SECTIONS
     /* Reserve 64 KiB for the el1 stack */
     . = ALIGN(16);
     __el1_stack_start = .;
-    . += 64K;
+    . += 256K;
     __el1_stack_top = .;
 
     /* Align to 4 KiB (page boundary for safety) */
