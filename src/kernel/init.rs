@@ -116,18 +116,17 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
 
     init_phys_allocator();
 
+    early_timeit!("USB power domain", {
+        if !mailbox.set_power_state(
+            mailbox::POWER_DEVICE_USB_HCD,
+            true,
+            true,
+        ) {
+            panic!("Failed to power the USB controller");
+        }
+    });
+
     let usb = crate::drivers::usb::USB.get_mut();
-
-
-    let mailbox = mailbox::MAILBOX.get();
-
-    if !mailbox.set_power_state(
-        mailbox::MBOX_POWER_USB_HCD,
-        true,
-        true,
-    ) {
-        panic!("Failed to power USB HCD");
-    }
 
     early_timeit!("DWC2 probe", {
         usb.init(boot_info.get("usb"))

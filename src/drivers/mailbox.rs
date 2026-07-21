@@ -19,6 +19,7 @@ pub const MBOX_CH_TOUCH: u8 = 6;
 pub const MBOX_CH_COUNT: u8 = 7;
 pub const MBOX_CH_PROP: u8 = 8; // Request from ARM for response by VideoCore
 pub const MBOX_TAG_SETPOWER: u32 = 0x28001;
+pub const POWER_DEVICE_USB_HCD: u32 = 3;
 pub const MBOX_TAG_SETCLKRATE: u32 = 0x38002;
 
 pub const MBOX_TAG_SETPHYWH: u32 = 0x48003;
@@ -30,8 +31,6 @@ pub const MBOX_TAG_GETFB: u32 = 0x40001;
 pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 
 pub const MBOX_TAG_LAST: u32 = 0;
-
-pub const MBOX_POWER_USB_HCD: u32 = 3;
 
 
 #[repr(C, align(16))]
