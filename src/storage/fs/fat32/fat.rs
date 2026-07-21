@@ -1,4 +1,4 @@
-use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
+use crate::storage::block::{BlockDevice, SECTOR_SIZE};
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
 
 /// FAT32 uses 28 bits of the 32-bit entry.

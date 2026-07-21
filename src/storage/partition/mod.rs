@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
 
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 

@@ -6,10 +6,9 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
+use crate::storage::block::{BlockDevice, BlockError};
 use crate::storage::fs::fat32::file::FatFile;
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
-use crate::{info, warn};
 
 use crate::reader::Reader; // adjust path if your Reader is elsewhere
 

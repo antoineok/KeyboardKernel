@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::{drivers::address::Address, fdt::AliasEntry, info};
+use crate::{drivers::address::Address, fdt::AliasEntry};
 
 const MBOX_RESPONSE: u32 = 0x80000000;
 const MBOX_FULL: u32 = 0x80000000;

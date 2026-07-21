@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 use crate::storage::fs::fat32::fat::FatLink;
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
-use crate::{info, warn};
+use crate::info;
 
 #[derive(Clone, Debug)]
 pub struct FatFile {
@@ -364,7 +364,7 @@ impl Fat32Volume {
         dev.read_sector(dirent_lba, &mut sector)
             .map_err(Self::map_block_err)?;
 
-        let old_size = u32::from_le_bytes([
+        let _old_size = u32::from_le_bytes([
             sector[dirent_off + 28],
             sector[dirent_off + 29],
             sector[dirent_off + 30],

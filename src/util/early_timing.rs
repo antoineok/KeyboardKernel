@@ -1,6 +1,5 @@
 // src/util/early_timing.rs
 
-use crate::util::timing::TimeSpan;
 use core::{
     cell::UnsafeCell,
     time::Duration,
