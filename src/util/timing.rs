@@ -10,6 +10,11 @@ impl TimeSpan {
     pub fn start() -> Self {
         TimeSpan { start: uptime() }
     }
+    
+    #[inline(always)]
+    pub const fn started_at(&self) -> Duration {
+        self.start
+    }
 
     #[inline(always)]
     pub fn elapsed(&self) -> Duration {
