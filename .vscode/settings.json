@@ -6,5 +6,8 @@
     "rust-analyzer.check.extraArgs": [
         "--target",
         "aarch64-unknown-none"
-    ]
+    ],
+    "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
+    "nixEnvSelector.useFlakes": true,
+    "nixEnvSelector.flakeShell": "default"
 }
