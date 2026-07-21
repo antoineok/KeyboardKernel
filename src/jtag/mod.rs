@@ -17,6 +17,12 @@ pub unsafe fn wait_for_debugger() {
 #[no_mangle]
 #[inline(never)] // Prevent inlining to ensure a stable breakpoint location
 pub extern "C" fn breakpoint() { /* nothing */
+    unsafe {
+        core::arch::asm!(
+            "nop",
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 pub fn init_jtag() {
