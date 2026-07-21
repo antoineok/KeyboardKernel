@@ -27,7 +27,7 @@ const REQUIRED_ALIASES: &[&str] = &[
 ];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
-    let mut boot_info = early_timeit!("Parse boot FDT", {
+    let boot_info = early_timeit!("Parse boot FDT", {
         unsafe {
             BootInfo::from_ptr(
                 device_tree_ptr as *const u8,
