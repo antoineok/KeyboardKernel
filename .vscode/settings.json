@@ -1,11 +1,18 @@
 {
+    "rust-analyzer.cargo.target": "aarch64-unknown-none",
+    "rust-analyzer.check.targets": [
+        "aarch64-unknown-none"
+    ],
+
+    "rust-analyzer.cargo.allTargets": false,
     "rust-analyzer.check.allTargets": false,
+
+    "rust-analyzer.cargo.configPath": ".cargo/config.toml",
+    "rust-analyzer.check.command": "check",
+
+    "rust-analyzer.cargo.targetDir": true,
     "rust-analyzer.cargo.features": [
         "jtag"
-    ],
-    "rust-analyzer.check.extraArgs": [
-        "--target",
-        "aarch64-unknown-none"
     ],
     "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
     "nixEnvSelector.useFlakes": true,
