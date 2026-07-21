@@ -24,13 +24,11 @@ overflow-checks = false
 # Optimized build intended for GDB
 [profile.gdb_release]
 inherits = "release"
-
-# Still optimized, but less destructive to source-level debugging.
-opt-level = 2
+opt-level = 1
 debug = 2
 strip = "none"
 lto = false
-codegen-units = 16
+codegen-units = 1
 incremental = false
 
 [[bin]]
