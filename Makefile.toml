@@ -21,8 +21,8 @@ script = '''
 [tasks.build-img-jtag]
 dependencies = ["clear"]
 script = [
-    "cargo build --features jtag",
-    "aarch64-none-elf-objcopy -O binary target/aarch64-unknown-none/debug/kernel kernel8.img",
+    "cargo build --profile gdb_release --features jtag",
+    "aarch64-none-elf-objcopy -O binary target/aarch64-unknown-none/gdb_release/kernel kernel8.img",
 ]
 
 [tasks.run-qemu-jtag]

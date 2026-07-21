@@ -1,5 +1,9 @@
+set pagination off
+set confirm off
+set target-async on
+
 # Load your ELF file (with symbols)
-file target/aarch64-unknown-none/debug/kernel
+file target/aarch64-unknown-none/gdb_release/kernel
 
 
 python
@@ -37,6 +41,7 @@ end
 target extended-remote localhost:3333
 
 b breakpoint
+hbreak kernel::panic::panic
 
 # Show where the flag lives (for verification)
 info address DEBUGGER_FLAG
