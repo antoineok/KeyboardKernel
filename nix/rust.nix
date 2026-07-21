@@ -4,6 +4,7 @@ rust-bin.nightly.latest.default.override {
     "rustfmt"
     "clippy"
     "rust-src"
+    "rust-analyzer"
   ];
   targets = [
     "aarch64-unknown-none"
