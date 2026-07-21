@@ -11,6 +11,8 @@
 //! - No external crates.
 //! - Debug helpers are kept (can gate later).
 
+#![allow(dead_code)]
+
 use core::cell::UnsafeCell;
 use core::time::Duration;
 

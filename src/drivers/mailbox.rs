@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use core::cell::UnsafeCell;
 
 use crate::{drivers::address::Address, fdt::AliasEntry};

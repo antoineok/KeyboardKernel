@@ -12,6 +12,8 @@
 //! Higher-half can be added later by changing KERNEL_VIRT_OFFSET
 //! and adding extra mappings for the kernel region.
 
+#![allow(dead_code)]
+
 use core::ptr;
 
 use crate::memory::{MEMORY_MANAGER, MemoryRegionKind, PhysAddr, PhysSize, boot::BOOT_ALLOCATOR};
