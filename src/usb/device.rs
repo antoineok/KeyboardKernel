@@ -3,10 +3,10 @@ use core::cell::UnsafeCell;
 use crate::drivers::usb::{Dwc2, Dwc2Error};
 
 use super::descriptors::{
-    CONFIGURATION_DESCRIPTOR, CONFIGURATION_DESCRIPTOR_TYPE, DEVICE_DESCRIPTOR,
-    DEVICE_DESCRIPTOR_TYPE, DEVICE_QUALIFIER_DESCRIPTOR,
+    string_descriptor, CONFIGURATION_DESCRIPTOR, CONFIGURATION_DESCRIPTOR_TYPE,
+    DEVICE_DESCRIPTOR, DEVICE_DESCRIPTOR_TYPE, DEVICE_QUALIFIER_DESCRIPTOR,
     DEVICE_QUALIFIER_DESCRIPTOR_TYPE, OTHER_SPEED_CONFIGURATION_DESCRIPTOR,
-    OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE,
+    OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE, STRING_DESCRIPTOR_TYPE,
 };
 
 const REQUEST_DIRECTION_IN: u8 = 0x80;
@@ -285,10 +285,17 @@ impl UsbDevice {
             GET_DESCRIPTOR if setup.direction_in() => {
                 let descriptor_type = (setup.value >> 8) as u8;
                 let descriptor_index = setup.value as u8;
+                let language_id = setup.index;
 
                 let descriptor: &[u8] = match (descriptor_type, descriptor_index) {
                     (DEVICE_DESCRIPTOR_TYPE, 0) => &DEVICE_DESCRIPTOR,
                     (CONFIGURATION_DESCRIPTOR_TYPE, 0) => &CONFIGURATION_DESCRIPTOR,
+                    (STRING_DESCRIPTOR_TYPE, index) => {
+                        match string_descriptor(index, language_id) {
+                            Some(descriptor) => descriptor,
+                            None => return self.stall(controller),
+                        }
+                    }
                     (DEVICE_QUALIFIER_DESCRIPTOR_TYPE, 0) => &DEVICE_QUALIFIER_DESCRIPTOR,
                     (OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE, 0) => {
                         &OTHER_SPEED_CONFIGURATION_DESCRIPTOR
@@ -434,3 +441,4 @@ impl UsbDeviceStatic {
 }
 
 pub static USB_DEVICE: UsbDeviceStatic = UsbDeviceStatic::new();
+

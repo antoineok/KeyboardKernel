@@ -6,6 +6,7 @@
 
 pub const DEVICE_DESCRIPTOR_TYPE: u8 = 0x01;
 pub const CONFIGURATION_DESCRIPTOR_TYPE: u8 = 0x02;
+pub const STRING_DESCRIPTOR_TYPE: u8 = 0x03;
 pub const DEVICE_QUALIFIER_DESCRIPTOR_TYPE: u8 = 0x06;
 pub const OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE: u8 = 0x07;
 
@@ -24,9 +25,9 @@ pub const DEVICE_DESCRIPTOR: [u8; 18] = [
     0xfe, 0xca,                 // idVendor = 0xCAFE (development only)
     0x01, 0x40,                 // idProduct = 0x4001
     0x00, 0x01,                 // bcdDevice = 1.00
-    0,                          // iManufacturer
-    0,                          // iProduct
-    0,                          // iSerialNumber
+    1,                          // iManufacturer: "Keywork"
+    2,                          // iProduct: "Keywork Keyboard"
+    3,                          // iSerialNumber: "KW-0001"
     1,                          // bNumConfigurations
 ];
 
@@ -89,3 +90,80 @@ pub const OTHER_SPEED_CONFIGURATION_DESCRIPTOR: [u8; 18] = [
     0x00,
     0,
 ];
+
+
+/// String descriptor index 0: supported language IDs.
+///
+/// 0x0409 is English (United States). Unlike the other string descriptors,
+/// this descriptor is requested with `wIndex == 0`.
+pub const STRING_LANGUAGES: [u8; 4] = [
+    4,
+    STRING_DESCRIPTOR_TYPE,
+    0x09,
+    0x04,
+];
+
+/// Manufacturer string: "Keywork".
+pub const STRING_MANUFACTURER: [u8; 16] = [
+    16,
+    STRING_DESCRIPTOR_TYPE,
+    b'K', 0,
+    b'e', 0,
+    b'y', 0,
+    b'w', 0,
+    b'o', 0,
+    b'r', 0,
+    b'k', 0,
+];
+
+/// Product string: "Keywork Keyboard".
+pub const STRING_PRODUCT: [u8; 34] = [
+    34,
+    STRING_DESCRIPTOR_TYPE,
+    b'K', 0,
+    b'e', 0,
+    b'y', 0,
+    b'w', 0,
+    b'o', 0,
+    b'r', 0,
+    b'k', 0,
+    b' ', 0,
+    b'K', 0,
+    b'e', 0,
+    b'y', 0,
+    b'b', 0,
+    b'o', 0,
+    b'a', 0,
+    b'r', 0,
+    b'd', 0,
+];
+
+/// Temporary development serial string: "KW-0001".
+///
+/// Replace this with a stable per-device value later. It must not change on
+/// every boot, otherwise hosts will treat the same board as a new USB device.
+pub const STRING_SERIAL: [u8; 16] = [
+    16,
+    STRING_DESCRIPTOR_TYPE,
+    b'K', 0,
+    b'W', 0,
+    b'-', 0,
+    b'0', 0,
+    b'0', 0,
+    b'0', 0,
+    b'1', 0,
+];
+
+/// Returns a string descriptor by index.
+///
+/// Index zero returns the supported-language table. Text strings are currently
+/// available only for English (United States), language ID 0x0409.
+pub fn string_descriptor(index: u8, language_id: u16) -> Option<&'static [u8]> {
+    match index {
+        0 => Some(&STRING_LANGUAGES),
+        1 if language_id == 0x0409 => Some(&STRING_MANUFACTURER),
+        2 if language_id == 0x0409 => Some(&STRING_PRODUCT),
+        3 if language_id == 0x0409 => Some(&STRING_SERIAL),
+        _ => None,
+    }
+}
