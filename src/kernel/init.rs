@@ -24,6 +24,7 @@ const REQUIRED_ALIASES: &[&str] = &[
     "mailbox",
     "mmc0",
     "watchdog",
+    "usb"
 ];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
@@ -114,6 +115,30 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     });
 
     init_phys_allocator();
+
+    let usb = crate::drivers::usb::USB.get_mut();
+
+
+    let mailbox = mailbox::MAILBOX.get();
+
+    if !mailbox.set_power_state(
+        mailbox::MBOX_POWER_USB_HCD,
+        true,
+        true,
+    ) {
+        panic!("Failed to power USB HCD");
+    }
+
+    early_timeit!("DWC2 probe", {
+        usb.init(boot_info.get("usb"))
+            .expect("DWC2 failed to initialize");
+    });
+
+    early_timeit!("DWC2 device mode", {
+        usb.prepare_device_mode()
+            .expect("DWC2 device-mode preparation failed");
+    });
+
 
     early_timeit!("VFS init", {
         init_vfs();

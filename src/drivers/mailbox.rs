@@ -31,6 +31,9 @@ pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 
 pub const MBOX_TAG_LAST: u32 = 0;
 
+pub const MBOX_POWER_USB_HCD: u32 = 3;
+
+
 #[repr(C, align(16))]
 pub struct MailboxBuffer {
     pub(crate) buffer: [u32; 36],
@@ -111,5 +114,45 @@ impl MailboxBuffer {
                 return unsafe { core::ptr::read_volatile(&self.buffer[1]) } == MBOX_RESPONSE;
             }
         }
+    }
+    pub fn set_power_state(
+        &mut self,
+        device_id: u32,
+        on: bool,
+        wait: bool,
+    ) -> bool {
+        self.buffer.fill(0);
+
+        let state =
+            u32::from(on) |
+            (u32::from(wait) << 1);
+
+        self.buffer[0] = 8 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETPOWER;
+        self.buffer[3] = 8; // Value buffer size.
+        self.buffer[4] = 0; // Request code.
+        self.buffer[5] = device_id;
+        self.buffer[6] = state;
+
+        self.buffer[7] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return false;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let returned_state = self.buffer[6];
+
+        let tag_succeeded = tag_response & 0x8000_0000 != 0;
+        let device_exists = returned_state & 0b10 == 0;
+        let actual_on = returned_state & 1 != 0;
+
+        tag_succeeded
+            && returned_id == device_id
+            && device_exists
+            && actual_on == on
     }
 }
