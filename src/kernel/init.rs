@@ -1,5 +1,5 @@
 use crate::{
-    drivers::{emmc::EMMC, mailbox, uart::UART, watchdog}, early_timeit, fdt::{AliasTable, BootInfo}, graphics::framebuffer::FRAMEBUFFER, info, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}
+    drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART}, early_timeit, fdt::BootInfo, graphics::framebuffer::FRAMEBUFFER, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}
 };
 
 extern "C" {
