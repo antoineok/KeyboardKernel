@@ -3,6 +3,18 @@
 .global _start  // Execution starts here
 
 _start:
+    b       el2_start        // code0: jump over the header
+    .long   0                 // code1
+    .quad   0x80000           // text_offset: load offset from start of RAM... 
+    .quad   __kernel_size     // image size (can be 0 if you don't have the symbol)
+    .quad   2                 // flags: little-endian, 4K pages
+    .quad   0                 // reserved
+    .quad   0
+    .quad   0
+    .ascii  "ARM\x64"         // magic
+    .long   0                 // reserved
+
+el2_start:
 
     // Check processor ID is zero (executing on main core), else hang
     mrs     x1, mpidr_el1
@@ -12,6 +24,13 @@ _start:
 1:  wfe
     b       1b
 2:  // We're on the main core!
+
+    // Check if in EL2
+    mrs     x1, CurrentEL
+    and     x1, x1, 2
+    cbz     x1, 3f
+
+3:
     // Set stack to start below our code
     ldr     x1, =__el2_stack_top
     mov     sp, x1
