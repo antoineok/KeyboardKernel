@@ -73,6 +73,8 @@
 
           # Simply for convenience, to format the nix files in this project
           alejandra
+
+          qemu
         ];
         env.RUST_GDB = pkgs.lib.getExe' self.packages.${pkgs.system}.aarch64-gdb "aarch64-none-elf-gdb";
         env.TMUX_EXE = pkgs.lib.getExe pkgs.tmux;
