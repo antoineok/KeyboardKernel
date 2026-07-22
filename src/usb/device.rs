@@ -390,7 +390,7 @@ impl UsbDevice {
         if !self.is_configured() {
             return Ok(UsbReceiveStatus::Disconnected);
         }
-        if !self.management_rx_ready {
+        if !self.management_rx_ready || self.management_tx_len != 0 || self.management_in_busy {
             return Ok(UsbReceiveStatus::Empty);
         }
         if output.len() < self.management_rx_len {
