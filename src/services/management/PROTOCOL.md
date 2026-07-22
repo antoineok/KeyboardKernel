@@ -55,3 +55,20 @@ also returns `total_size:u64, sha256:[u8;32]`.
 The backend chooses the inactive A/B slot. Confirmation should normally be
 performed internally by healthy newly-booted firmware; production builds may
 reject external confirmation.
+
+## Implemented firmware update workflow
+
+The current development backend supports commands `0x1000` through `0x1004`.
+The signature field in `BeginFirmwareUpdate` must currently be empty.
+
+- Maximum image size: 3 MiB
+- Maximum chunk size returned by the device: 3072 bytes
+- Chunks must be sequential and use exact byte offsets
+- `FinishFirmwareUpdate` verifies SHA-256, kernel update magic, staged file size,
+  and the SHA-256 of the file re-read from storage
+- A successful finish enters `PendingReboot`
+- `Reboot(Normal)` commits `kernel8.new` over `kernel8.img` after returning its
+  KWMP response
+
+This is a development staged-swap implementation, not the final A/B boot
+metadata and rollback design.
