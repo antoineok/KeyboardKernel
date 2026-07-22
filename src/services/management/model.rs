@@ -6,6 +6,7 @@ pub const CAPABILITY_AB_UPDATE: u64 = 1 << 2;
 pub const CAPABILITY_ASSET_UPLOAD: u64 = 1 << 3;
 pub const CAPABILITY_ASSET_DOWNLOAD: u64 = 1 << 4;
 pub const CAPABILITY_DISPLAY: u64 = 1 << 5;
+pub const CAPABILITY_FIRMWARE_UPDATE: u64 = 1 << 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

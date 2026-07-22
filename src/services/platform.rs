@@ -9,7 +9,7 @@ use super::management::{
     BeginFirmwareUpdateRequest, BeginFirmwareUpdateResponse, BeginTransferResponse,
     DeviceInfo, DeviceStatus, FirmwareSlot, FirmwareUpdateStatus, ManagementBackend,
     ManagementStatus, ProfileWriteOptions, RebootMode, TransferId, CAPABILITY_DISPLAY,
-    CAPABILITY_USB,
+    CAPABILITY_USB, CAPABILITY_FIRMWARE_UPDATE,
 };
 
 /// Initial kernel binding for KWMP.
@@ -48,8 +48,8 @@ impl ManagementBackend for KernelManagementBackend {
             firmware_version: 0x0001_0000,
             bootloader_version: 0,
             active_slot: FirmwareSlot::Unknown,
-            profile_count: 8,
-            capabilities: CAPABILITY_USB | CAPABILITY_DISPLAY,
+            profile_count: 0,
+            capabilities: CAPABILITY_USB | CAPABILITY_DISPLAY | CAPABILITY_FIRMWARE_UPDATE,
             serial: *b"KW-0001\0\0\0\0\0\0\0\0\0",
         })
     }
