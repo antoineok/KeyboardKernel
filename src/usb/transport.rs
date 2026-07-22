@@ -37,7 +37,7 @@ impl UsbTransport {
         // The kernel is currently single-core and all USB access is serialized
         // through this transport. This shared access is used only for state
         // queries between mutable operations.
-        unsafe { &*USB_DEVICE.0.get() }
+        unsafe { USB_DEVICE.get() }
     }
 
     fn with_device<R>(

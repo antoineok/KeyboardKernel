@@ -972,14 +972,15 @@ impl UsbDevice {
 
     fn read_fifo_bytes(
         controller: &Dwc2,
-        endpoint: usize,
+        _endpoint: usize,
         byte_count: usize,
         output: &mut [u8],
     ) -> Result<(), UsbDeviceError> {
         debug_assert!(output.len() >= byte_count);
         let mut written = 0usize;
         for _ in 0..byte_count.div_ceil(4) {
-            let word = controller.read_fifo_word(endpoint)?;
+            // Every OUT endpoint is drained through the shared receive FIFO.
+            let word = controller.read_fifo_word(0)?;
             for byte_index in 0..4 {
                 if written == byte_count {
                     break;
@@ -1027,12 +1028,17 @@ impl UsbDevice {
     }
 }
 
-pub struct UsbDeviceStatic(pub(super) UnsafeCell<UsbDevice>);
+pub struct UsbDeviceStatic(UnsafeCell<UsbDevice>);
 unsafe impl Sync for UsbDeviceStatic {}
 
 impl UsbDeviceStatic {
     pub const fn new() -> Self {
         Self(UnsafeCell::new(UsbDevice::new()))
+    }
+
+    #[inline(always)]
+    pub unsafe fn get(&self) -> &UsbDevice {
+        unsafe { &*self.0.get() }
     }
 
     #[inline(always)]
