@@ -1027,7 +1027,7 @@ impl UsbDevice {
     }
 }
 
-pub struct UsbDeviceStatic(UnsafeCell<UsbDevice>);
+pub struct UsbDeviceStatic(pub(super) UnsafeCell<UsbDevice>);
 unsafe impl Sync for UsbDeviceStatic {}
 
 impl UsbDeviceStatic {
