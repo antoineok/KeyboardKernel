@@ -8,7 +8,12 @@ use crate::drivers::uart::UART;
 use crate::graphics::framebuffer::FRAMEBUFFER;
 use crate::time::time_manager;
 
-use crate::{early_timeit, info, timeit};
+use crate::{
+    early_timeit, info, timeit,
+    services::{KernelManagementBackend, KeyworkServices},
+    transport::{KeyworkTransport, TransportState},
+    usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
+};
 
 #[cfg(feature = "jtag")]
 use crate::jtag::breakpoint;
@@ -53,22 +58,30 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
     framebuffer.draw_line(100, 500, 350, 700, 0xFF0000);
 
-    unsafe {
-        let controller = crate::drivers::usb::USB.get_mut();
-        crate::usb::USB_DEVICE
-            .get_mut()
-            .initialize(controller)
-            .expect("USB device initialization failed");
-    }
+    let usb_transport = unsafe { USB_TRANSPORT.get_mut() };
+    usb_transport
+        .initialize()
+        .expect("USB transport initialization failed");
+
+    let mut services = KeyworkServices::<MANAGEMENT_FRAME_CAPACITY>::new();
+    let mut management_backend = KernelManagementBackend::new();
 
     loop {
-        unsafe {
-            let controller = crate::drivers::usb::USB.get_mut();
-            crate::usb::USB_DEVICE
-                .get_mut()
-                .poll(controller)
-                .expect("USB device polling failed");
+        let transition = services.update_transport_selection(
+            usb_transport.state(),
+            TransportState::Disconnected,
+        );
+        if transition.changed() {
+            info!(
+                "Active host transport changed: {:?} -> {:?}",
+                transition.previous,
+                transition.current
+            );
         }
+        management_backend.set_active_transport(services.active_transport());
+        services
+            .poll_selected_transport(usb_transport, &mut management_backend)
+            .expect("USB service polling failed");
 
         let updater = crate::update::uart::UART_UPDATE.get_mut();
 
