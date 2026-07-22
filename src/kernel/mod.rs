@@ -1,15 +1,21 @@
 pub mod init;
 
 use aarch64_cpu::asm::nop;
+use core::time::Duration;
 
 use crate::arch::exceptions::PrivilegeLevel;
 
-use crate::drivers::uart::UART;
+use crate::drivers::{
+    gpio::{GpioPin, GpioPull},
+    uart::UART,
+};
 use crate::graphics::framebuffer::FRAMEBUFFER;
+use crate::hid::Key;
 use crate::time::time_manager;
 
 use crate::{
     early_timeit, info, timeit,
+    hid::{KeyboardModifiers, KeyboardReport},
     services::{KernelManagementBackend, KeyworkServices},
     transport::{KeyworkTransport, TransportState},
     usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
@@ -66,7 +72,60 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     let mut services = KeyworkServices::<MANAGEMENT_FRAME_CAPACITY>::new();
     let mut management_backend = KernelManagementBackend::new();
 
+    // Temporary HID test input. GPIO17 is held high by its internal pull-up.
+    // Connecting GPIO17 directly to GND presses A; disconnecting it releases A.
+    const HID_TEST_GPIO: u32 = 17;
+    const HID_TEST_DEBOUNCE: Duration = Duration::from_millis(5);
+
+    let hid_test_pin = GpioPin::new(HID_TEST_GPIO);
+    hid_test_pin.configure_input(GpioPull::Up);
+
+    let mut hid_test_sample = hid_test_pin.is_low();
+    let mut hid_test_stable = hid_test_sample;
+    let mut hid_test_sample_since = time_manager().uptime();
+
+    if hid_test_stable {
+        services.hid_mut().set_keyboard(KeyboardReport {
+            modifiers: KeyboardModifiers::LEFT_SHIFT,
+            keys: [Key::W, Key::None, Key::None, Key::None, Key::None, Key::None],
+        });
+    }
+
+    info!(
+        "HID GPIO test enabled on GPIO{}: connect pin to GND to hold A",
+        HID_TEST_GPIO
+    );
+
     loop {
+        let now = time_manager().uptime();
+        let sample = hid_test_pin.is_low();
+
+        if sample != hid_test_sample {
+            hid_test_sample = sample;
+            hid_test_sample_since = now;
+        }
+
+        if hid_test_sample != hid_test_stable
+            && now.saturating_sub(hid_test_sample_since) >= HID_TEST_DEBOUNCE
+        {
+            hid_test_stable = hid_test_sample;
+
+            let report = if hid_test_stable {
+                KeyboardReport {
+                    modifiers: KeyboardModifiers::LEFT_SHIFT,
+                    keys: [Key::W, Key::None, Key::None, Key::None, Key::None, Key::None],
+                }
+            } else {
+                KeyboardReport::released()
+            };
+
+            services.hid_mut().set_keyboard(report);
+            info!(
+                "HID GPIO test: A {}",
+                if hid_test_stable { "pressed" } else { "released" }
+            );
+        }
+
         let transition = services.update_transport_selection(
             usb_transport.state(),
             TransportState::Disconnected,

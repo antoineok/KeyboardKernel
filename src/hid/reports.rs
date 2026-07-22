@@ -1,5 +1,7 @@
 //! Logical HID reports shared by USB and Bluetooth transports.
 
+use crate::hid::keys::Key;
+
 /// Modifier bitmap used by a boot-protocol keyboard report.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(transparent)]
@@ -36,11 +38,25 @@ impl KeyboardModifiers {
     }
 }
 
+impl core::ops::BitOr for KeyboardModifiers {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for KeyboardModifiers {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 /// Standard eight-byte boot-keyboard input report.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyboardReport {
     pub modifiers: KeyboardModifiers,
-    pub keys: [u8; 6],
+    pub keys: [Key; 6],
 }
 
 impl KeyboardReport {
@@ -49,21 +65,21 @@ impl KeyboardReport {
     pub const fn released() -> Self {
         Self {
             modifiers: KeyboardModifiers::from_bits(0),
-            keys: [0; 6],
+            keys: [Key::None; 6],
         }
     }
 
     /// Encodes the report without relying on structure layout or alignment.
-    pub const fn encode(self) -> [u8; Self::BYTE_LEN] {
+    pub fn encode(self) -> [u8; Self::BYTE_LEN] {
         [
             self.modifiers.bits(),
-            0,
-            self.keys[0],
-            self.keys[1],
-            self.keys[2],
-            self.keys[3],
-            self.keys[4],
-            self.keys[5],
+            0, // Reserved byte.
+            self.keys[0] as u8,
+            self.keys[1] as u8,
+            self.keys[2] as u8,
+            self.keys[3] as u8,
+            self.keys[4] as u8,
+            self.keys[5] as u8,
         ]
     }
 }
