@@ -436,8 +436,20 @@ impl UsbDevice {
                     self.stall(controller)?;
                 }
             }
-            PKTSTS_OUT_DATA if endpoint == 0 => {
+            // A control-read transfer ends with a zero-length OUT status
+            // packet. DWC2 reports that packet through RXFLVL before the
+            // endpoint transfer-complete interrupt; it is not a control OUT
+            // data stage and must not stall EP0.
+            PKTSTS_OUT_DATA
+                if endpoint == 0
+                    && self.state == ControlState::StatusOut
+                    && byte_count == 0 => {}
+            PKTSTS_OUT_DATA if endpoint == 0 && self.state == ControlState::DataOut => {
                 self.read_control_out(controller, byte_count)?;
+            }
+            PKTSTS_OUT_DATA if endpoint == 0 => {
+                controller.discard_fifo_bytes(0, byte_count)?;
+                self.stall(controller)?;
             }
             PKTSTS_OUT_DATA if endpoint == MANAGEMENT_ENDPOINT as usize => {
                 self.read_management_out(controller, byte_count)?;
@@ -463,8 +475,7 @@ impl UsbDevice {
             if interrupts & DOEPINT_XFRC != 0 {
                 match self.state {
                     ControlState::StatusOut => {
-                        self.state = ControlState::WaitingForSetup;
-                        controller.arm_ep0_setup()?;
+                        self.finish_control_transfer(controller)?;
                     }
                     ControlState::DataOut => self.complete_control_out(controller)?,
                     _ => {}
@@ -956,11 +967,27 @@ impl UsbDevice {
                 self.start_next_control_in_packet(controller)?;
             }
             ControlState::StatusIn => {
-                self.state = ControlState::WaitingForSetup;
-                controller.arm_ep0_setup()?;
+                self.finish_control_transfer(controller)?;
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn finish_control_transfer(
+        &mut self,
+        controller: &mut Dwc2,
+    ) -> Result<(), UsbDeviceError> {
+        self.state = ControlState::WaitingForSetup;
+        self.pending_setup = None;
+        self.control_out_request = None;
+        self.control_in_len = 0;
+        self.control_in_offset = 0;
+        self.control_in_packet_len = 0;
+        self.control_in_need_zlp = false;
+        self.control_out_expected = 0;
+        self.control_out_received = 0;
+        controller.arm_ep0_setup()?;
         Ok(())
     }
 

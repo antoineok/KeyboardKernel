@@ -696,7 +696,7 @@ impl Dwc2 {
                 | DEPCTL_EPDIS);
             value |= (max_packet_size as u32 & DEPCTL_MPS_MASK)
                 | endpoint_type
-                | ((fifo_number as u32 << DEPCTL_TXFNUM_SHIFT) & DEPCTL_TXFNUM_MASK)
+                | (((fifo_number as u32) << DEPCTL_TXFNUM_SHIFT) & DEPCTL_TXFNUM_MASK)
                 | DEPCTL_USBACTEP
                 | DEPCTL_SNAK
                 | DEPCTL_SETD0PID;
