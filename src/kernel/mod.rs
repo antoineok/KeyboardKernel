@@ -87,7 +87,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     if hid_test_stable {
         services.hid_mut().set_keyboard(KeyboardReport {
             modifiers: KeyboardModifiers::LEFT_SHIFT,
-            keys: [Key::W, Key::None, Key::None, Key::None, Key::None, Key::None],
+            keys: [Key::F, Key::None, Key::None, Key::None, Key::None, Key::None],
         });
     }
 
@@ -113,7 +113,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             let report = if hid_test_stable {
                 KeyboardReport {
                     modifiers: KeyboardModifiers::LEFT_SHIFT,
-                    keys: [Key::W, Key::None, Key::None, Key::None, Key::None, Key::None],
+                    keys: [Key::F, Key::None, Key::None, Key::None, Key::None, Key::None],
                 }
             } else {
                 KeyboardReport::released()
@@ -121,7 +121,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
             services.hid_mut().set_keyboard(report);
             info!(
-                "HID GPIO test: A {}",
+                "HID GPIO test: F {}",
                 if hid_test_stable { "pressed" } else { "released" }
             );
         }
@@ -141,7 +141,8 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         services
             .poll_selected_transport(usb_transport, &mut management_backend)
             .expect("USB service polling failed");
-
+        management_backend.poll_pending_action();
+        
         let updater = crate::update::uart::UART_UPDATE.get_mut();
 
         updater.poll();

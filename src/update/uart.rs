@@ -149,7 +149,8 @@ impl UartUpdateSession {
         }
 
         KernelUpdater::stage(&self.buffer)?;
-        KernelUpdater::verify_staged(self.expected_size)?;
+        let digest = crate::update::sha256::sha256(&self.buffer);
+        KernelUpdater::verify_staged(self.expected_size, &digest)?;
 
         self.active = false;
 
