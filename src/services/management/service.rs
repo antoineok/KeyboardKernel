@@ -1,9 +1,10 @@
 use core::convert::TryFrom;
 
 use super::{
-    FrameDecodeError, FrameFlags, ManagementBackend, ManagementCommand, ManagementFrame,
-    ManagementHeader, ManagementStatus, ProfileWriteOptions, RebootMode, WireReader,
-    WireWriteError, WireWriter, MANAGEMENT_HEADER_SIZE,
+    AssetId, AssetKind, BeginAssetUploadRequest, BeginFirmwareUpdateRequest, FrameDecodeError,
+    FrameFlags, ManagementBackend, ManagementCommand, ManagementFrame, ManagementHeader,
+    ManagementStatus, ProfileWriteOptions, RebootMode, TransferId, WireReader, WireWriteError,
+    WireWriter, MANAGEMENT_HEADER_SIZE,
 };
 
 const RESPONSE_STATUS_SIZE: usize = 2;
@@ -218,8 +219,268 @@ impl<const RESPONSE_CAPACITY: usize> ManagementService<RESPONSE_CAPACITY> {
                 }
             }
 
-            _ => ManagementStatus::Unsupported,
+            ManagementCommand::BeginAssetUpload => {
+                let mut reader = WireReader::new(payload);
+                let asset_id = match reader.read_u32() {
+                    Ok(value) => AssetId(value),
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let kind = match reader.read_u8().ok().and_then(AssetKind::from_u8) {
+                    Some(value) => value,
+                    None => return ManagementStatus::InvalidPayload,
+                };
+                let total_size = match reader.read_u64() {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let hash = match reader.read_bytes(32) {
+                    Ok(value) => {
+                        let mut hash = [0u8; 32];
+                        hash.copy_from_slice(value);
+                        hash
+                    }
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                if reader.finish().is_err() {
+                    return ManagementStatus::InvalidPayload;
+                }
+
+                let request = BeginAssetUploadRequest {
+                    asset_id,
+                    kind,
+                    total_size,
+                    sha256: hash,
+                };
+                match backend.begin_asset_upload(request) {
+                    Ok(response) => Self::write_result(response.encode(writer)),
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::WriteAssetChunk => {
+                let mut reader = WireReader::new(payload);
+                let transfer_id = match reader.read_u32() {
+                    Ok(value) => TransferId(value),
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let offset = match reader.read_u64() {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let data_length = reader.remaining();
+                let data = match reader.read_bytes(data_length) {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+
+                match backend.write_asset_chunk(transfer_id, offset, data) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::FinishAssetUpload => {
+                let transfer_id = match Self::read_transfer_id(payload) {
+                    Ok(value) => value,
+                    Err(status) => return status,
+                };
+                match backend.finish_asset_upload(transfer_id) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::DeleteAsset => {
+                let mut reader = WireReader::new(payload);
+                let asset_id = match reader.read_u32() {
+                    Ok(value) => AssetId(value),
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                if reader.finish().is_err() {
+                    return ManagementStatus::InvalidPayload;
+                }
+                match backend.delete_asset(asset_id) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::BeginAssetDownload => {
+                let mut reader = WireReader::new(payload);
+                let asset_id = match reader.read_u32() {
+                    Ok(value) => AssetId(value),
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                if reader.finish().is_err() {
+                    return ManagementStatus::InvalidPayload;
+                }
+
+                match backend.begin_asset_download(asset_id) {
+                    Ok(response) => Self::write_result(response.encode(writer)),
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::ReadAssetChunk => {
+                let mut reader = WireReader::new(payload);
+                let transfer_id = match reader.read_u32() {
+                    Ok(value) => TransferId(value),
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let offset = match reader.read_u64() {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let requested_length = match reader.read_u16() {
+                    Ok(value) => value as usize,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                if reader.finish().is_err() || requested_length > writer.remaining().saturating_sub(2)
+                {
+                    return ManagementStatus::InvalidPayload;
+                }
+
+                let output = &mut writer.remaining_mut()[2..2 + requested_length];
+                let length = match backend.read_asset_chunk(transfer_id, offset, output) {
+                    Ok(value) if value <= requested_length => value,
+                    Ok(_) => return ManagementStatus::InternalError,
+                    Err(status) => return status,
+                };
+
+                if writer.write_u16(length as u16).is_err() || writer.advance(length).is_err() {
+                    return ManagementStatus::InternalError;
+                }
+                ManagementStatus::Ok
+            }
+
+            ManagementCommand::FinishAssetDownload => {
+                let transfer_id = match Self::read_transfer_id(payload) {
+                    Ok(value) => value,
+                    Err(status) => return status,
+                };
+                match backend.finish_asset_download(transfer_id) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::BeginFirmwareUpdate => {
+                let mut reader = WireReader::new(payload);
+                let image_size = match reader.read_u64() {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let image_version = match reader.read_u32() {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let hash = match reader.read_bytes(32) {
+                    Ok(value) => {
+                        let mut hash = [0u8; 32];
+                        hash.copy_from_slice(value);
+                        hash
+                    }
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let signature_length = match reader.read_u16() {
+                    Ok(value) => value as usize,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let signature = match reader.read_bytes(signature_length) {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                if reader.finish().is_err() {
+                    return ManagementStatus::InvalidPayload;
+                }
+
+                let request = BeginFirmwareUpdateRequest {
+                    image_size,
+                    image_version,
+                    sha256: hash,
+                    signature,
+                };
+                match backend.begin_firmware_update(request) {
+                    Ok(response) => Self::write_result(response.encode(writer)),
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::WriteFirmwareChunk => {
+                let mut reader = WireReader::new(payload);
+                let transfer_id = match reader.read_u32() {
+                    Ok(value) => TransferId(value),
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let offset = match reader.read_u64() {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+                let data_length = reader.remaining();
+                let data = match reader.read_bytes(data_length) {
+                    Ok(value) => value,
+                    Err(_) => return ManagementStatus::InvalidPayload,
+                };
+
+                match backend.write_firmware_chunk(transfer_id, offset, data) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::FinishFirmwareUpdate => {
+                let transfer_id = match Self::read_transfer_id(payload) {
+                    Ok(value) => value,
+                    Err(status) => return status,
+                };
+                match backend.finish_firmware_update(transfer_id) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::AbortFirmwareUpdate => {
+                let transfer_id = match Self::read_transfer_id(payload) {
+                    Ok(value) => value,
+                    Err(status) => return status,
+                };
+                match backend.abort_firmware_update(transfer_id) {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::GetFirmwareUpdateStatus => {
+                if !payload.is_empty() {
+                    return ManagementStatus::InvalidPayload;
+                }
+                match backend.get_firmware_update_status() {
+                    Ok(status) => Self::write_result(status.encode(writer)),
+                    Err(status) => status,
+                }
+            }
+
+            ManagementCommand::ConfirmRunningFirmware => {
+                if !payload.is_empty() {
+                    return ManagementStatus::InvalidPayload;
+                }
+                match backend.confirm_running_firmware() {
+                    Ok(()) => ManagementStatus::Ok,
+                    Err(status) => status,
+                }
+            }
         }
+    }
+
+    fn read_transfer_id(payload: &[u8]) -> Result<TransferId, ManagementStatus> {
+        let mut reader = WireReader::new(payload);
+        let value = reader
+            .read_u32()
+            .map_err(|_| ManagementStatus::InvalidPayload)?;
+        reader
+            .finish()
+            .map_err(|_| ManagementStatus::InvalidPayload)?;
+        Ok(TransferId(value))
     }
 
     fn write_result(result: Result<(), WireWriteError>) -> ManagementStatus {

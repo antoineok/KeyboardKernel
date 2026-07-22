@@ -9,6 +9,7 @@ mod frame;
 mod model;
 mod service;
 mod status;
+mod transfer;
 mod wire;
 
 pub use backend::ManagementBackend;
@@ -24,4 +25,9 @@ pub use model::{
 };
 pub use service::{ManagementService, ManagementServiceError};
 pub use status::ManagementStatus;
+pub use transfer::{
+    AssetId, AssetKind, BeginAssetDownloadResponse, BeginAssetUploadRequest,
+    BeginFirmwareUpdateRequest, BeginFirmwareUpdateResponse, BeginTransferResponse,
+    FirmwareUpdatePhase, FirmwareUpdateStatus, TransferId,
+};
 pub use wire::{WireReadError, WireReader, WireWriteError, WireWriter};

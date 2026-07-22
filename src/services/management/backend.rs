@@ -1,5 +1,7 @@
 use super::{
-    DeviceInfo, DeviceStatus, ManagementStatus, ProfileWriteOptions, RebootMode,
+    AssetId, BeginAssetDownloadResponse, BeginAssetUploadRequest, BeginFirmwareUpdateRequest,
+    BeginFirmwareUpdateResponse, BeginTransferResponse, DeviceInfo, DeviceStatus,
+    FirmwareUpdateStatus, ManagementStatus, ProfileWriteOptions, RebootMode, TransferId,
 };
 
 /// Platform-specific operations used by the transport-neutral management
@@ -32,4 +34,68 @@ pub trait ManagementBackend {
         options: ProfileWriteOptions,
         data: &[u8],
     ) -> Result<(), ManagementStatus>;
+
+    fn begin_asset_upload(
+        &mut self,
+        request: BeginAssetUploadRequest,
+    ) -> Result<BeginTransferResponse, ManagementStatus>;
+
+    fn write_asset_chunk(
+        &mut self,
+        transfer_id: TransferId,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), ManagementStatus>;
+
+    fn finish_asset_upload(&mut self, transfer_id: TransferId)
+        -> Result<(), ManagementStatus>;
+
+    fn delete_asset(&mut self, asset_id: AssetId) -> Result<(), ManagementStatus>;
+
+    fn begin_asset_download(
+        &mut self,
+        asset_id: AssetId,
+    ) -> Result<BeginAssetDownloadResponse, ManagementStatus>;
+
+    fn read_asset_chunk(
+        &mut self,
+        transfer_id: TransferId,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, ManagementStatus>;
+
+    fn finish_asset_download(
+        &mut self,
+        transfer_id: TransferId,
+    ) -> Result<(), ManagementStatus>;
+
+    fn begin_firmware_update(
+        &mut self,
+        request: BeginFirmwareUpdateRequest<'_>,
+    ) -> Result<BeginFirmwareUpdateResponse, ManagementStatus>;
+
+    fn write_firmware_chunk(
+        &mut self,
+        transfer_id: TransferId,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), ManagementStatus>;
+
+    fn finish_firmware_update(
+        &mut self,
+        transfer_id: TransferId,
+    ) -> Result<(), ManagementStatus>;
+
+    fn abort_firmware_update(
+        &mut self,
+        transfer_id: TransferId,
+    ) -> Result<(), ManagementStatus>;
+
+    fn get_firmware_update_status(&mut self)
+        -> Result<FirmwareUpdateStatus, ManagementStatus>;
+
+    /// Confirmation should normally be initiated by healthy newly-booted
+    /// firmware. A production backend may reject external confirmation with
+    /// `PermissionDenied` unless a physical/developer authorization is active.
+    fn confirm_running_firmware(&mut self) -> Result<(), ManagementStatus>;
 }
