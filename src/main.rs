@@ -14,6 +14,7 @@ mod kernel;
 mod memory;
 mod panic;
 mod reader;
+mod services;
 mod storage;
 mod time;
 mod transport;
