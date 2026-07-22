@@ -16,6 +16,7 @@ mod panic;
 mod reader;
 mod storage;
 mod time;
+mod transport;
 mod update;
 mod usb;
 mod util;
