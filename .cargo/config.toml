@@ -2,7 +2,7 @@
 target = "aarch64-unknown-none"
 
 [target.aarch64-unknown-none]
-runner = "qemu-system-aarch64 -M raspi4b,dtb=\"bcm2711-rpi-cm4.dtb\" -chardev file,id=pl011,path=pl011_uart.log -serial chardev:pl011 -serial stdio -kernel" # Optional: for QEMU emulation/testing
+runner = "qemu-system-aarch64 -M raspi4b -kernel kernel8.img -dtb bcm2711-rpi-cm4.dtb -drive file=emmc.img,if=none,format=raw,id=emmc-img -device emmc,drive=emmc-img,bus=/generic-sdhci/sd-bus -chardev file,id=pl011,path=pl011_uart.log -serial chardev:pl011 -serial stdio" # Optional: for QEMU emulation/testing
 rustflags = [
     "-C", "link-arg=-Tkernel.ld",
     "-C", "force-frame-pointers=yes",
