@@ -9,7 +9,7 @@ pub mod registers;
 
 use core::cell::UnsafeCell;
 
-pub use dwc2::{Dwc2, Dwc2Error, Dwc2Hardware};
+pub use dwc2::{Dwc2, Dwc2Error, Dwc2Hardware, UsbSpeed};
 
 /// Global DWC2 controller instance.
 ///

@@ -3,7 +3,7 @@
 //! Offsets are relative to the controller's translated ARM physical base.
 
 /// The global/device register range used by the current driver.
-pub const MIN_REGISTER_WINDOW_SIZE: u64 = 0x1000;
+pub const MIN_REGISTER_WINDOW_SIZE: u64 = 0x5000;
 
 // Global registers.
 pub const GOTGCTL: usize = 0x000;
@@ -279,3 +279,32 @@ pub const PKTSTS_SETUP_DATA: u32 = 0x6;
 
 // Endpoint-zero TX FIFO free-space field, in 32-bit words.
 pub const DTXFSTS_INEPTFSAV_MASK: u32 = 0xffff;
+
+// Non-control endpoint types.
+pub const DEPCTL_EPTYPE_CONTROL: u32 = 0 << DEPCTL_EPTYPE_SHIFT;
+pub const DEPCTL_EPTYPE_ISOCHRONOUS: u32 = 1 << DEPCTL_EPTYPE_SHIFT;
+pub const DEPCTL_EPTYPE_BULK: u32 = 2 << DEPCTL_EPTYPE_SHIFT;
+pub const DEPCTL_EPTYPE_INTERRUPT: u32 = 3 << DEPCTL_EPTYPE_SHIFT;
+
+// Generic non-control endpoint transfer-size fields.
+pub const DEPTSIZ_XFERSIZE_MASK: u32 = 0x7ffff;
+pub const DEPTSIZ_PKTCNT_SHIFT: u32 = 19;
+pub const DEPTSIZ_PKTCNT_MASK: u32 = 0x3ff << DEPTSIZ_PKTCNT_SHIFT;
+pub const DEPTSIZ_PKTCNT_ONE: u32 = 1 << DEPTSIZ_PKTCNT_SHIFT;
+
+// Additional endpoint interrupt bits.
+pub const DIEPINT_TXFE: u32 = 1 << 7;
+pub const DOEPINT_B2BSTUP: u32 = 1 << 6;
+
+// DSTS.
+pub const DSTS_SUSPSTS: u32 = 1 << 0;
+
+#[inline(always)]
+pub const fn daint_in(endpoint: usize) -> u32 {
+    1u32 << endpoint
+}
+
+#[inline(always)]
+pub const fn daint_out(endpoint: usize) -> u32 {
+    1u32 << (16 + endpoint)
+}
