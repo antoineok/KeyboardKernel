@@ -7,6 +7,7 @@ mod arch;
 mod drivers;
 mod fdt;
 mod graphics;
+mod hid;
 #[cfg(feature = "jtag")]
 mod jtag;
 mod kernel;
