@@ -10,6 +10,7 @@ pub struct GpioRegisters {
     sel_0: Address,
     set_0: Address,
     clr_0: Address,
+    lev_0: Address,
     pup_pdn_0: Address,
 }
 
@@ -19,6 +20,7 @@ impl GpioRegisters {
             sel_0: Address(0),
             set_0: Address(0),
             clr_0: Address(0),
+            lev_0: Address(0),
             pup_pdn_0: Address(0),
         }
     }
@@ -29,6 +31,7 @@ impl GpioRegisters {
         self.sel_0.set_address(base_addr);
         self.set_0 = self.sel_0.offset(0x1C);
         self.clr_0 = self.sel_0.offset(0x28);
+        self.lev_0 = self.sel_0.offset(0x34);
         self.pup_pdn_0 = self.sel_0.offset(0xE4);
     }
 }
@@ -74,7 +77,7 @@ pub struct GpioPin {
 }
 
 impl GpioPin {
-    pub const fn new(pin: u32) -> Self {
+    pub fn new(pin: u32) -> Self {
         assert!(pin <= GPIO_MAX_PIN);
         if GPIO_REGS.get().sel_0.0 == 0 {
             panic!("GPIO registers not initialized");
@@ -98,6 +101,29 @@ impl GpioPin {
         val &= !(0b11 << shift);
         val |= (pull as u32) << shift;
         reg.write(val);
+    }
+
+    pub fn configure_input(&self, pull: GpioPull) {
+        self.set_function(GpioFunction::Input);
+        self.set_pull(pull);
+    }
+
+    pub fn level(&self) -> bool {
+        let reg = GPIO_REGS
+            .get()
+            .lev_0
+            .offset(((self.pin / 32) * 4) as usize);
+        let mask = 1u32 << (self.pin % 32);
+
+        reg.read() & mask != 0
+    }
+
+    pub fn is_high(&self) -> bool {
+        self.level()
+    }
+
+    pub fn is_low(&self) -> bool {
+        !self.level()
     }
 
     pub fn set_high(&self) {
