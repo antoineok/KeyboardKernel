@@ -9,8 +9,10 @@ use crate::{
     early_timeit, warn,
 };
 
-use crate::graphics::surface::{PixelFormat, SurfaceError, SurfaceInfo, SurfaceMut};
-
+use crate::graphics::{
+    blit::blit_opaque,
+    surface::{PixelFormat, Surface, SurfaceError, SurfaceInfo, SurfaceMut},
+};
 pub struct Framebuffer {
     width: u32,
     height: u32,
@@ -311,56 +313,58 @@ impl Framebuffer {
         }
     }
 
-    /// Copy a rectangular ARGB8888 pixel buffer into the framebuffer.
-    pub fn blit(&mut self, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) {
-        if self.buffer.is_null() {
+    /// Copy a tightly packed RGBA8888 pixel buffer into the framebuffer.
+    ///
+    /// Source alpha is ignored. The operation is clipped to the framebuffer.
+    pub fn blit(&mut self, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) {
+        if width == 0 || height == 0 {
             return;
         }
 
-        let pitch = self.pitch as usize;
-
-        for row in 0..h {
-            let fb_y = y + row;
-
-            if fb_y >= self.height {
-                break;
+        let source_pitch = match (width as usize).checked_mul(4) {
+            Some(pitch) => pitch,
+            None => {
+                warn!("Framebuffer blit source pitch overflow");
+                return;
             }
+        };
 
-            let dst = unsafe {
-                self.buffer
-                    .add(fb_y as usize * pitch + x as usize * size_of::<u32>())
-            };
-
-            let src = &pixels[row as usize * w as usize * size_of::<u32>()..];
-
-            match self.pixel_format() {
-                PixelFormat::Rgbx8888 => unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src.as_ptr(),
-                        dst,
-                        w as usize * size_of::<u32>(),
-                    );
-                },
-                PixelFormat::Bgrx8888 => {
-                    for i in 0..w as usize {
-                        let source_offset = i * size_of::<u32>();
-
-                        unsafe {
-                            *dst.add(source_offset) = src[source_offset + 2];
-                            *dst.add(source_offset + 1) = src[source_offset + 1];
-                            *dst.add(source_offset + 2) = src[source_offset];
-                            *dst.add(source_offset + 3) = src[source_offset + 3];
-                        }
-                    }
-                }
-                _ => {
-                    warn!(
-                        "Unsupported pixel format for blit: {:?}",
-                        self.pixel_format()
-                    );
-                    break;
-                }
+        let source_info = match SurfaceInfo::new(width, height, source_pitch, PixelFormat::Rgba8888)
+        {
+            Ok(info) => info,
+            Err(error) => {
+                warn!("Invalid framebuffer blit source: {}", error);
+                return;
             }
+        };
+
+        let source = match Surface::new(pixels, source_info) {
+            Ok(surface) => surface,
+            Err(error) => {
+                warn!("Invalid framebuffer blit buffer: {}", error);
+                return;
+            }
+        };
+
+        let mut destination = match self.as_surface_mut() {
+            Ok(surface) => surface,
+            Err(error) => {
+                warn!("Framebuffer is unavailable for blitting: {}", error);
+                return;
+            }
+        };
+
+        if let Err(error) = blit_opaque(
+            &source,
+            &mut destination,
+            0,
+            0,
+            i64::from(x),
+            i64::from(y),
+            width,
+            height,
+        ) {
+            warn!("Framebuffer blit failed: {}", error);
         }
     }
 
