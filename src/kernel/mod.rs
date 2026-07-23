@@ -5,11 +5,15 @@ use core::time::Duration;
 
 use crate::arch::exceptions::PrivilegeLevel;
 
+use crate::assets::ImageAsset;
 use crate::drivers::{
     gpio::{GpioPin, GpioPull},
     uart::UART,
 };
+use crate::graphics::framebuffer::FRAMEBUFFER;
+use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
 use crate::hid::Key;
+use crate::storage::fs::vfs::VFS;
 use crate::time::time_manager;
 
 use crate::{
@@ -87,6 +91,45 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         "HID GPIO test enabled on GPIO{}: connect pin to GND to hold A",
         HID_TEST_GPIO
     );
+
+    let vfs = VFS.get_mut();
+    
+    let image_file = vfs.open_fs(crate::storage::fs::vfs::FsId::Rom, "background.kwim");
+    if let Err(err) = image_file {
+        panic!("failed to open background image: {:?}", err);
+    } 
+    let image_file = image_file.unwrap();
+    
+
+    let image = ImageAsset::parse(image_file.as_bytes())
+        .expect("failed to parse background image");
+
+    let surface = image.surface();
+
+    let layers = [
+        Layer::Image(ImageLayer {
+            source: surface,
+            source_rect: SourceRect::whole(&surface),
+            position: Point::new(0, 0),
+            blend_mode: BlendMode::Opaque,
+        }),
+    ];
+
+    let compositor = Compositor::new(0x000000ff);
+
+    let framebuffer = FRAMEBUFFER.get();
+
+    {
+        let mut backbuffer = framebuffer
+            .as_surface_mut()
+            .expect("framebuffer backbuffer unavailable");
+
+        compositor
+            .render(&mut backbuffer, &layers)
+            .expect("frame composition failed");
+    }
+
+    assert!(framebuffer.present());
 
     loop {
         let now = time_manager().uptime();
