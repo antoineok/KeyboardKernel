@@ -68,7 +68,7 @@
           tmux
           python3
           python3Packages.pyserial
-
+          python3Packages.pyusb
           bash
 
           # Simply for convenience, to format the nix files in this project
