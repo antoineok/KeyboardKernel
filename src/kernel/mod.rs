@@ -1,17 +1,17 @@
 pub mod init;
 
 use aarch64_cpu::asm::nop;
-use core::time::Duration;
+use core::{cell::UnsafeCell, time::Duration};
 
 use crate::arch::exceptions::PrivilegeLevel;
 
-use crate::assets::ImageAsset;
+use crate::assets::blit_streamed_image;
 use crate::drivers::{
     gpio::{GpioPin, GpioPull},
     uart::UART,
 };
 use crate::graphics::framebuffer::FRAMEBUFFER;
-use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
+use crate::graphics::{BlendMode, Compositor};
 use crate::hid::Key;
 use crate::storage::fs::vfs::VFS;
 use crate::time::time_manager;
@@ -27,6 +27,21 @@ use crate::{
 
 #[cfg(feature = "jtag")]
 use crate::jtag::breakpoint;
+
+const BACKGROUND_ROW_BUFFER_SIZE: usize = 1366 * 4;
+
+struct BackgroundRowBuffer(UnsafeCell<[u8; BACKGROUND_ROW_BUFFER_SIZE]>);
+
+unsafe impl Sync for BackgroundRowBuffer {}
+
+impl BackgroundRowBuffer {
+    fn get_mut(&self) -> &mut [u8; BACKGROUND_ROW_BUFFER_SIZE] {
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+static BACKGROUND_ROW_BUFFER: BackgroundRowBuffer =
+    BackgroundRowBuffer(UnsafeCell::new([0; BACKGROUND_ROW_BUFFER_SIZE]));
 
 #[no_mangle]
 pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
@@ -92,31 +107,12 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         HID_TEST_GPIO
     );
 
-    let vfs = VFS.get_mut();
-    
-    let image_file = vfs.open_fs(crate::storage::fs::vfs::FsId::Rom, "background.kwim");
-    if let Err(err) = image_file {
-        panic!("failed to open background image: {:?}", err);
-    } 
-    let image_file = image_file.unwrap();
-    
-
-    let image = ImageAsset::parse(image_file.as_bytes())
-        .expect("failed to parse background image");
-
-    let surface = image.surface();
-
-    let layers = [
-        Layer::Image(ImageLayer {
-            source: surface,
-            source_rect: SourceRect::whole(&surface),
-            position: Point::new(0, 0),
-            blend_mode: BlendMode::Opaque,
-        }),
-    ];
+    let vfs = VFS.get();
+    let mut image_stream = vfs
+        .open_stream_fs(crate::storage::fs::vfs::FsId::Rom, "background.kwim")
+        .expect("failed to open background image");
 
     let compositor = Compositor::new(0x000000ff);
-
     let framebuffer = FRAMEBUFFER.get();
 
     {
@@ -124,9 +120,22 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .as_surface_mut()
             .expect("framebuffer backbuffer unavailable");
 
+        // Start from a complete frame, then stream the fullscreen image
+        // directly from eMMC one row at a time.
         compositor
-            .render(&mut backbuffer, &layers)
+            .render(&mut backbuffer, &[])
             .expect("frame composition failed");
+
+        blit_streamed_image(
+            vfs,
+            &mut image_stream,
+            &mut backbuffer,
+            0,
+            0,
+            BlendMode::Opaque,
+            BACKGROUND_ROW_BUFFER.get_mut(),
+        )
+        .expect("failed to stream background image");
     }
 
     assert!(framebuffer.present());

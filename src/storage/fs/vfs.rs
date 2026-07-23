@@ -6,11 +6,14 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::reader::Reader;
 use crate::storage::block::{BlockDevice, BlockError};
-use crate::storage::fs::fat32::file::FatFile;
+use crate::storage::fs::fat32::file::{FatFile, FatFileReader};
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
 
-use crate::reader::Reader; // adjust path if your Reader is elsewhere
+/// Files opened through `open_fs` are intentionally limited because that API
+/// materializes the complete file in the general-purpose kernel heap.
+pub const MAX_EAGER_FILE_SIZE: usize = 1024 * 1024;
 
 //--------------------------------------------------------------------------------------------------
 // Drive IDs
@@ -29,6 +32,8 @@ pub enum VfsError {
     Fat(Fat32Error),
     Block(BlockError),
     Utf8,
+    FileTooLargeForEagerRead { size: usize, maximum: usize },
+    UnexpectedEof { expected: usize, actual: usize },
 }
 
 impl From<Fat32Error> for VfsError {
@@ -36,6 +41,7 @@ impl From<Fat32Error> for VfsError {
         VfsError::Fat(e)
     }
 }
+
 impl From<BlockError> for VfsError {
     fn from(e: BlockError) -> Self {
         VfsError::Block(e)
@@ -43,7 +49,7 @@ impl From<BlockError> for VfsError {
 }
 
 //--------------------------------------------------------------------------------------------------
-// File handle (owns bytes, can create Reader view safely)
+// Eager file handle (owns bytes, can create Reader view safely)
 //--------------------------------------------------------------------------------------------------
 pub struct FileHandle {
     name: String,
@@ -57,6 +63,10 @@ impl FileHandle {
 
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -75,10 +85,40 @@ impl FileHandle {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Streaming file handle
+//--------------------------------------------------------------------------------------------------
+pub struct FileStream {
+    fs: FsId,
+    reader: FatFileReader,
+}
+
+impl FileStream {
+    pub fn name(&self) -> &str {
+        self.reader.name()
+    }
+
+    pub fn len(&self) -> usize {
+        self.reader.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reader.is_empty()
+    }
+
+    pub fn position(&self) -> usize {
+        self.reader.position()
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.reader.remaining()
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Mounts
 //--------------------------------------------------------------------------------------------------
 struct FatMount<'a> {
-    dev: &'a dyn BlockDevice, // usually PartitionBlockDevice<'a> or anything implementing BlockDevice
+    dev: &'a dyn BlockDevice,
     vol: Fat32Volume,
 }
 
@@ -147,27 +187,117 @@ impl<'a> Vfs<'a> {
         self.exists_fs(fs, path)
     }
 
-    /// Open by (drive, path). Path is root-relative (no scheme), e.g. "exemple/test.txt".
+    /// Open a small file by `(drive, path)` and read it completely into memory.
+    ///
+    /// Large assets must use `open_stream_fs` so a profile cannot exhaust the
+    /// general-purpose heap merely by opening one file.
     pub fn open_fs(&self, fs: FsId, path: &str) -> Result<FileHandle, VfsError> {
         let path = normalize_path(path)?;
-
         let m = self.get_mount(fs)?;
+        let file: FatFile = m.vol.open_file_path(m.dev, &path)?;
+        let size = file.size as usize;
 
-        // Resolve file on FAT
-        let f: FatFile = m.vol.open_file_path(m.dev, &path)?;
+        if size > MAX_EAGER_FILE_SIZE {
+            return Err(VfsError::FileTooLargeForEagerRead {
+                size,
+                maximum: MAX_EAGER_FILE_SIZE,
+            });
+        }
 
-        // Read whole file into memory
-        let mut data = vec![0u8; f.size as usize];
-        let n = m.vol.read_file_prefix(m.dev, &f, &mut data)?;
-        data.truncate(n);
+        let mut data = vec![0u8; size];
+        let read = m.vol.read_file_prefix(m.dev, &file, &mut data)?;
 
-        Ok(FileHandle { name: f.name, data })
+        if read != size {
+            return Err(VfsError::UnexpectedEof {
+                expected: size,
+                actual: read,
+            });
+        }
+
+        Ok(FileHandle {
+            name: file.name,
+            data,
+        })
     }
 
-    /// Open by URI: "bootfs://path/to/file" or "romfs://path/to/file".
+    /// Open a small file by URI and read it completely into memory.
     pub fn open_uri(&self, uri: &str) -> Result<FileHandle, VfsError> {
         let (fs, path) = parse_uri(uri)?;
         self.open_fs(fs, path)
+    }
+
+    /// Open a file without allocating storage for its contents.
+    pub fn open_stream_fs(&self, fs: FsId, path: &str) -> Result<FileStream, VfsError> {
+        let path = normalize_path(path)?;
+        let m = self.get_mount(fs)?;
+        let file = m.vol.open_file_path(m.dev, &path)?;
+        let reader = m.vol.open_file_reader(file)?;
+
+        Ok(FileStream { fs, reader })
+    }
+
+    /// Open a streaming file by URI.
+    pub fn open_stream_uri(&self, uri: &str) -> Result<FileStream, VfsError> {
+        let (fs, path) = parse_uri(uri)?;
+        self.open_stream_fs(fs, path)
+    }
+
+    /// Read the next bytes from a streaming file.
+    pub fn read_stream(
+        &self,
+        stream: &mut FileStream,
+        buffer: &mut [u8],
+    ) -> Result<usize, VfsError> {
+        let mount = self.get_mount(stream.fs)?;
+        Ok(mount.vol.read_file(mount.dev, &mut stream.reader, buffer)?)
+    }
+
+    /// Fill `buffer` from a streaming file or report a short file.
+    pub fn read_exact_stream(
+        &self,
+        stream: &mut FileStream,
+        mut buffer: &mut [u8],
+    ) -> Result<(), VfsError> {
+        let expected = buffer.len();
+        let mut total = 0usize;
+
+        while !buffer.is_empty() {
+            let read = self.read_stream(stream, buffer)?;
+
+            if read == 0 {
+                return Err(VfsError::UnexpectedEof {
+                    expected,
+                    actual: total,
+                });
+            }
+
+            total += read;
+            buffer = &mut buffer[read..];
+        }
+
+        Ok(())
+    }
+
+    /// Advance a streaming file without allocating a temporary buffer.
+    pub fn skip_stream(&self, stream: &mut FileStream, mut amount: usize) -> Result<(), VfsError> {
+        let expected = stream.position().checked_add(amount).unwrap_or(usize::MAX);
+        let mut scratch = [0u8; 512];
+
+        while amount != 0 {
+            let chunk = core::cmp::min(amount, scratch.len());
+            let read = self.read_stream(stream, &mut scratch[..chunk])?;
+
+            if read == 0 {
+                return Err(VfsError::UnexpectedEof {
+                    expected,
+                    actual: stream.position(),
+                });
+            }
+
+            amount -= read;
+        }
+
+        Ok(())
     }
 
     pub fn write_fs(&mut self, fs: FsId, path: &str, data: &[u8]) -> Result<(), VfsError> {
@@ -192,11 +322,8 @@ impl<'a> Vfs<'a> {
     pub fn rename_fs(&self, fs: FsId, old_path: &str, new_path: &str) -> Result<(), VfsError> {
         let old_path = normalize_path(old_path)?;
         let new_path = normalize_path(new_path)?;
-
         let m = self.get_mount(fs)?;
-
         m.vol.rename_file_83(m.dev, &old_path, &new_path)?;
-
         Ok(())
     }
 
@@ -215,17 +342,13 @@ impl<'a> Vfs<'a> {
 
     pub fn delete_fs(&mut self, fs: FsId, path: &str) -> Result<(), VfsError> {
         let path = normalize_path(path)?;
-
         let m = self.get_mount_mut(fs)?;
-
         m.vol.delete_file_83(m.dev, &path)?;
-
         Ok(())
     }
 
     pub fn delete_uri(&mut self, uri: &str) -> Result<(), VfsError> {
         let (fs, path) = parse_uri(uri)?;
-
         self.delete_fs(fs, path)
     }
 }
@@ -235,12 +358,6 @@ impl<'a> Vfs<'a> {
 //--------------------------------------------------------------------------------------------------
 
 fn parse_uri(uri: &str) -> Result<(FsId, &str), VfsError> {
-    // Accept both:
-    //   bootfs://a/b
-    //   bootfs:/a/b
-    //   bootfs:a/b
-    //
-    // We'll normalize by stripping the scheme and leading slashes.
     let (scheme, rest) = uri
         .split_once(':')
         .ok_or(VfsError::InvalidPath("missing ':' in uri"))?;
@@ -253,7 +370,6 @@ fn parse_uri(uri: &str) -> Result<(FsId, &str), VfsError> {
 
     let mut path = rest;
 
-    // Strip optional leading "//" or "/"
     if let Some(stripped) = path.strip_prefix("//") {
         path = stripped;
     }
@@ -265,44 +381,43 @@ fn parse_uri(uri: &str) -> Result<(FsId, &str), VfsError> {
 }
 
 /// Normalize a root-relative path:
-/// - accept "/a/b" or "a/b"
-/// - collapse repeated '/'
-/// - reject ".."
-/// - remove leading '/'
+/// - accept `/a/b` or `a/b`
+/// - collapse repeated `/`
+/// - reject `..`
+/// - remove the leading `/`
 fn normalize_path(path: &str) -> Result<String, VfsError> {
-    let mut p = path;
+    let mut path = path;
 
-    // remove leading '/'
-    while let Some(rest) = p.strip_prefix('/') {
-        p = rest;
+    while let Some(rest) = path.strip_prefix('/') {
+        path = rest;
     }
 
-    if p.is_empty() {
+    if path.is_empty() {
         return Err(VfsError::InvalidPath("empty path"));
     }
 
-    let mut out = String::new();
+    let mut output = String::new();
     let mut first = true;
 
-    for comp in p.split('/') {
-        if comp.is_empty() || comp == "." {
+    for component in path.split('/') {
+        if component.is_empty() || component == "." {
             continue;
         }
-        if comp == ".." {
+        if component == ".." {
             return Err(VfsError::InvalidPath(".. not supported"));
         }
         if !first {
-            out.push('/');
+            output.push('/');
         }
-        out.push_str(comp);
+        output.push_str(component);
         first = false;
     }
 
-    if out.is_empty() {
+    if output.is_empty() {
         return Err(VfsError::InvalidPath("path reduced to empty"));
     }
 
-    Ok(out)
+    Ok(output)
 }
 
 //--------------------------------------------------------------------------------------------------

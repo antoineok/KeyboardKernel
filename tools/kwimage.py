@@ -13,6 +13,7 @@ MAGIC = b"KWIM"
 VERSION = 1
 HEADER_SIZE = 32
 
+FORMAT_RGBX8888 = 1
 FORMAT_RGBA8888 = 3
 
 
@@ -81,13 +82,23 @@ def convert_image(
     output_path: Path,
     size: tuple[int, int] | None,
     fit: str,
+    preserve_alpha: bool,
 ) -> None:
     with Image.open(input_path) as source:
         image = resize_image(source, size, fit)
 
     width, height = image.size
     pitch = width * 4
-    pixels = image.tobytes("raw", "RGBA")
+
+    if preserve_alpha:
+        pixel_format = FORMAT_RGBA8888
+        pixel_format_name = "RGBA8888"
+        pixels = image.convert("RGBA").tobytes("raw", "RGBA")
+    else:
+        pixel_format = FORMAT_RGBX8888
+        pixel_format_name = "RGBX8888"
+        pixels = image.convert("RGB").convert("RGBA").tobytes("raw", "RGBA")
+
     data_length = len(pixels)
 
     expected_length = pitch * height
@@ -102,7 +113,7 @@ def convert_image(
         MAGIC,
         VERSION,
         HEADER_SIZE,
-        FORMAT_RGBA8888,
+        pixel_format,
         0,  # Flags.
         0,  # Reserved.
         width,
@@ -126,7 +137,7 @@ def convert_image(
     print(f"Input:       {input_path}")
     print(f"Output:      {output_path}")
     print(f"Dimensions:  {width}x{height}")
-    print(f"Pixel format: RGBA8888")
+    print(f"Pixel format: {pixel_format_name}")
     print(f"Pitch:       {pitch} bytes")
     print(f"Data:        {data_length} bytes")
     print(f"Total:       {HEADER_SIZE + data_length} bytes")
@@ -162,6 +173,12 @@ def main() -> None:
         help="how to fit the image when --size is supplied",
     )
 
+    parser.add_argument(
+        "--alpha",
+        action="store_true",
+        help="preserve transparency and emit RGBA8888 instead of RGBX8888",
+    )
+
     arguments = parser.parse_args()
 
     convert_image(
@@ -169,6 +186,7 @@ def main() -> None:
         arguments.output,
         arguments.size,
         arguments.fit,
+        arguments.alpha,
     )
 
 
