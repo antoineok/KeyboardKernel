@@ -10,7 +10,7 @@ use crate::{
 };
 
 use crate::graphics::{
-    blit::blit_opaque,
+    blit::{blit_alpha as blit_surface_alpha, blit_opaque},
     surface::{PixelFormat, Surface, SurfaceError, SurfaceInfo, SurfaceMut},
 };
 pub struct Framebuffer {
@@ -365,6 +365,54 @@ impl Framebuffer {
             height,
         ) {
             warn!("Framebuffer blit failed: {}", error);
+        }
+    }
+
+    /// Alpha-blend a tightly packed RGBA8888 buffer over the framebuffer.
+    pub fn blit_alpha(&mut self, x: i64, y: i64, width: u32, height: u32, pixels: &[u8]) {
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let source_pitch = match (width as usize).checked_mul(4) {
+            Some(pitch) => pitch,
+            None => {
+                warn!("Alpha blit source pitch overflow");
+                return;
+            }
+        };
+
+        let source_info = match SurfaceInfo::new(width, height, source_pitch, PixelFormat::Rgba8888)
+        {
+            Ok(info) => info,
+
+            Err(error) => {
+                warn!("Invalid alpha blit source: {}", error);
+                return;
+            }
+        };
+
+        let source = match Surface::new(pixels, source_info) {
+            Ok(surface) => surface,
+
+            Err(error) => {
+                warn!("Invalid alpha blit buffer: {}", error);
+                return;
+            }
+        };
+
+        let mut destination = match self.as_surface_mut() {
+            Ok(surface) => surface,
+
+            Err(error) => {
+                warn!("Framebuffer unavailable for alpha blitting: {}", error);
+                return;
+            }
+        };
+
+        if let Err(error) = blit_surface_alpha(&source, &mut destination, 0, 0, x, y, width, height)
+        {
+            warn!("Framebuffer alpha blit failed: {}", error);
         }
     }
 
