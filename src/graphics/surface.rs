@@ -109,6 +109,7 @@ impl SurfaceInfo {
 ///
 /// This will later be suitable for image assets, font atlases and decoded
 /// video frames used as blit sources.
+#[derive(Clone, Copy)]
 pub struct Surface<'a> {
     pixels: &'a [u8],
     info: SurfaceInfo,
