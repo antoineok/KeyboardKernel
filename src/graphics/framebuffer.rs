@@ -2,18 +2,25 @@ use core::cell::UnsafeCell;
 
 use crate::{
     drivers::mailbox::{
-        MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
-        MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
-        MBOX_TAG_SETVIRTWH,
-    },
-    early_timeit, warn,
+        MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST, MBOX_TAG_SETALPHAMODE, MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF, MBOX_TAG_SETVIRTWH,
+    }, early_timeit, warn,
+};
+
+use crate::graphics::surface::{
+    PixelFormat,
+    SurfaceError,
+    SurfaceInfo,
+    SurfaceMut,
 };
 
 pub struct Framebuffer {
     width: u32,
     height: u32,
     pitch: u32,
-    is_rgb: bool,
+    pixel_format: PixelFormat,
+
+    /// Size of the allocation returned by MBOX_TAG_GETFB.
+    buffer_size: usize,
     buffer: *mut u8,
 }
 
@@ -37,7 +44,8 @@ impl Framebuffer {
             width: 0,
             height: 0,
             pitch: 0,
-            is_rgb: false,
+            pixel_format: PixelFormat::None,
+            buffer_size: 0,
             buffer: core::ptr::null_mut(),
         }
     }
@@ -103,21 +111,32 @@ impl Framebuffer {
         });
 
         if result && mbox.buffer[20] == 32 && mbox.buffer[28] != 0 {
+            let pixel_format = match mbox.buffer[24] {
+                1 => PixelFormat::Rgbx8888,
+                0 => PixelFormat::Bgrx8888,
+                value => {
+                    warn!("Unsupported framebuffer pixel order: {}", value);
+                    self.reset();
+                    return;
+                }
+            };
+
             // Convert the VideoCore bus address to an ARM physical address.
-            mbox.buffer[28] &= 0x3fff_ffff;
+            let buffer_address = mbox.buffer[28] & 0x3fff_ffff;
+            let buffer_size = mbox.buffer[29] as usize;
 
             self.width = mbox.buffer[5];
             self.height = mbox.buffer[6];
             self.pitch = mbox.buffer[33];
-            self.is_rgb = mbox.buffer[24] == 1;
-            self.buffer = mbox.buffer[28] as *mut u8;
+            self.pixel_format = pixel_format;
+            self.buffer_size = buffer_size;
+            self.buffer = buffer_address as *mut u8;
 
-            /*
-             * Deliberately do not clear the framebuffer here.
-             *
-             * The first complete UI frame should overwrite the display, avoiding
-             * a redundant full-framebuffer write during the boot-critical path.
-             */
+            if let Err(error) = self.as_surface_mut() {
+                warn!("Invalid framebuffer surface: {}", error);
+                self.reset();
+                return;
+            }
         } else {
             warn!("No framebuffer available, continuing headless");
             self.reset();
@@ -129,7 +148,8 @@ impl Framebuffer {
         self.width = 0;
         self.height = 0;
         self.pitch = 0;
-        self.is_rgb = false;
+        self.pixel_format = PixelFormat::None;
+        self.buffer_size = 0;
         self.buffer = core::ptr::null_mut();
     }
 
@@ -149,13 +169,18 @@ impl Framebuffer {
     }
 
     #[inline(always)]
-    pub fn is_rgb(&self) -> bool {
-        self.is_rgb
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.pixel_format
     }
 
     #[inline(always)]
     pub fn buffer(&self) -> *mut u8 {
         self.buffer
+    }
+
+    #[inline(always)]
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
     }
 
     #[inline(always)]
@@ -324,43 +349,47 @@ impl Framebuffer {
 
             let src = &pixels[row as usize * w as usize * size_of::<u32>()..];
 
-            if self.is_rgb {
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src.as_ptr(),
+            match self.pixel_format() {
+                PixelFormat::Rgbx8888 => {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            src.as_ptr(),
                         dst,
                         w as usize * size_of::<u32>(),
-                    );
-                }
-            } else {
-                for i in 0..w as usize {
-                    let source_offset = i * size_of::<u32>();
-
-                    unsafe {
-                        *dst.add(source_offset) = src[source_offset + 2];
-                        *dst.add(source_offset + 1) = src[source_offset + 1];
-                        *dst.add(source_offset + 2) = src[source_offset];
-                        *dst.add(source_offset + 3) = src[source_offset + 3];
+                        );
                     }
+                },
+                PixelFormat::Bgrx8888 => {
+                    for i in 0..w as usize {
+                        let source_offset = i * size_of::<u32>();
+
+                        unsafe {
+                            *dst.add(source_offset) = src[source_offset + 2];
+                            *dst.add(source_offset + 1) = src[source_offset + 1];
+                            *dst.add(source_offset + 2) = src[source_offset];
+                            *dst.add(source_offset + 3) = src[source_offset + 3];
+                        }
+                    }
+                },
+                _ => {
+                    warn!("Unsupported pixel format for blit: {:?}", self.pixel_format());
+                    break;
                 }
             }
         }
     }
 
-    #[inline(always)]
     fn pack_pixel(&self, color: u32) -> u32 {
-        // Input format: 0xAARRGGBB.
-        let a = (color >> 24) & 0xff;
-        let r = (color >> 16) & 0xff;
-        let g = (color >> 8) & 0xff;
-        let b = color & 0xff;
+        // Input format: 0xRRGGBBAA.
+        let [r, g, b, _a] = color.to_be_bytes();
 
-        if self.is_rgb {
-            // Bytes in memory: R G B A.
-            (a << 24) | (b << 16) | (g << 8) | r
-        } else {
-            // Bytes in memory: B G R A.
-            (a << 24) | (r << 16) | (g << 8) | b
+        match self.pixel_format() {
+            PixelFormat::Rgbx8888 => u32::from_le_bytes([r, g, b, 0xff]),
+            PixelFormat::Bgrx8888 => u32::from_le_bytes([b, g, r, 0xff]),
+
+            _ => {
+                unreachable!("invalid framebuffer pixel format")
+            }
         }
     }
 
@@ -403,6 +432,34 @@ impl Framebuffer {
         unsafe {
             core::ptr::write_bytes(self.buffer, color, len);
         }
+    }
+
+    pub fn as_surface_mut(&mut self) -> Result<SurfaceMut<'_>, SurfaceError> {
+        if self.buffer.is_null() {
+            return Err(SurfaceError::NullBuffer);
+        }
+
+        let info = SurfaceInfo::new(
+            self.width,
+            self.height,
+            self.pitch as usize,
+            self.pixel_format,
+        )?;
+
+        // Safety:
+        //
+        // - `buffer` and `buffer_size` were returned together by the mailbox;
+        // - the framebuffer allocation remains alive while the display is active;
+        // - borrowing `&mut self` prevents another safe mutable surface view from
+        //   being created through this Framebuffer simultaneously.
+        let pixels = unsafe {
+            core::slice::from_raw_parts_mut(
+                self.buffer,
+                self.buffer_size,
+            )
+        };
+
+        SurfaceMut::new(pixels, info)
     }
 }
 
