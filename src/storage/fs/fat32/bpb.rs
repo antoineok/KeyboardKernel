@@ -32,7 +32,11 @@ impl Fat32Bpb {
 
         let tot_sec_16 = u16::from_le_bytes([vbr[0x13], vbr[0x14]]) as u32;
         let tot_sec_32 = u32::from_le_bytes([vbr[0x20], vbr[0x21], vbr[0x22], vbr[0x23]]);
-        let tot_sec = if tot_sec_16 != 0 { tot_sec_16 } else { tot_sec_32 };
+        let tot_sec = if tot_sec_16 != 0 {
+            tot_sec_16
+        } else {
+            tot_sec_32
+        };
 
         let fat_sz_16 = u16::from_le_bytes([vbr[0x16], vbr[0x17]]) as u32;
         let fat_sz_32 = u32::from_le_bytes([vbr[0x24], vbr[0x25], vbr[0x26], vbr[0x27]]);

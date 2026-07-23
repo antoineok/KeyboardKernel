@@ -31,7 +31,9 @@ fn make_short_name_83(name: &str) -> Result<[u8; 11], Fat32Error> {
 
     for (i, b) in ext.bytes().enumerate() {
         if !b.is_ascii_alphanumeric() && b != b'_' && b != b'-' {
-            return Err(Fat32Error::Invalid("FAT32: invalid 8.3 extension character"));
+            return Err(Fat32Error::Invalid(
+                "FAT32: invalid 8.3 extension character",
+            ));
         }
         out[8 + i] = b.to_ascii_uppercase();
     }
@@ -52,7 +54,9 @@ fn split_parent(path: &str) -> Result<(Vec<&str>, &str), Fat32Error> {
         comps.push(comp);
     }
 
-    let file_name = comps.pop().ok_or(Fat32Error::Invalid("FAT32: empty path"))?;
+    let file_name = comps
+        .pop()
+        .ok_or(Fat32Error::Invalid("FAT32: empty path"))?;
     Ok((comps, file_name))
 }
 
@@ -67,7 +71,9 @@ impl Fat32Volume {
         for comp in comps {
             let e = self.find_in_dir(dev, cur, comp)?;
             if !e.is_dir() {
-                return Err(Fat32Error::Invalid("FAT32: parent component is not directory"));
+                return Err(Fat32Error::Invalid(
+                    "FAT32: parent component is not directory",
+                ));
             }
             if e.first_cluster < 2 {
                 return Err(Fat32Error::Invalid("FAT32: invalid directory cluster"));

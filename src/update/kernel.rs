@@ -28,7 +28,10 @@ impl KernelUpdater {
         Ok(())
     }
 
-    pub fn verify_staged(expected_size: usize, expected_sha256: &[u8; 32]) -> Result<(), UpdateError> {
+    pub fn verify_staged(
+        expected_size: usize,
+        expected_sha256: &[u8; 32],
+    ) -> Result<(), UpdateError> {
         let vfs = VFS.get_mut();
         let file = vfs
             .open_fs(UPDATE_FS, KERNEL_NEW)
@@ -63,8 +66,10 @@ impl KernelUpdater {
             vfs.delete_fs(UPDATE_FS, KERNEL_OLD).unwrap();
         }
 
-        vfs.rename_fs(UPDATE_FS, KERNEL_CURRENT, KERNEL_OLD).unwrap();
-        vfs.rename_fs(UPDATE_FS, KERNEL_NEW, KERNEL_CURRENT).unwrap();
+        vfs.rename_fs(UPDATE_FS, KERNEL_CURRENT, KERNEL_OLD)
+            .unwrap();
+        vfs.rename_fs(UPDATE_FS, KERNEL_NEW, KERNEL_CURRENT)
+            .unwrap();
 
         UART.get().write_text("FIRMWARE COMMIT DONE, REBOOTING\n");
         for _ in 0..1_000_000 {

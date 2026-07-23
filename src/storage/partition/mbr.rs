@@ -56,14 +56,16 @@ pub fn read_partitions(dev: &dyn BlockDevice) -> Result<Vec<Partition>, Partitio
         // Optional bounds checks if device knows its size
         if let Some(total) = dev.sector_count() {
             if start_lba >= total {
-                return Err(PartitionError::Block(crate::storage::block::BlockError::OutOfBounds(
-                    start_lba,
-                )));
+                return Err(PartitionError::Block(
+                    crate::storage::block::BlockError::OutOfBounds(start_lba),
+                ));
             }
             if start_lba.saturating_add(sectors) > total {
-                return Err(PartitionError::Block(crate::storage::block::BlockError::OutOfBounds(
-                    start_lba.saturating_add(sectors),
-                )));
+                return Err(PartitionError::Block(
+                    crate::storage::block::BlockError::OutOfBounds(
+                        start_lba.saturating_add(sectors),
+                    ),
+                ));
             }
         }
 
@@ -82,5 +84,7 @@ pub fn read_partitions(dev: &dyn BlockDevice) -> Result<Vec<Partition>, Partitio
 
 /// Returns true if this MBR looks like a GPT protective MBR (contains a 0xEE entry).
 pub fn is_protective_mbr(parts: &[Partition]) -> bool {
-    parts.iter().any(|p| matches!(p.kind, PartitionKind::MbrType(0xEE)))
+    parts
+        .iter()
+        .any(|p| matches!(p.kind, PartitionKind::MbrType(0xEE)))
 }

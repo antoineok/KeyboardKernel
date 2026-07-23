@@ -124,11 +124,7 @@ impl<'a> Vfs<'a> {
     // Open APIs
     //----------------------------------------------------------------------------------------------
 
-    pub fn exists_fs(
-        &self,
-        fs: FsId,
-        path: &str,
-    ) -> bool {
+    pub fn exists_fs(&self, fs: FsId, path: &str) -> bool {
         let path = match normalize_path(path) {
             Ok(p) => p,
             Err(_) => return false,
@@ -193,12 +189,7 @@ impl<'a> Vfs<'a> {
         self.write_fs(fs, path, data)
     }
 
-    pub fn rename_fs(
-        &self,
-        fs: FsId,
-        old_path: &str,
-        new_path: &str,
-    ) -> Result<(), VfsError> {
+    pub fn rename_fs(&self, fs: FsId, old_path: &str, new_path: &str) -> Result<(), VfsError> {
         let old_path = normalize_path(old_path)?;
         let new_path = normalize_path(new_path)?;
 
@@ -209,11 +200,7 @@ impl<'a> Vfs<'a> {
         Ok(())
     }
 
-    pub fn rename_uri(
-        &self,
-        old_uri: &str,
-        new_uri: &str,
-    ) -> Result<(), VfsError> {
+    pub fn rename_uri(&self, old_uri: &str, new_uri: &str) -> Result<(), VfsError> {
         let (old_fs, old_path) = parse_uri(old_uri)?;
         let (new_fs, new_path) = parse_uri(new_uri)?;
 
@@ -241,7 +228,6 @@ impl<'a> Vfs<'a> {
 
         self.delete_fs(fs, path)
     }
-
 }
 
 //--------------------------------------------------------------------------------------------------

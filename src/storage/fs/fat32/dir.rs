@@ -1,9 +1,9 @@
 extern crate alloc;
 
-use alloc::string::String;
-use crate::{info, warn};
 use crate::storage::block::{BlockDevice, SECTOR_SIZE};
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
+use crate::{info, warn};
+use alloc::string::String;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DirEntry83 {
@@ -152,8 +152,8 @@ const LFN_MAX_UNITS: usize = 260;
 pub(super) struct LfnState {
     active: bool,
     checksum: u8,
-    last_ord: u8,        // total number of LFN entries in this chain
-    expected_ord: u8,    // next expected ord (descending)
+    last_ord: u8,     // total number of LFN entries in this chain
+    expected_ord: u8, // next expected ord (descending)
     buf: [u16; LFN_MAX_UNITS],
 }
 
@@ -272,11 +272,13 @@ impl LfnState {
     }
 }
 
-
 /// List root directory entries, now with LFN support.
 /// For now, still assumes root directory fits in one cluster. (Next step: FAT chaining)
 pub fn list_root_dir(dev: &dyn BlockDevice, vol: &Fat32Volume) -> Result<(), Fat32Error> {
-    info!("FAT32: listing root directory (cluster {})", vol.bpb.root_clus);
+    info!(
+        "FAT32: listing root directory (cluster {})",
+        vol.bpb.root_clus
+    );
 
     let mut lfn = LfnState::new();
 
@@ -345,9 +347,7 @@ pub fn list_root_dir(dev: &dyn BlockDevice, vol: &Fat32Volume) -> Result<(), Fat
                     "    attr: 0x{:02x} cluster: {} size: {}",
                     attr, first_cluster, file_size
                 );
-
             }
-
         }
 
         Ok(())

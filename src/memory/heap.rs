@@ -58,7 +58,8 @@ impl KernelHeap {
         }
 
         let pages = HEAP_PAGES;
-        let pa = PHYS_ALLOCATOR.get_mut()
+        let pa = PHYS_ALLOCATOR
+            .get_mut()
             .alloc_contiguous(pages)
             .expect("KernelHeap: failed to allocate heap region from PHYS_ALLOCATOR");
 
@@ -119,10 +120,7 @@ impl KernelHeap {
                 }
             };
 
-            let alloc_end = align_up(
-                raw_alloc_end,
-                core::mem::align_of::<FreeBlock>(),
-            );
+            let alloc_end = align_up(raw_alloc_end, core::mem::align_of::<FreeBlock>());
 
             if alloc_end > block_end {
                 // Doesn't fit in this block; try next.

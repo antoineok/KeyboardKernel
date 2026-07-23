@@ -12,14 +12,13 @@ const ATTR_VOLUME_ID: u8 = 0x08;
 /// A directory entry resolved by name lookup (long or short).
 #[derive(Clone, Debug)]
 pub struct FoundEntry {
-    pub name: String,        // long name if present, else short
-    pub short_name: String,  // always present for debug
+    pub name: String,       // long name if present, else short
+    pub short_name: String, // always present for debug
     pub attr: u8,
     pub first_cluster: u32,
     pub size: u32,
     pub dirent_lba: u64,
-pub dirent_off: usize,
-
+    pub dirent_off: usize,
 }
 
 impl FoundEntry {
@@ -129,7 +128,6 @@ impl Fat32Volume {
                     let dirent_lba = (base_lba + s) as u64;
                     let dirent_off = off;
 
-
                     // Match rules: prefer long name if present, else short.
                     let matched = if let Some(lfn_name) = &long_name {
                         eq_ci(lfn_name, name)
@@ -144,7 +142,8 @@ impl Fat32Volume {
                             attr,
                             first_cluster,
                             size,
-                            dirent_lba, dirent_off,
+                            dirent_lba,
+                            dirent_off,
                         });
                         return Ok(());
                     }
@@ -178,12 +177,16 @@ impl Fat32Volume {
 
             if !is_last {
                 if !e.is_dir() {
-                    return Err(Fat32Error::Invalid("FAT32: path component is not a directory"));
+                    return Err(Fat32Error::Invalid(
+                        "FAT32: path component is not a directory",
+                    ));
                 }
                 // Directory entries can have first_cluster = 0 for root in some cases,
                 // but for subdirs it should be >=2.
                 if e.first_cluster < 2 {
-                    return Err(Fat32Error::Invalid("FAT32: directory has invalid first_cluster"));
+                    return Err(Fat32Error::Invalid(
+                        "FAT32: directory has invalid first_cluster",
+                    ));
                 }
                 cur_dir = e.first_cluster;
             }

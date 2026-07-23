@@ -1,11 +1,11 @@
+pub mod bpb;
 pub mod create;
 pub mod delete;
-pub mod rename;
-pub mod bpb;
-pub mod fat;
 pub mod dir;
+pub mod fat;
 pub mod file;
 pub mod path;
+pub mod rename;
 
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 use crate::storage::fs::fat32::bpb::Fat32Bpb;
@@ -45,10 +45,14 @@ impl Fat32Volume {
         let bpb = Fat32Bpb::parse(&vbr)?;
 
         let fat1_lba = bpb.rsvd_sec_cnt as u64;
-        let data_lba =
-            fat1_lba + (bpb.num_fats as u64) * (bpb.fat_sz as u64);
+        let data_lba = fat1_lba + (bpb.num_fats as u64) * (bpb.fat_sz as u64);
 
-        Ok(Self { bpb, fat1_lba, data_lba, next_free_hint: 2 })
+        Ok(Self {
+            bpb,
+            fat1_lba,
+            data_lba,
+            next_free_hint: 2,
+        })
     }
 
     /// Convert a cluster number to a partition-relative LBA (first sector of that cluster).

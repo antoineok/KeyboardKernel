@@ -21,7 +21,7 @@ pub use frame::{
 pub use model::{
     DeviceInfo, DeviceStatus, FirmwareSlot, ProfileWriteOptions, RebootMode, CAPABILITY_AB_UPDATE,
     CAPABILITY_ASSET_DOWNLOAD, CAPABILITY_ASSET_UPLOAD, CAPABILITY_BLUETOOTH, CAPABILITY_DISPLAY,
-    CAPABILITY_USB, CAPABILITY_FIRMWARE_UPDATE,
+    CAPABILITY_FIRMWARE_UPDATE, CAPABILITY_USB,
 };
 pub use service::{ManagementService, ManagementServiceError};
 pub use status::ManagementStatus;

@@ -3,10 +3,10 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::info;
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 use crate::storage::fs::fat32::fat::FatLink;
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
-use crate::info;
 
 #[derive(Clone, Debug)]
 pub struct FatFile {
@@ -134,13 +134,9 @@ impl Fat32Volume {
         Ok(out_off)
     }
 
-        pub fn exists(
-            &self,
-            dev: &dyn BlockDevice,
-            path: &str,
-        ) -> bool {
-            self.resolve_path(dev, path).is_ok()
-        }
+    pub fn exists(&self, dev: &dyn BlockDevice, path: &str) -> bool {
+        self.resolve_path(dev, path).is_ok()
+    }
 
     //----------------------------------------------------------------------------------------------
     // Write (phase 1): overwrite existing file, no allocation
@@ -162,9 +158,12 @@ impl Fat32Volume {
 
         info!(
             "FAT32: write_file_all '{}' size {} -> {} bytes (dirent lba=0x{:x} off={})",
-            file.name, file.size, data.len(), file.dirent_lba, file.dirent_off
+            file.name,
+            file.size,
+            data.len(),
+            file.dirent_lba,
+            file.dirent_off
         );
-
 
         // Compute chain capacity in bytes by walking the chain and counting clusters.
         let spc = self.bpb.sec_per_clus as u64;
@@ -275,10 +274,8 @@ impl Fat32Volume {
         }
 
         let bytes_per_cluster = self.bpb.sec_per_clus as usize * SECTOR_SIZE;
-        let needed_clusters = core::cmp::max(
-            1,
-            (data.len() + bytes_per_cluster - 1) / bytes_per_cluster,
-        );
+        let needed_clusters =
+            core::cmp::max(1, (data.len() + bytes_per_cluster - 1) / bytes_per_cluster);
 
         let mut chain = Vec::new();
         let mut cur = file.first_cluster;
@@ -370,7 +367,6 @@ impl Fat32Volume {
             sector[dirent_off + 30],
             sector[dirent_off + 31],
         ]);
-
 
         // Sanity: ensure entry is valid
         let first = sector[dirent_off];

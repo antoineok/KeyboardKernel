@@ -47,8 +47,7 @@ pub trait ManagementBackend {
         data: &[u8],
     ) -> Result<(), ManagementStatus>;
 
-    fn finish_asset_upload(&mut self, transfer_id: TransferId)
-        -> Result<(), ManagementStatus>;
+    fn finish_asset_upload(&mut self, transfer_id: TransferId) -> Result<(), ManagementStatus>;
 
     fn delete_asset(&mut self, asset_id: AssetId) -> Result<(), ManagementStatus>;
 
@@ -64,10 +63,7 @@ pub trait ManagementBackend {
         output: &mut [u8],
     ) -> Result<usize, ManagementStatus>;
 
-    fn finish_asset_download(
-        &mut self,
-        transfer_id: TransferId,
-    ) -> Result<(), ManagementStatus>;
+    fn finish_asset_download(&mut self, transfer_id: TransferId) -> Result<(), ManagementStatus>;
 
     fn begin_firmware_update(
         &mut self,
@@ -81,18 +77,11 @@ pub trait ManagementBackend {
         data: &[u8],
     ) -> Result<(), ManagementStatus>;
 
-    fn finish_firmware_update(
-        &mut self,
-        transfer_id: TransferId,
-    ) -> Result<(), ManagementStatus>;
+    fn finish_firmware_update(&mut self, transfer_id: TransferId) -> Result<(), ManagementStatus>;
 
-    fn abort_firmware_update(
-        &mut self,
-        transfer_id: TransferId,
-    ) -> Result<(), ManagementStatus>;
+    fn abort_firmware_update(&mut self, transfer_id: TransferId) -> Result<(), ManagementStatus>;
 
-    fn get_firmware_update_status(&mut self)
-        -> Result<FirmwareUpdateStatus, ManagementStatus>;
+    fn get_firmware_update_status(&mut self) -> Result<FirmwareUpdateStatus, ManagementStatus>;
 
     /// Confirmation should normally be initiated by healthy newly-booted
     /// firmware. A production backend may reject external confirmation with

@@ -90,7 +90,7 @@ pub const KEYBOARD_REPORT_DESCRIPTOR: [u8; 63] = [
     0x19, 0x00, // Usage Minimum (Reserved)
     0x29, 0x65, // Usage Maximum (Keyboard Application)
     0x81, 0x00, // Input (Data, Array, Absolute)
-    0xc0,       // End Collection
+    0xc0, // End Collection
 ];
 
 pub const EXTRA_REPORT_ID_CONSUMER: u8 = 1;
@@ -101,31 +101,56 @@ pub const EXTRA_REPORT_ID_SYSTEM: u8 = 2;
 /// remains boot-protocol compatible.
 pub const EXTRA_HID_REPORT_DESCRIPTOR: [u8; 49] = [
     // Report ID 1: one 16-bit Consumer usage selector.
-    0x05, 0x0c, // Usage Page (Consumer)
-    0x09, 0x01, // Usage (Consumer Control)
-    0xa1, 0x01, // Collection (Application)
-    0x85, EXTRA_REPORT_ID_CONSUMER,
-    0x15, 0x00, // Logical Minimum (0 = released)
-    0x26, 0xff, 0x03, // Logical Maximum (0x03ff)
-    0x19, 0x00, // Usage Minimum
-    0x2a, 0xff, 0x03, // Usage Maximum
-    0x75, 0x10, // Report Size (16)
-    0x95, 0x01, // Report Count (1)
-    0x81, 0x00, // Input (Data, Array, Absolute)
-    0xc0,       // End Collection
+    0x05,
+    0x0c, // Usage Page (Consumer)
+    0x09,
+    0x01, // Usage (Consumer Control)
+    0xa1,
+    0x01, // Collection (Application)
+    0x85,
+    EXTRA_REPORT_ID_CONSUMER,
+    0x15,
+    0x00, // Logical Minimum (0 = released)
+    0x26,
+    0xff,
+    0x03, // Logical Maximum (0x03ff)
+    0x19,
+    0x00, // Usage Minimum
+    0x2a,
+    0xff,
+    0x03, // Usage Maximum
+    0x75,
+    0x10, // Report Size (16)
+    0x95,
+    0x01, // Report Count (1)
+    0x81,
+    0x00, // Input (Data, Array, Absolute)
+    0xc0, // End Collection
     // Report ID 2: one 8-bit System Control usage selector.
-    0x05, 0x01, // Usage Page (Generic Desktop)
-    0x09, 0x80, // Usage (System Control)
-    0xa1, 0x01, // Collection (Application)
-    0x85, EXTRA_REPORT_ID_SYSTEM,
-    0x15, 0x00, // Logical Minimum (0 = released)
-    0x26, 0x83, 0x00, // Logical Maximum (System Wake Up)
-    0x19, 0x00, // Usage Minimum
-    0x29, 0x83, // Usage Maximum
-    0x75, 0x08, // Report Size (8)
-    0x95, 0x01, // Report Count (1)
-    0x81, 0x00, // Input (Data, Array, Absolute)
-    0xc0,       // End Collection
+    0x05,
+    0x01, // Usage Page (Generic Desktop)
+    0x09,
+    0x80, // Usage (System Control)
+    0xa1,
+    0x01, // Collection (Application)
+    0x85,
+    EXTRA_REPORT_ID_SYSTEM,
+    0x15,
+    0x00, // Logical Minimum (0 = released)
+    0x26,
+    0x83,
+    0x00, // Logical Maximum (System Wake Up)
+    0x19,
+    0x00, // Usage Minimum
+    0x29,
+    0x83, // Usage Maximum
+    0x75,
+    0x08, // Report Size (8)
+    0x95,
+    0x01, // Report Count (1)
+    0x81,
+    0x00, // Input (Data, Array, Absolute)
+    0xc0, // End Collection
 ];
 
 pub const KEYBOARD_HID_DESCRIPTOR: [u8; 9] = hid_descriptor(KEYBOARD_REPORT_DESCRIPTOR.len());
@@ -163,19 +188,19 @@ pub const CONFIGURATION_DESCRIPTOR_FULL_SPEED: [u8; CONFIGURATION_TOTAL_LENGTH a
         10,
     );
 
-pub const OTHER_SPEED_CONFIGURATION_DESCRIPTOR_HIGH_SPEED: [u8; CONFIGURATION_TOTAL_LENGTH as usize] =
-    configuration_descriptor(
-        OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE,
-        MANAGEMENT_HIGH_SPEED_MAX_PACKET_SIZE,
-        4,
-    );
+pub const OTHER_SPEED_CONFIGURATION_DESCRIPTOR_HIGH_SPEED: [u8; CONFIGURATION_TOTAL_LENGTH
+    as usize] = configuration_descriptor(
+    OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE,
+    MANAGEMENT_HIGH_SPEED_MAX_PACKET_SIZE,
+    4,
+);
 
-pub const OTHER_SPEED_CONFIGURATION_DESCRIPTOR_FULL_SPEED: [u8; CONFIGURATION_TOTAL_LENGTH as usize] =
-    configuration_descriptor(
-        OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE,
-        MANAGEMENT_FULL_SPEED_MAX_PACKET_SIZE,
-        10,
-    );
+pub const OTHER_SPEED_CONFIGURATION_DESCRIPTOR_FULL_SPEED: [u8; CONFIGURATION_TOTAL_LENGTH
+    as usize] = configuration_descriptor(
+    OTHER_SPEED_CONFIGURATION_DESCRIPTOR_TYPE,
+    MANAGEMENT_FULL_SPEED_MAX_PACKET_SIZE,
+    10,
+);
 
 const fn configuration_descriptor(
     descriptor_type: u8,
@@ -299,20 +324,76 @@ pub const STRING_LANGUAGES: [u8; 4] = [4, STRING_DESCRIPTOR_TYPE, 0x09, 0x04];
 pub const STRING_MANUFACTURER: [u8; 16] = [
     16,
     STRING_DESCRIPTOR_TYPE,
-    b'K', 0, b'e', 0, b'y', 0, b'w', 0, b'o', 0, b'r', 0, b'k', 0,
+    b'K',
+    0,
+    b'e',
+    0,
+    b'y',
+    0,
+    b'w',
+    0,
+    b'o',
+    0,
+    b'r',
+    0,
+    b'k',
+    0,
 ];
 
 pub const STRING_PRODUCT: [u8; 34] = [
     34,
     STRING_DESCRIPTOR_TYPE,
-    b'K', 0, b'e', 0, b'y', 0, b'w', 0, b'o', 0, b'r', 0, b'k', 0, b' ', 0,
-    b'K', 0, b'e', 0, b'y', 0, b'b', 0, b'o', 0, b'a', 0, b'r', 0, b'd', 0,
+    b'K',
+    0,
+    b'e',
+    0,
+    b'y',
+    0,
+    b'w',
+    0,
+    b'o',
+    0,
+    b'r',
+    0,
+    b'k',
+    0,
+    b' ',
+    0,
+    b'K',
+    0,
+    b'e',
+    0,
+    b'y',
+    0,
+    b'b',
+    0,
+    b'o',
+    0,
+    b'a',
+    0,
+    b'r',
+    0,
+    b'd',
+    0,
 ];
 
 pub const STRING_SERIAL: [u8; 16] = [
     16,
     STRING_DESCRIPTOR_TYPE,
-    b'K', 0, b'W', 0, b'-', 0, b'0', 0, b'0', 0, b'0', 0, b'1', 0,
+    b'K',
+    0,
+    b'W',
+    0,
+    b'-',
+    0,
+    b'0',
+    0,
+    b'0',
+    0,
+    b'0',
+    0,
+    b'1',
+    0,
 ];
 
 pub fn string_descriptor(index: u8, language_id: u16) -> Option<&'static [u8]> {

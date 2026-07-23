@@ -2,16 +2,14 @@ use core::cell::UnsafeCell;
 
 use crate::{
     drivers::mailbox::{
-        MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST, MBOX_TAG_SETALPHAMODE, MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF, MBOX_TAG_SETVIRTWH,
-    }, early_timeit, warn,
+        MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
+        MBOX_TAG_SETALPHAMODE, MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR,
+        MBOX_TAG_SETVIRTOFF, MBOX_TAG_SETVIRTWH,
+    },
+    early_timeit, warn,
 };
 
-use crate::graphics::surface::{
-    PixelFormat,
-    SurfaceError,
-    SurfaceInfo,
-    SurfaceMut,
-};
+use crate::graphics::surface::{PixelFormat, SurfaceError, SurfaceInfo, SurfaceMut};
 
 pub struct Framebuffer {
     width: u32,
@@ -29,8 +27,7 @@ pub struct FramebufferStatic(UnsafeCell<Framebuffer>);
 unsafe impl Sync for Framebuffer {}
 unsafe impl Sync for FramebufferStatic {}
 
-pub static FRAMEBUFFER: FramebufferStatic =
-    FramebufferStatic(UnsafeCell::new(Framebuffer::new()));
+pub static FRAMEBUFFER: FramebufferStatic = FramebufferStatic(UnsafeCell::new(Framebuffer::new()));
 
 impl FramebufferStatic {
     pub fn get(&self) -> &mut Framebuffer {
@@ -106,9 +103,7 @@ impl Framebuffer {
         }
 
         let mbox = MAILBOX.get();
-        let result = early_timeit!("Mailbox framebuffer call", {
-            mbox.call(MBOX_CH_PROP)
-        });
+        let result = early_timeit!("Mailbox framebuffer call", { mbox.call(MBOX_CH_PROP) });
 
         if result && mbox.buffer[20] == 32 && mbox.buffer[28] != 0 {
             let pixel_format = match mbox.buffer[24] {
@@ -193,22 +188,11 @@ impl Framebuffer {
         let packed = self.pack_pixel(color);
 
         unsafe {
-            self.buffer
-                .add(offset)
-                .cast::<u32>()
-                .write(packed);
+            self.buffer.add(offset).cast::<u32>().write(packed);
         }
     }
 
-    pub fn draw_rect(
-        &mut self,
-        x1: u32,
-        y1: u32,
-        x2: u32,
-        y2: u32,
-        color: u32,
-        fill: bool,
-    ) {
+    pub fn draw_rect(&mut self, x1: u32, y1: u32, x2: u32, y2: u32, color: u32, fill: bool) {
         if self.buffer.is_null() {
             return;
         }
@@ -350,14 +334,12 @@ impl Framebuffer {
             let src = &pixels[row as usize * w as usize * size_of::<u32>()..];
 
             match self.pixel_format() {
-                PixelFormat::Rgbx8888 => {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            src.as_ptr(),
+                PixelFormat::Rgbx8888 => unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src.as_ptr(),
                         dst,
                         w as usize * size_of::<u32>(),
-                        );
-                    }
+                    );
                 },
                 PixelFormat::Bgrx8888 => {
                     for i in 0..w as usize {
@@ -370,9 +352,12 @@ impl Framebuffer {
                             *dst.add(source_offset + 3) = src[source_offset + 3];
                         }
                     }
-                },
+                }
                 _ => {
-                    warn!("Unsupported pixel format for blit: {:?}", self.pixel_format());
+                    warn!(
+                        "Unsupported pixel format for blit: {:?}",
+                        self.pixel_format()
+                    );
                     break;
                 }
             }
@@ -452,12 +437,7 @@ impl Framebuffer {
         // - the framebuffer allocation remains alive while the display is active;
         // - borrowing `&mut self` prevents another safe mutable surface view from
         //   being created through this Framebuffer simultaneously.
-        let pixels = unsafe {
-            core::slice::from_raw_parts_mut(
-                self.buffer,
-                self.buffer_size,
-            )
-        };
+        let pixels = unsafe { core::slice::from_raw_parts_mut(self.buffer, self.buffer_size) };
 
         SurfaceMut::new(pixels, info)
     }

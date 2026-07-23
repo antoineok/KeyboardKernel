@@ -441,9 +441,7 @@ impl UsbDevice {
             // endpoint transfer-complete interrupt; it is not a control OUT
             // data stage and must not stall EP0.
             PKTSTS_OUT_DATA
-                if endpoint == 0
-                    && self.state == ControlState::StatusOut
-                    && byte_count == 0 => {}
+                if endpoint == 0 && self.state == ControlState::StatusOut && byte_count == 0 => {}
             PKTSTS_OUT_DATA if endpoint == 0 && self.state == ControlState::DataOut => {
                 self.read_control_out(controller, byte_count)?;
             }
@@ -488,10 +486,8 @@ impl UsbDevice {
             let interrupts = controller.endpoint_out_interrupts(management_endpoint)?;
             controller.acknowledge_endpoint_out_interrupts(management_endpoint, interrupts)?;
             if interrupts & DOEPINT_XFRC != 0 && !self.management_rx_ready {
-                controller.arm_out_endpoint(
-                    management_endpoint,
-                    self.speed.management_packet_size(),
-                )?;
+                controller
+                    .arm_out_endpoint(management_endpoint, self.speed.management_packet_size())?;
             }
         }
         Ok(())
@@ -889,7 +885,10 @@ impl UsbDevice {
         if self.management_rx_ready || attempted_length > MANAGEMENT_FRAME_CAPACITY {
             controller.discard_fifo_bytes(MANAGEMENT_ENDPOINT as usize, byte_count)?;
             self.reset_management_rx();
-            crate::warn!("Dropped oversized KWMP transfer: {} bytes", attempted_length);
+            crate::warn!(
+                "Dropped oversized KWMP transfer: {} bytes",
+                attempted_length
+            );
             return Ok(());
         }
 
@@ -937,7 +936,9 @@ impl UsbDevice {
         &mut self,
         controller: &mut Dwc2,
     ) -> Result<(), UsbDeviceError> {
-        let remaining = self.management_tx_len.saturating_sub(self.management_tx_offset);
+        let remaining = self
+            .management_tx_len
+            .saturating_sub(self.management_tx_offset);
         if remaining == 0 {
             self.management_tx_len = 0;
             return Ok(());
@@ -954,10 +955,7 @@ impl UsbDevice {
         Ok(())
     }
 
-    fn handle_ep0_in_complete(
-        &mut self,
-        controller: &mut Dwc2,
-    ) -> Result<(), UsbDeviceError> {
+    fn handle_ep0_in_complete(&mut self, controller: &mut Dwc2) -> Result<(), UsbDeviceError> {
         match self.state {
             ControlState::DataIn => {
                 self.control_in_offset = self
@@ -974,10 +972,7 @@ impl UsbDevice {
         Ok(())
     }
 
-    fn finish_control_transfer(
-        &mut self,
-        controller: &mut Dwc2,
-    ) -> Result<(), UsbDeviceError> {
+    fn finish_control_transfer(&mut self, controller: &mut Dwc2) -> Result<(), UsbDeviceError> {
         self.state = ControlState::WaitingForSetup;
         self.pending_setup = None;
         self.control_out_request = None;
@@ -1075,4 +1070,3 @@ impl UsbDeviceStatic {
 }
 
 pub static USB_DEVICE: UsbDeviceStatic = UsbDeviceStatic::new();
-

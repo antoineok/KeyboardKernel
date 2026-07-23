@@ -3,9 +3,7 @@ use core::cell::UnsafeCell;
 use crate::{
     drivers::usb::USB,
     hid::{ConsumerReport, HostLedState, KeyboardReport, SystemReport},
-    transport::{
-        KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportState,
-    },
+    transport::{KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportState},
 };
 
 use super::{
@@ -87,21 +85,19 @@ impl KeyworkTransport for UsbTransport {
         self.with_device(|device, controller| device.poll(controller))
     }
 
-    fn send_keyboard(
-        &mut self,
-        report: KeyboardReport,
-    ) -> Result<SendStatus, Self::Error> {
+    fn send_keyboard(&mut self, report: KeyboardReport) -> Result<SendStatus, Self::Error> {
         self.with_device(|device, controller| {
-            device.send_keyboard(controller, report).map(map_send_status)
+            device
+                .send_keyboard(controller, report)
+                .map(map_send_status)
         })
     }
 
-    fn send_consumer(
-        &mut self,
-        report: ConsumerReport,
-    ) -> Result<SendStatus, Self::Error> {
+    fn send_consumer(&mut self, report: ConsumerReport) -> Result<SendStatus, Self::Error> {
         self.with_device(|device, controller| {
-            device.send_consumer(controller, report).map(map_send_status)
+            device
+                .send_consumer(controller, report)
+                .map(map_send_status)
         })
     }
 
@@ -121,14 +117,13 @@ impl KeyworkTransport for UsbTransport {
 
     fn send_management(&mut self, frame: &[u8]) -> Result<SendStatus, Self::Error> {
         self.with_device(|device, controller| {
-            device.send_management(controller, frame).map(map_send_status)
+            device
+                .send_management(controller, frame)
+                .map(map_send_status)
         })
     }
 
-    fn receive_management(
-        &mut self,
-        buffer: &mut [u8],
-    ) -> Result<ReceiveStatus, Self::Error> {
+    fn receive_management(&mut self, buffer: &mut [u8]) -> Result<ReceiveStatus, Self::Error> {
         self.with_device(|device, controller| {
             device
                 .receive_management(controller, buffer)
@@ -149,9 +144,7 @@ fn map_receive_status(status: UsbReceiveStatus) -> ReceiveStatus {
     match status {
         UsbReceiveStatus::Empty => ReceiveStatus::Empty,
         UsbReceiveStatus::Received(length) => ReceiveStatus::Received(length),
-        UsbReceiveStatus::BufferTooSmall { required } => {
-            ReceiveStatus::BufferTooSmall { required }
-        }
+        UsbReceiveStatus::BufferTooSmall { required } => ReceiveStatus::BufferTooSmall { required },
         UsbReceiveStatus::Disconnected => ReceiveStatus::Disconnected,
     }
 }

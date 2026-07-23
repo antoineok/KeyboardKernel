@@ -13,7 +13,7 @@
 
 use core::cell::UnsafeCell;
 
-use crate::{early_timeit};
+use crate::early_timeit;
 
 use super::boot::BOOT_ALLOCATOR;
 use super::{MemoryMap, MemoryRegionKind, PhysAddr, PhysSize};
@@ -85,7 +85,8 @@ impl PhysAllocator {
         let bitmap_u64s = (bitmap_bits + 63) / 64;
         let bitmap_bytes = (bitmap_u64s * core::mem::size_of::<u64>()) as u64;
 
-        let bitmap_phys = BOOT_ALLOCATOR.get_mut()
+        let bitmap_phys = BOOT_ALLOCATOR
+            .get_mut()
             .alloc(bitmap_bytes, 8)
             .expect("PhysAllocator: failed to allocate bitmap from boot allocator");
 

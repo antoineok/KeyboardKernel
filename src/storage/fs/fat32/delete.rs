@@ -5,11 +5,7 @@ use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
 const ATTR_DIRECTORY: u8 = 0x10;
 
 impl Fat32Volume {
-    pub fn delete_file_83(
-        &mut self,
-        dev: &dyn BlockDevice,
-        path: &str,
-    ) -> Result<(), Fat32Error> {
+    pub fn delete_file_83(&mut self, dev: &dyn BlockDevice, path: &str) -> Result<(), Fat32Error> {
         let entry = self.resolve_path(dev, path)?;
 
         if (entry.attr & ATTR_DIRECTORY) != 0 {
@@ -19,9 +15,7 @@ impl Fat32Volume {
         }
 
         if entry.dirent_off + 32 > SECTOR_SIZE {
-            return Err(Fat32Error::Invalid(
-                "FAT32: invalid directory entry offset",
-            ));
+            return Err(Fat32Error::Invalid("FAT32: invalid directory entry offset"));
         }
 
         if entry.first_cluster >= 2 {

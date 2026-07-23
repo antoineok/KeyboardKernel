@@ -1,6 +1,5 @@
 extern crate alloc;
 
-
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 
 //--------------------------------------------------------------------------------------------------
@@ -213,8 +212,8 @@ pub fn storage_partition_self_test(dev: &dyn BlockDevice) {
 }
 
 fn diag_test_slice_bounds(dev: &dyn BlockDevice, part: &Partition) {
-    use crate::{info, warn};
     use crate::storage::block::BlockError;
+    use crate::{info, warn};
 
     let slice = part.as_block_device(dev);
 

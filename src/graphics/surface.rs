@@ -12,9 +12,9 @@ pub enum PixelFormat {
     Rgba8888, // Transparent image/button/icon
     Bgra8888,
 
-    A8,       // Font glyph or mask
+    A8, // Font glyph or mask
 
-    None,     // Uninitialized framebuffer
+    None, // Uninitialized framebuffer
 }
 
 impl PixelFormat {
@@ -167,10 +167,7 @@ pub struct SurfaceMut<'a> {
 }
 
 impl<'a> SurfaceMut<'a> {
-    pub fn new(
-        pixels: &'a mut [u8],
-        info: SurfaceInfo,
-    ) -> Result<Self, SurfaceError> {
+    pub fn new(pixels: &'a mut [u8], info: SurfaceInfo) -> Result<Self, SurfaceError> {
         validate_buffer(pixels.len(), info)?;
 
         Ok(Self { pixels, info })
@@ -236,10 +233,7 @@ impl<'a> SurfaceMut<'a> {
     }
 }
 
-fn validate_buffer(
-    buffer_len: usize,
-    info: SurfaceInfo,
-) -> Result<(), SurfaceError> {
+fn validate_buffer(buffer_len: usize, info: SurfaceInfo) -> Result<(), SurfaceError> {
     let required = info.required_buffer_size()?;
 
     if buffer_len < required {
@@ -256,14 +250,8 @@ fn validate_buffer(
 pub enum SurfaceError {
     EmptySurface,
     SizeOverflow,
-    PitchTooSmall {
-        pitch: usize,
-        minimum: usize,
-    },
-    BufferTooSmall {
-        available: usize,
-        required: usize,
-    },
+    PitchTooSmall { pitch: usize, minimum: usize },
+    BufferTooSmall { available: usize, required: usize },
     UninitializedFormat,
     NullBuffer,
 }

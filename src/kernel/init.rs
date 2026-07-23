@@ -1,5 +1,14 @@
 use crate::{
-    drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART}, early_timeit, fdt::BootInfo, graphics::framebuffer::FRAMEBUFFER, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}
+    drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART},
+    early_timeit,
+    fdt::BootInfo,
+    graphics::framebuffer::FRAMEBUFFER,
+    memory::{boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER},
+    storage::{
+        devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE},
+        fs::vfs::{FsId, VFS},
+        partition::mbr,
+    },
 };
 
 extern "C" {
@@ -18,23 +27,13 @@ extern "C" {
     static __heap_end: u8;
 }
 
-const REQUIRED_ALIASES: &[&str] = &[
-    "gpio",
-    "aux",
-    "mailbox",
-    "mmc0",
-    "watchdog",
-    "usb"
-];
+const REQUIRED_ALIASES: &[&str] = &["gpio", "aux", "mailbox", "mmc0", "watchdog", "usb"];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let boot_info = early_timeit!("Parse boot FDT", {
         unsafe {
-            BootInfo::from_ptr(
-                device_tree_ptr as *const u8,
-                REQUIRED_ALIASES,
-            )
-            .expect("Invalid boot FDT")
+            BootInfo::from_ptr(device_tree_ptr as *const u8, REQUIRED_ALIASES)
+                .expect("Invalid boot FDT")
         }
     });
 
@@ -78,7 +77,9 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     //bt.init(mmio_table.entries.get("bluetooth"));
 
     early_timeit!("Memory manager init from FDT", {
-        MEMORY_MANAGER.get_mut().init_from_boot_layout(&boot_info.memory);
+        MEMORY_MANAGER
+            .get_mut()
+            .init_from_boot_layout(&boot_info.memory);
     });
 
     early_timeit!("Kernel memory reservation", {
@@ -117,11 +118,7 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     init_phys_allocator();
 
     early_timeit!("USB power domain", {
-        if !mailbox.set_power_state(
-            mailbox::POWER_DEVICE_USB_HCD,
-            true,
-            true,
-        ) {
+        if !mailbox.set_power_state(mailbox::POWER_DEVICE_USB_HCD, true, true) {
             panic!("Failed to power the USB controller");
         }
     });
@@ -138,11 +135,9 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
             .expect("DWC2 device-mode preparation failed");
     });
 
-
     early_timeit!("VFS init", {
         init_vfs();
     });
-
 }
 
 unsafe fn init_boot_allocator() {

@@ -33,7 +33,6 @@ pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 
 pub const MBOX_TAG_LAST: u32 = 0;
 
-
 #[repr(C, align(16))]
 pub struct MailboxBuffer {
     pub(crate) buffer: [u32; 39],
@@ -76,7 +75,7 @@ impl MailboxBuffer {
         let base_addr = mmio
             .unwrap_or_else(|| panic!("Mailbox MMIO entry not found in device tree"))
             .arm_phys;
-        
+
         self.mbox_read.set_address(base_addr);
         self.mbox_poll.set_address(base_addr + 0x10);
         self.mbox_sender.set_address(base_addr + 0x14);
@@ -115,17 +114,10 @@ impl MailboxBuffer {
             }
         }
     }
-    pub fn set_power_state(
-        &mut self,
-        device_id: u32,
-        on: bool,
-        wait: bool,
-    ) -> bool {
+    pub fn set_power_state(&mut self, device_id: u32, on: bool, wait: bool) -> bool {
         self.buffer.fill(0);
 
-        let state =
-            u32::from(on) |
-            (u32::from(wait) << 1);
+        let state = u32::from(on) | (u32::from(wait) << 1);
 
         self.buffer[0] = 8 * 4;
         self.buffer[1] = MBOX_REQUEST;
@@ -150,9 +142,6 @@ impl MailboxBuffer {
         let device_exists = returned_state & 0b10 == 0;
         let actual_on = returned_state & 1 != 0;
 
-        tag_succeeded
-            && returned_id == device_id
-            && device_exists
-            && actual_on == on
+        tag_succeeded && returned_id == device_id && device_exists && actual_on == on
     }
 }

@@ -9,13 +9,13 @@ use crate::drivers::{
     gpio::{GpioPin, GpioPull},
     uart::UART,
 };
-use crate::graphics::framebuffer::FRAMEBUFFER;
 use crate::hid::Key;
 use crate::time::time_manager;
 
 use crate::{
-    early_timeit, info, timeit,
+    early_timeit,
     hid::{KeyboardModifiers, KeyboardReport},
+    info,
     services::{KernelManagementBackend, KeyworkServices},
     transport::{KeyworkTransport, TransportState},
     usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
@@ -28,10 +28,9 @@ use crate::jtag::breakpoint;
 pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     // We are now in EL1, with a basic stack (set by EL2 code).
     unsafe {
-        early_timeit!(
-            "Kernel early EL1 init",
-            {init::early_el1_init(device_tree_ptr)}
-        );
+        early_timeit!("Kernel early EL1 init", {
+            init::early_el1_init(device_tree_ptr)
+        });
 
         crate::util::early_timing::flush_early_timings();
     }
@@ -49,20 +48,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
-
-    let framebuffer = FRAMEBUFFER.get();
-    timeit!("Framebuffer test", {
-        framebuffer.clear(0xFFFFFFFF); //cyan
-    });
-    framebuffer.draw_rect(150, 150, 400, 400, 0x00FFFF, false); //cyan
-    framebuffer.draw_rect(200, 200, 300, 300, 0xFF00FF, true); //magenta
-
-    framebuffer.draw_circle(960, 540, 250, 0x000000FF, false);
-    framebuffer.draw_circle(960, 540, 50, 0xADD8E6, true); //light blue
-
-    framebuffer.set_pixel(250, 250, 0x000000FF);
-
-    framebuffer.draw_line(100, 500, 350, 700, 0xFF0000);
 
     let usb_transport = unsafe { USB_TRANSPORT.get_mut() };
     usb_transport
@@ -87,7 +72,14 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     if hid_test_stable {
         services.hid_mut().set_keyboard(KeyboardReport {
             modifiers: KeyboardModifiers::LEFT_SHIFT,
-            keys: [Key::F, Key::None, Key::None, Key::None, Key::None, Key::None],
+            keys: [
+                Key::F,
+                Key::None,
+                Key::None,
+                Key::None,
+                Key::None,
+                Key::None,
+            ],
         });
     }
 
@@ -113,7 +105,14 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             let report = if hid_test_stable {
                 KeyboardReport {
                     modifiers: KeyboardModifiers::LEFT_SHIFT,
-                    keys: [Key::F, Key::None, Key::None, Key::None, Key::None, Key::None],
+                    keys: [
+                        Key::F,
+                        Key::None,
+                        Key::None,
+                        Key::None,
+                        Key::None,
+                        Key::None,
+                    ],
                 }
             } else {
                 KeyboardReport::released()
@@ -122,19 +121,20 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             services.hid_mut().set_keyboard(report);
             info!(
                 "HID GPIO test: F {}",
-                if hid_test_stable { "pressed" } else { "released" }
+                if hid_test_stable {
+                    "pressed"
+                } else {
+                    "released"
+                }
             );
         }
 
-        let transition = services.update_transport_selection(
-            usb_transport.state(),
-            TransportState::Disconnected,
-        );
+        let transition = services
+            .update_transport_selection(usb_transport.state(), TransportState::Disconnected);
         if transition.changed() {
             info!(
                 "Active host transport changed: {:?} -> {:?}",
-                transition.previous,
-                transition.current
+                transition.previous, transition.current
             );
         }
         management_backend.set_active_transport(services.active_transport());
@@ -142,7 +142,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .poll_selected_transport(usb_transport, &mut management_backend)
             .expect("USB service polling failed");
         management_backend.poll_pending_action();
-        
+
         let updater = crate::update::uart::UART_UPDATE.get_mut();
 
         updater.poll();
