@@ -47,7 +47,7 @@ impl Framebuffer {
             let mbox = MAILBOX.get();
             let mbox_buf = &mut mbox.buffer;
 
-            mbox_buf[0] = 35 * 4; // Length of message in bytes.
+            mbox_buf[0] = 39 * 4; // Length of message in bytes.
             mbox_buf[1] = MBOX_REQUEST;
 
             mbox_buf[2] = MBOX_TAG_SETPHYWH;
@@ -89,7 +89,12 @@ impl Framebuffer {
             mbox_buf[32] = 4;
             mbox_buf[33] = 0;
 
-            mbox_buf[34] = MBOX_TAG_LAST;
+            mbox_buf[34] = MBOX_TAG_SETALPHAMODE;
+            mbox_buf[35] = 4;
+            mbox_buf[36] = 0;
+            mbox_buf[37] = 2; // Alpha ignored
+
+            mbox_buf[38] = MBOX_TAG_LAST;
         }
 
         let mbox = MAILBOX.get();

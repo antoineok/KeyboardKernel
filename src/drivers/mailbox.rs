@@ -22,6 +22,7 @@ pub const MBOX_TAG_SETPOWER: u32 = 0x28001;
 pub const POWER_DEVICE_USB_HCD: u32 = 3;
 pub const MBOX_TAG_SETCLKRATE: u32 = 0x38002;
 
+pub const MBOX_TAG_SETALPHAMODE: u32 = 0x0004_8007;
 pub const MBOX_TAG_SETPHYWH: u32 = 0x48003;
 pub const MBOX_TAG_SETVIRTWH: u32 = 0x48004;
 pub const MBOX_TAG_SETVIRTOFF: u32 = 0x48009;
@@ -35,7 +36,7 @@ pub const MBOX_TAG_LAST: u32 = 0;
 
 #[repr(C, align(16))]
 pub struct MailboxBuffer {
-    pub(crate) buffer: [u32; 36],
+    pub(crate) buffer: [u32; 39],
     mbox_read: Address,
     mbox_poll: Address,
     mbox_sender: Address,
@@ -61,7 +62,7 @@ impl MailboxStatic {
 impl MailboxBuffer {
     pub const fn new() -> Self {
         MailboxBuffer {
-            buffer: [0; 36],
+            buffer: [0; 39],
             mbox_read: Address(0),
             mbox_poll: Address(0),
             mbox_sender: Address(4),
