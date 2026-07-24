@@ -3,10 +3,79 @@ use super::{
     gpio::{GpioFunction, GpioPin, GpioPull},
 };
 
-use core::cell::UnsafeCell;
+use core::{
+    cell::UnsafeCell,
+    hint::spin_loop,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 const AUX_UART_CLOCK: u32 = 500_000_000;
-const UART_MAX_QUEUE: usize = 16 * 1024;
+// The Cortex-A72 bring-up deliberately keeps SCTLR_EL1.C clear for now.
+// Avoid LL/SC-based atomic RMW operations (LDXR/STXR) in the logger until
+// the cache/coherency work is complete. Lamport's bakery algorithm gives us
+// mutual exclusion using only atomic loads and stores.
+//
+// Keep these arrays explicit: Atomic* values are not Copy, and BCM2711 has
+// exactly four Cortex-A72 cores.
+static UART_LOG_CHOOSING: [AtomicBool; crate::arch::cpu::CPU_COUNT] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+static UART_LOG_TICKET: [AtomicU64; crate::arch::cpu::CPU_COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+struct UartLogGuard {
+    cpu: usize,
+}
+
+impl UartLogGuard {
+    fn acquire() -> Self {
+        let cpu = crate::arch::cpu::current_id().index();
+
+        UART_LOG_CHOOSING[cpu].store(true, Ordering::SeqCst);
+
+        let mut max_ticket = 0u64;
+        for ticket in &UART_LOG_TICKET {
+            max_ticket = max_ticket.max(ticket.load(Ordering::SeqCst));
+        }
+
+        let my_ticket = max_ticket.saturating_add(1);
+        UART_LOG_TICKET[cpu].store(my_ticket, Ordering::SeqCst);
+        UART_LOG_CHOOSING[cpu].store(false, Ordering::SeqCst);
+
+        for other in 0..crate::arch::cpu::CPU_COUNT {
+            if other == cpu {
+                continue;
+            }
+
+            while UART_LOG_CHOOSING[other].load(Ordering::SeqCst) {
+                spin_loop();
+            }
+
+            loop {
+                let other_ticket = UART_LOG_TICKET[other].load(Ordering::SeqCst);
+                if other_ticket == 0 || (other_ticket, other) > (my_ticket, cpu) {
+                    break;
+                }
+                spin_loop();
+            }
+        }
+
+        Self { cpu }
+    }
+}
+
+impl Drop for UartLogGuard {
+    fn drop(&mut self) {
+        UART_LOG_TICKET[self.cpu].store(0, Ordering::SeqCst);
+    }
+}
 
 fn aux_mu_baud(baud: u32) -> u32 {
     (AUX_UART_CLOCK / (baud * 8)) - 1
@@ -14,9 +83,6 @@ fn aux_mu_baud(baud: u32) -> u32 {
 
 pub struct Uart {
     initialized: bool,
-    output_queue: [u8; UART_MAX_QUEUE],
-    output_queue_write: usize,
-    output_queue_read: usize,
     aux_base: Address,        // = MmioAddress(PERIPHERAL_BASE + 0x215000);
     aux_enable: Address,      // = aux_base.offset(4);
     aux_mu_io_reg: Address,   // = aux_base.offset(64);
@@ -48,9 +114,6 @@ impl Uart {
     pub const fn new() -> Self {
         Uart {
             initialized: false,
-            output_queue: [0; UART_MAX_QUEUE],
-            output_queue_write: 0,
-            output_queue_read: 0,
             aux_base: Address(0),
             aux_enable: Address(0),
             aux_mu_io_reg: Address(0),
@@ -109,30 +172,9 @@ impl Uart {
         self.aux_mu_lsr_reg.read() & 0x20 != 0
     }
 
-    fn is_read_ready(&self) -> bool {
-        self.aux_mu_lsr_reg.read() & 0x01 != 0
-    }
-
     pub fn write_byte(&self, byte: u8) {
         while !self.is_write_ready() {}
         self.aux_mu_io_reg.write(byte as u32);
-    }
-
-    pub fn read_byte(&self) -> u8 {
-        while !self.is_read_ready() {}
-        (self.aux_mu_io_reg.read() & 0xFF) as u8
-    }
-
-    pub fn try_read_byte(&self) -> Option<u8> {
-        if self.is_read_ready() {
-            Some((self.aux_mu_io_reg.read() & 0xFF) as u8)
-        } else {
-            None
-        }
-    }
-
-    pub fn flush_tx(&mut self) {
-        self.load_output_fifo();
     }
 
     pub fn write_text(&self, text: &str) {
@@ -141,39 +183,6 @@ impl Uart {
                 self.write_byte(b'\r');
             }
             self.write_byte(byte);
-        }
-    }
-
-    fn is_output_queue_empty(&self) -> bool {
-        self.output_queue_write == self.output_queue_read
-    }
-
-    fn write_blocking_byte(&mut self, byte: u8) {
-        let next = (self.output_queue_write + 1) & (UART_MAX_QUEUE - 1);
-        while next == self.output_queue_read {
-            self.load_output_fifo();
-        }
-        self.output_queue[self.output_queue_write] = byte;
-        self.output_queue_write = next;
-    }
-
-    fn load_output_fifo(&mut self) {
-        while !self.is_output_queue_empty() && self.is_write_ready() {
-            let byte = self.output_queue[self.output_queue_read];
-            self.output_queue_read = (self.output_queue_read + 1) & (UART_MAX_QUEUE - 1);
-            self.write_blocking_byte(byte);
-        }
-    }
-
-    pub fn update(&mut self) {
-        self.load_output_fifo();
-        if self.is_read_ready() {
-            let byte = self.read_byte();
-            if byte == b'\r' {
-                self.write_text("\n");
-            } else {
-                self.write_blocking_byte(byte);
-            }
         }
     }
 
@@ -198,8 +207,28 @@ macro_rules! uart_println {
 
 pub fn _uart_print(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    let uart = UART.get_mut();
-    uart.write_fmt(args).unwrap();
+
+    // Before EL1 enables the MMU only CPU0 can execute Rust, so there is no
+    // concurrent logger to synchronize with yet.
+    if !crate::arch::mmu::is_enabled() {
+        let mut writer = SharedUartWriter(UART.get());
+        writer.write_fmt(args).unwrap();
+        return;
+    }
+
+    let _guard = UartLogGuard::acquire();
+
+    let mut writer = SharedUartWriter(UART.get());
+    writer.write_fmt(args).unwrap();
+}
+
+struct SharedUartWriter(&'static Uart);
+
+impl core::fmt::Write for SharedUartWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.write_text(s);
+        Ok(())
+    }
 }
 
 impl core::fmt::Write for Uart {

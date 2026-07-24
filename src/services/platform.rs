@@ -388,13 +388,8 @@ impl ManagementBackend for KernelManagementBackend {
 fn map_update_error(error: UpdateError) -> ManagementStatus {
     match error {
         UpdateError::InvalidImage | UpdateError::BadMagic => ManagementStatus::InvalidFirmware,
-        UpdateError::VerifyFailed | UpdateError::CrcFailed => ManagementStatus::ChecksumMismatch,
-        UpdateError::MissingStagedImage | UpdateError::NoActiveSession => {
-            ManagementStatus::InvalidState
-        }
-        UpdateError::Alloc | UpdateError::TooMuchData => ManagementStatus::NoSpace,
-        UpdateError::BadSequence => ManagementStatus::InvalidOffset,
-        UpdateError::BadPacket | UpdateError::UnexpectedEnd => ManagementStatus::InvalidPayload,
-        UpdateError::Vfs(_) | UpdateError::BadCommand => ManagementStatus::InternalError,
+        UpdateError::VerifyFailed => ManagementStatus::ChecksumMismatch,
+        UpdateError::MissingStagedImage => ManagementStatus::InvalidState,
+        UpdateError::Vfs(_) => ManagementStatus::InternalError,
     }
 }

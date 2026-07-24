@@ -4,8 +4,34 @@
 
 el1_drop:
 
-    // --- Prepare EL1 stack and vectors ---
-    ldr     x1, =__el1_stack_top
+    // --- Prepare this CPU's private EL1 stack and vectors ---
+    // Keep x0 untouched: on CPU0 it carries the firmware DTB pointer into Rust.
+    mrs     x1, mpidr_el1
+    and     x1, x1, #0xff
+
+    cmp     x1, #0
+    b.eq    .Lel1_stack_cpu0
+    cmp     x1, #1
+    b.eq    .Lel1_stack_cpu1
+    cmp     x1, #2
+    b.eq    .Lel1_stack_cpu2
+    cmp     x1, #3
+    b.eq    .Lel1_stack_cpu3
+    b       park
+
+.Lel1_stack_cpu0:
+    ldr     x1, =__el1_stack_cpu0_top
+    b       .Lel1_stack_ready
+.Lel1_stack_cpu1:
+    ldr     x1, =__el1_stack_cpu1_top
+    b       .Lel1_stack_ready
+.Lel1_stack_cpu2:
+    ldr     x1, =__el1_stack_cpu2_top
+    b       .Lel1_stack_ready
+.Lel1_stack_cpu3:
+    ldr     x1, =__el1_stack_cpu3_top
+
+.Lel1_stack_ready:
     msr     sp_el1, x1
 
     ldr     x1, =el1_exception_vector
@@ -45,11 +71,22 @@ el1_drop:
     mov     x2, #(0x3c0 | 0x5)
     msr     spsr_el2, x2
 
-    // --- ELR_EL2 -> EL1 entry point (el1_entry) ---
-    ldr     x2, =el1_entry
-    msr     elr_el2, x2
+    // --- Select the EL1 Rust entry point for this CPU ---
+    // CPU0 performs global kernel initialization. Secondary CPUs enter a
+    // minimal SMP bring-up path that installs the shared translation tables,
+    // publishes their status through atomics, and parks again.
+    mrs     x2, mpidr_el1
+    and     x2, x2, #0xff
+    cbz     x2, .Lel1_primary_entry
 
-    
+    ldr     x2, =secondary_el1_entry
+    b       .Lel1_entry_ready
+
+.Lel1_primary_entry:
+    ldr     x2, =el1_entry
+
+.Lel1_entry_ready:
+    msr     elr_el2, x2
 
     // --- Synchronize and drop ---
     isb

@@ -18,16 +18,48 @@ SECTIONS
     }
     __kernel_end = .;
 
-    /* Reserve 16 KiB for the el2 stack */
+    /* Reserve a private 16 KiB EL2 transition stack for every CPU. */
     . = ALIGN(16);
     __el2_stack_start = .;
+
+    __el2_stack_cpu0_start = .;
     . += 16K;
+    __el2_stack_cpu0_top = .;
+
+    __el2_stack_cpu1_start = .;
+    . += 16K;
+    __el2_stack_cpu1_top = .;
+
+    __el2_stack_cpu2_start = .;
+    . += 16K;
+    __el2_stack_cpu2_top = .;
+
+    __el2_stack_cpu3_start = .;
+    . += 16K;
+    __el2_stack_cpu3_top = .;
+
     __el2_stack_top = .;
 
-    /* Reserve 64 KiB for the el1 stack */
+    /* Reserve a private 64 KiB EL1 runtime stack for every CPU. */
     . = ALIGN(16);
     __el1_stack_start = .;
-    . += 256K;
+
+    __el1_stack_cpu0_start = .;
+    . += 64K;
+    __el1_stack_cpu0_top = .;
+
+    __el1_stack_cpu1_start = .;
+    . += 64K;
+    __el1_stack_cpu1_top = .;
+
+    __el1_stack_cpu2_start = .;
+    . += 64K;
+    __el1_stack_cpu2_top = .;
+
+    __el1_stack_cpu3_start = .;
+    . += 64K;
+    __el1_stack_cpu3_top = .;
+
     __el1_stack_top = .;
 
     /* Align to 4 KiB (page boundary for safety) */

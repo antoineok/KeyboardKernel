@@ -8,15 +8,7 @@ pub enum UpdateError {
     VerifyFailed,
     MissingStagedImage,
 
-    Alloc,
-    NoActiveSession,
-    BadSequence,
-    TooMuchData,
-    BadPacket,
     BadMagic,
-    BadCommand,
-    CrcFailed,
-    UnexpectedEnd,
 }
 
 impl From<VfsError> for UpdateError {

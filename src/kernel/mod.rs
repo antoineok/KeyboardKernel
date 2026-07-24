@@ -1,17 +1,17 @@
 pub mod init;
 
-use aarch64_cpu::asm::nop;
-use core::time::Duration;
+use core::{hint::spin_loop, time::Duration};
 
-use crate::arch::exceptions::PrivilegeLevel;
+use crate::arch::{
+    cpu::{self, CpuId},
+    exceptions::PrivilegeLevel,
+};
 
 use crate::assets::ImageAsset;
-use crate::drivers::{
-    gpio::{GpioPin, GpioPull},
-    uart::UART,
+use crate::drivers::gpio::{GpioPin, GpioPull};
+use crate::graphics::{
+    graphics_core_ready, BlendMode, GraphicsCoreProxy, GraphicsRequestResult, Point, SourceRect,
 };
-use crate::graphics::framebuffer::FRAMEBUFFER;
-use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
 use crate::hid::Key;
 use crate::memory::{heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER};
 use crate::storage::fs::vfs::{FsId, VFS};
@@ -22,8 +22,8 @@ use crate::{
     hid::{KeyboardModifiers, KeyboardReport},
     info,
     services::{KernelManagementBackend, KeyworkServices},
-    transport::{KeyworkTransport, TransportState},
-    usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
+    transport::{usb_core_ready, KeyworkTransport, TransportState, UsbCoreProxy},
+    usb::MANAGEMENT_FRAME_CAPACITY,
 };
 
 #[cfg(feature = "jtag")]
@@ -49,16 +49,18 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         "Current privilege level: {}",
         PrivilegeLevel::current().as_str()
     );
+    info!("Current CPU: {}", crate::arch::cpu::current_id());
+
+    bring_up_secondary_cpu(1);
+    wait_for_graphics_core();
+    bring_up_secondary_cpu(2);
+    wait_for_usb_transport_core();
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
 
-    let usb_transport = unsafe { USB_TRANSPORT.get_mut() };
-    usb_transport
-        .initialize()
-        .expect("USB transport initialization failed");
-
+    let mut usb_transport = UsbCoreProxy::new();
     let mut services = KeyworkServices::<MANAGEMENT_FRAME_CAPACITY>::new();
     let mut management_backend = KernelManagementBackend::new();
 
@@ -101,26 +103,17 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         ImageAsset::parse(background_file.as_bytes()).expect("failed to parse background image");
     let background_surface = background.surface();
 
-    let compositor = Compositor::new(0x000000ff);
-    let layers = [Layer::Image(ImageLayer {
-        source: background_surface,
-        source_rect: SourceRect::whole(&background_surface),
-        position: Point::new(0, 0),
-        blend_mode: BlendMode::Opaque,
-    })];
-    let framebuffer = FRAMEBUFFER.get();
-
-    {
-        let mut backbuffer = framebuffer
-            .as_surface_mut()
-            .expect("framebuffer backbuffer unavailable");
-
-        compositor
-            .render(&mut backbuffer, &layers)
-            .expect("frame composition failed");
-    }
-
-    assert!(framebuffer.present());
+    let mut graphics = GraphicsCoreProxy::new();
+    let request_id = graphics
+        .submit_image(
+            &background_surface,
+            SourceRect::whole(&background_surface),
+            Point::new(0, 0),
+            BlendMode::Opaque,
+            0x000000ff,
+        )
+        .expect("failed to submit background frame to CPU1");
+    wait_for_graphics_request(&mut graphics, request_id);
 
     log_memory_summary();
 
@@ -175,20 +168,94 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         }
         management_backend.set_active_transport(services.active_transport());
         services
-            .poll_selected_transport(usb_transport, &mut management_backend)
+            .poll_selected_transport(&mut usb_transport, &mut management_backend)
             .expect("USB service polling failed");
         management_backend.poll_pending_action();
+    }
+}
 
-        let updater = crate::update::uart::UART_UPDATE.get_mut();
+fn wait_for_graphics_core() {
+    const GRAPHICS_CORE_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
 
-        updater.poll();
+    let start = time_manager().uptime();
+    while !graphics_core_ready() {
+        if time_manager().uptime().saturating_sub(start) >= GRAPHICS_CORE_BOOT_TIMEOUT {
+            panic!("timed out waiting for CPU1 graphics worker");
+        }
+        spin_loop();
+    }
 
-        if updater.is_binary_mode() {
-            continue;
+    info!("CPU1 graphics worker handshake complete");
+}
+
+fn wait_for_graphics_request(graphics: &mut GraphicsCoreProxy, request_id: u64) {
+    const GRAPHICS_RENDER_TIMEOUT: Duration = Duration::from_secs(2);
+
+    let start = time_manager().uptime();
+    loop {
+        if let Some(result) = graphics.request_result(request_id) {
+            assert_eq!(
+                result,
+                GraphicsRequestResult::Complete,
+                "CPU1 graphics request {request_id} failed: {result:?}"
+            );
+            return;
         }
 
-        UART.get_mut().flush_tx();
-        nop();
+        if time_manager().uptime().saturating_sub(start) >= GRAPHICS_RENDER_TIMEOUT {
+            panic!("timed out waiting for CPU1 graphics request {request_id}");
+        }
+
+        spin_loop();
+    }
+}
+
+fn wait_for_usb_transport_core() {
+    const USB_CORE_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    let start = time_manager().uptime();
+    while !usb_core_ready() {
+        if time_manager().uptime().saturating_sub(start) >= USB_CORE_BOOT_TIMEOUT {
+            panic!("timed out waiting for CPU2 USB transport worker");
+        }
+        spin_loop();
+    }
+
+    info!("CPU2 USB transport worker is ready");
+}
+
+fn bring_up_secondary_cpu(raw_id: u8) {
+    const SECONDARY_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    let cpu = CpuId::new(raw_id).expect("BCM2711 secondary CPU ID must be valid");
+    info!("Releasing {} for secondary EL1 bring-up", cpu);
+
+    assert!(
+        cpu::release_secondary(cpu),
+        "refused to release secondary CPU"
+    );
+
+    let start = time_manager().uptime();
+
+    loop {
+        let status = cpu::secondary_status(cpu);
+
+        if status.online {
+            info!(
+                "{} online: EL1={}, MMU={}",
+                cpu, status.at_el1, status.mmu_enabled
+            );
+
+            assert!(status.at_el1, "{} did not enter EL1", cpu);
+            assert!(status.mmu_enabled, "{} failed to enable its EL1 MMU", cpu);
+            return;
+        }
+
+        if time_manager().uptime().saturating_sub(start) >= SECONDARY_BOOT_TIMEOUT {
+            panic!("timed out waiting for {} secondary bring-up", cpu);
+        }
+
+        spin_loop();
     }
 }
 

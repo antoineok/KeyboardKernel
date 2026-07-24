@@ -15,7 +15,11 @@
 
 #![allow(dead_code)]
 
-use core::{arch::asm, ptr};
+use core::{
+    arch::asm,
+    ptr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::memory::{boot::BOOT_ALLOCATOR, MemoryRegionKind, PhysAddr, PhysSize, MEMORY_MANAGER};
 
@@ -32,6 +36,13 @@ const ENTRIES_PER_TABLE: usize = 512;
 
 /// Identity mapping for the initial kernel address space.
 pub const KERNEL_VIRT_OFFSET: u64 = 0;
+
+/// High virtual alias for the BCM2711 firmware secondary-CPU spin table.
+///
+/// Physical page zero is intentionally kept out of the ordinary identity map
+/// so null-pointer faults remain useful. CPU0 uses this alias to write the
+/// armstub release slots at physical 0xE0/0xE8/0xF0.
+pub const SECONDARY_SPIN_TABLE_VIRT: u64 = 0x0000_007f_ffff_f000;
 
 /// BCM2711 peripheral space used by the drivers in this kernel.
 const MMIO_START: u64 = 0xFE00_0000;
@@ -80,6 +91,13 @@ const TCR_VALUE: u64 = TCR_T0SZ_39_BIT
 const MAIR_VALUE: u64 = (MAIR_ATTR_NORMAL_WB_RA_WA << (MAIR_IDX_NORMAL * 8))
     | (MAIR_ATTR_DEVICE_NGNRE << (MAIR_IDX_DEVICE * 8))
     | (MAIR_ATTR_NORMAL_NC << (MAIR_IDX_NORMAL_NC * 8));
+
+/// Root table published by CPU0 for secondary CPUs.
+///
+/// Secondary CPUs start with their local MMU disabled, but the page tables
+/// themselves already live in identity-addressable physical RAM. CPU0 stores
+/// the root here before any secondary is released.
+static KERNEL_L1_PHYS: AtomicU64 = AtomicU64::new(0);
 
 /// Descriptor bits for block, page and table entries.
 mod desc {
@@ -178,52 +196,9 @@ impl Mmu {
     /// bring-up. A later cache-specific change can enable SCTLR_EL1.C once all
     /// shared-memory users have explicit cache maintenance or uncached aliases.
     pub unsafe fn enable(&self) {
-        // Ensure all table writes have reached the point of coherency before
-        // the translation-table walker can observe them.
-        asm!("dsb sy", options(nostack, preserves_flags));
-
-        asm!(
-            "msr mair_el1, {mair}",
-            "msr tcr_el1, {tcr}",
-            "msr ttbr0_el1, {ttbr0}",
-            "msr ttbr1_el1, xzr",
-            mair = in(reg) MAIR_VALUE,
-            tcr = in(reg) TCR_VALUE,
-            ttbr0 = in(reg) self.l1_phys,
-            options(nostack, preserves_flags),
-        );
-
-        // Synchronize the new translation regime and invalidate any stale EL1
-        // translations left by firmware before enabling stage-1 translation.
-        asm!(
-            "isb",
-            "tlbi vmalle1",
-            "dsb sy",
-            "isb",
-            "ic iallu",
-            "dsb sy",
-            "isb",
-            options(nostack, preserves_flags),
-        );
-
-        let mut sctlr: u64;
-        asm!(
-            "mrs {value}, sctlr_el1",
-            value = out(reg) sctlr,
-            options(nomem, nostack, preserves_flags),
-        );
-
-        // Enable stage-1 translation and the instruction cache. Keep the data
-        // cache off for now even though normal RAM is described as cacheable.
-        sctlr |= SCTLR_M | SCTLR_I;
-        sctlr &= !SCTLR_C;
-
-        asm!(
-            "msr sctlr_el1, {value}",
-            "isb",
-            value = in(reg) sctlr,
-            options(nostack, preserves_flags),
-        );
+        // Publish the root before CPU0 can later release any secondary CPU.
+        KERNEL_L1_PHYS.store(self.l1_phys, Ordering::Release);
+        enable_translation_root(self.l1_phys);
     }
 
     unsafe fn map_range(&mut self, start: PhysAddr, size: PhysSize, kind: MappingKind) {
@@ -389,6 +364,68 @@ impl Mmu {
     }
 }
 
+/// Install CPU0's already-built kernel address space on the current CPU.
+///
+/// Returns `false` if CPU0 has not published a root table yet. No allocation
+/// or mutable access to the page tables occurs here.
+pub unsafe fn enable_published_kernel_mmu() -> bool {
+    let l1_phys = KERNEL_L1_PHYS.load(Ordering::Acquire);
+
+    if l1_phys == 0 {
+        return false;
+    }
+
+    enable_translation_root(l1_phys);
+    true
+}
+
+unsafe fn enable_translation_root(l1_phys: PhysAddr) {
+    // Ensure all page-table writes performed by CPU0 are globally visible
+    // before this CPU's translation-table walker begins using them.
+    asm!("dsb sy", options(nostack, preserves_flags));
+
+    asm!(
+        "msr mair_el1, {mair}",
+        "msr tcr_el1, {tcr}",
+        "msr ttbr0_el1, {ttbr0}",
+        "msr ttbr1_el1, xzr",
+        mair = in(reg) MAIR_VALUE,
+        tcr = in(reg) TCR_VALUE,
+        ttbr0 = in(reg) l1_phys,
+        options(nostack, preserves_flags),
+    );
+
+    asm!(
+        "isb",
+        "tlbi vmalle1",
+        "dsb sy",
+        "isb",
+        "ic iallu",
+        "dsb sy",
+        "isb",
+        options(nostack, preserves_flags),
+    );
+
+    let mut sctlr: u64;
+    asm!(
+        "mrs {value}, sctlr_el1",
+        value = out(reg) sctlr,
+        options(nomem, nostack, preserves_flags),
+    );
+
+    // Keep D-cache disabled until shared-memory/cache-coherency handling is
+    // explicitly completed for every DMA user.
+    sctlr |= SCTLR_M | SCTLR_I;
+    sctlr &= !SCTLR_C;
+
+    asm!(
+        "msr sctlr_el1, {value}",
+        "isb",
+        value = in(reg) sctlr,
+        options(nostack, preserves_flags),
+    );
+}
+
 /// Return whether EL1 stage-1 translation is currently enabled.
 #[inline(always)]
 pub fn is_enabled() -> bool {
@@ -443,6 +480,15 @@ pub unsafe fn map_kernel_and_mmio() -> Mmu {
             mmu.unmap_identity(region.start, region.size);
         }
     }
+
+    // The Raspberry Pi armstub keeps secondary-core release slots in physical
+    // page zero. Map that page only through a high Normal-NC alias instead of
+    // identity-mapping VA 0, preserving a useful null-pointer guard.
+    mmu.map_page_l3(
+        SECONDARY_SPIN_TABLE_VIRT,
+        0,
+        MappingKind::NormalNonCacheable,
+    );
 
     mmu.map_device_identity(MMIO_START, MMIO_END - MMIO_START);
     mmu
