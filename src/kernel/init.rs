@@ -1,4 +1,5 @@
 use crate::{
+    arch::mmu,
     drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART},
     early_timeit,
     fdt::BootInfo,
@@ -130,6 +131,19 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     early_timeit!("Boot allocator init", {
         init_boot_allocator();
     });
+
+    crate::info!("Building EL1 identity map");
+    let mmu = early_timeit!("MMU page-table build", { mmu::map_kernel_and_mmio() });
+
+    crate::info!(
+        "Enabling EL1 MMU with TTBR0={:#018x} (data cache remains disabled)",
+        mmu.l1_phys()
+    );
+    early_timeit!("MMU enable", {
+        mmu.enable();
+    });
+    assert!(mmu::is_enabled(), "EL1 MMU failed to enable");
+    crate::info!("EL1 MMU enabled");
 
     init_phys_allocator();
 
