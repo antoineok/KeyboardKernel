@@ -9,8 +9,9 @@ use crate::arch::{
 
 use crate::assets::ImageAsset;
 use crate::drivers::gpio::{GpioPin, GpioPull};
-use crate::graphics::framebuffer::FRAMEBUFFER;
-use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
+use crate::graphics::{
+    graphics_core_ready, BlendMode, GraphicsCoreProxy, GraphicsRequestResult, Point, SourceRect,
+};
 use crate::hid::Key;
 use crate::memory::{heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER};
 use crate::storage::fs::vfs::{FsId, VFS};
@@ -51,6 +52,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     info!("Current CPU: {}", crate::arch::cpu::current_id());
 
     bring_up_secondary_cpu(1);
+    wait_for_graphics_core();
     bring_up_secondary_cpu(2);
     wait_for_usb_transport_core();
 
@@ -101,26 +103,17 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         ImageAsset::parse(background_file.as_bytes()).expect("failed to parse background image");
     let background_surface = background.surface();
 
-    let compositor = Compositor::new(0x000000ff);
-    let layers = [Layer::Image(ImageLayer {
-        source: background_surface,
-        source_rect: SourceRect::whole(&background_surface),
-        position: Point::new(0, 0),
-        blend_mode: BlendMode::Opaque,
-    })];
-    let framebuffer = FRAMEBUFFER.get();
-
-    {
-        let mut backbuffer = framebuffer
-            .as_surface_mut()
-            .expect("framebuffer backbuffer unavailable");
-
-        compositor
-            .render(&mut backbuffer, &layers)
-            .expect("frame composition failed");
-    }
-
-    assert!(framebuffer.present());
+    let mut graphics = GraphicsCoreProxy::new();
+    let request_id = graphics
+        .submit_image(
+            &background_surface,
+            SourceRect::whole(&background_surface),
+            Point::new(0, 0),
+            BlendMode::Opaque,
+            0x000000ff,
+        )
+        .expect("failed to submit background frame to CPU1");
+    wait_for_graphics_request(&mut graphics, request_id);
 
     log_memory_summary();
 
@@ -178,6 +171,42 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .poll_selected_transport(&mut usb_transport, &mut management_backend)
             .expect("USB service polling failed");
         management_backend.poll_pending_action();
+    }
+}
+
+fn wait_for_graphics_core() {
+    const GRAPHICS_CORE_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    let start = time_manager().uptime();
+    while !graphics_core_ready() {
+        if time_manager().uptime().saturating_sub(start) >= GRAPHICS_CORE_BOOT_TIMEOUT {
+            panic!("timed out waiting for CPU1 graphics worker");
+        }
+        spin_loop();
+    }
+
+    info!("CPU1 graphics worker handshake complete");
+}
+
+fn wait_for_graphics_request(graphics: &mut GraphicsCoreProxy, request_id: u64) {
+    const GRAPHICS_RENDER_TIMEOUT: Duration = Duration::from_secs(2);
+
+    let start = time_manager().uptime();
+    loop {
+        if let Some(result) = graphics.request_result(request_id) {
+            assert_eq!(
+                result,
+                GraphicsRequestResult::Complete,
+                "CPU1 graphics request {request_id} failed: {result:?}"
+            );
+            return;
+        }
+
+        if time_manager().uptime().saturating_sub(start) >= GRAPHICS_RENDER_TIMEOUT {
+            panic!("timed out waiting for CPU1 graphics request {request_id}");
+        }
+
+        spin_loop();
     }
 }
 

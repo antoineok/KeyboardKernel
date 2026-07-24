@@ -101,8 +101,9 @@ fn publish_secondary_status(cpu: CpuId, at_el1: bool, mmu_enabled: bool) {
 /// First Rust entry point for secondary CPUs.
 ///
 /// Every secondary first installs CPU0's published translation tables and
-/// reports its EL1/MMU status. CPU2 then transfers into the dedicated USB
-/// transport worker; the other released secondary CPUs remain parked.
+/// reports its EL1/MMU status. CPU1 then transfers into the dedicated graphics
+/// worker and CPU2 into the dedicated USB transport worker; any other released
+/// secondary CPU remains parked.
 #[no_mangle]
 pub extern "C" fn secondary_el1_entry() -> ! {
     let cpu = current_id();
@@ -113,8 +114,10 @@ pub extern "C" fn secondary_el1_entry() -> ! {
 
     publish_secondary_status(cpu, at_el1, mmu_enabled);
 
-    if cpu.raw() == 2 {
-        crate::transport::run_usb_transport_core();
+    match cpu.raw() {
+        1 => crate::graphics::run_graphics_core(),
+        2 => crate::transport::run_usb_transport_core(),
+        _ => {}
     }
 
     loop {
