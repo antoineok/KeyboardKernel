@@ -1,9 +1,12 @@
 pub mod init;
 
 use aarch64_cpu::asm::nop;
-use core::time::Duration;
+use core::{hint::spin_loop, time::Duration};
 
-use crate::arch::exceptions::PrivilegeLevel;
+use crate::arch::{
+    cpu::{self, CpuId},
+    exceptions::PrivilegeLevel,
+};
 
 use crate::assets::ImageAsset;
 use crate::drivers::{
@@ -50,6 +53,8 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         PrivilegeLevel::current().as_str()
     );
     info!("Current CPU: {}", crate::arch::cpu::current_id());
+
+    bring_up_secondary_cpu1();
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
@@ -190,6 +195,41 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
         UART.get_mut().flush_tx();
         nop();
+    }
+}
+
+fn bring_up_secondary_cpu1() {
+    const SECONDARY_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    let cpu1 = CpuId::new(1).expect("BCM2711 must expose CPU1");
+    info!("Releasing {} for secondary EL1 bring-up", cpu1);
+
+    assert!(
+        cpu::release_secondary(cpu1),
+        "refused to release secondary CPU"
+    );
+
+    let start = time_manager().uptime();
+
+    loop {
+        let status = cpu::secondary_status(cpu1);
+
+        if status.online {
+            info!(
+                "{} online: EL1={}, MMU={}",
+                cpu1, status.at_el1, status.mmu_enabled
+            );
+
+            assert!(status.at_el1, "{} did not enter EL1", cpu1);
+            assert!(status.mmu_enabled, "{} failed to enable its EL1 MMU", cpu1);
+            return;
+        }
+
+        if time_manager().uptime().saturating_sub(start) >= SECONDARY_BOOT_TIMEOUT {
+            panic!("timed out waiting for {} secondary bring-up", cpu1);
+        }
+
+        spin_loop();
     }
 }
 

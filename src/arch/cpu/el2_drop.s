@@ -71,11 +71,22 @@ el1_drop:
     mov     x2, #(0x3c0 | 0x5)
     msr     spsr_el2, x2
 
-    // --- ELR_EL2 -> EL1 entry point (el1_entry) ---
-    ldr     x2, =el1_entry
-    msr     elr_el2, x2
+    // --- Select the EL1 Rust entry point for this CPU ---
+    // CPU0 performs global kernel initialization. Secondary CPUs enter a
+    // minimal SMP bring-up path that installs the shared translation tables,
+    // publishes their status through atomics, and parks again.
+    mrs     x2, mpidr_el1
+    and     x2, x2, #0xff
+    cbz     x2, .Lel1_primary_entry
 
-    
+    ldr     x2, =secondary_el1_entry
+    b       .Lel1_entry_ready
+
+.Lel1_primary_entry:
+    ldr     x2, =el1_entry
+
+.Lel1_entry_ready:
+    msr     elr_el2, x2
 
     // --- Synchronize and drop ---
     isb
