@@ -6,32 +6,78 @@ use super::{
 use core::{
     cell::UnsafeCell,
     hint::spin_loop,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 const AUX_UART_CLOCK: u32 = 500_000_000;
 const UART_MAX_QUEUE: usize = 16 * 1024;
 
-static UART_LOG_LOCK: AtomicBool = AtomicBool::new(false);
 static UART_LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
 
-struct UartLogGuard;
+// The Cortex-A72 bring-up deliberately keeps SCTLR_EL1.C clear for now.
+// Avoid LL/SC-based atomic RMW operations (LDXR/STXR) in the logger until
+// the cache/coherency work is complete. Lamport's bakery algorithm gives us
+// mutual exclusion using only atomic loads and stores.
+//
+// Keep these arrays explicit: Atomic* values are not Copy, and BCM2711 has
+// exactly four Cortex-A72 cores.
+static UART_LOG_CHOOSING: [AtomicBool; crate::arch::cpu::CPU_COUNT] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+static UART_LOG_TICKET: [AtomicU64; crate::arch::cpu::CPU_COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+struct UartLogGuard {
+    cpu: usize,
+}
 
 impl UartLogGuard {
     fn acquire() -> Self {
-        while UART_LOG_LOCK
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
+        let cpu = crate::arch::cpu::current_id().index();
+
+        UART_LOG_CHOOSING[cpu].store(true, Ordering::SeqCst);
+
+        let mut max_ticket = 0u64;
+        for ticket in &UART_LOG_TICKET {
+            max_ticket = max_ticket.max(ticket.load(Ordering::SeqCst));
         }
-        Self
+
+        let my_ticket = max_ticket.saturating_add(1);
+        UART_LOG_TICKET[cpu].store(my_ticket, Ordering::SeqCst);
+        UART_LOG_CHOOSING[cpu].store(false, Ordering::SeqCst);
+
+        for other in 0..crate::arch::cpu::CPU_COUNT {
+            if other == cpu {
+                continue;
+            }
+
+            while UART_LOG_CHOOSING[other].load(Ordering::SeqCst) {
+                spin_loop();
+            }
+
+            loop {
+                let other_ticket = UART_LOG_TICKET[other].load(Ordering::SeqCst);
+                if other_ticket == 0 || (other_ticket, other) > (my_ticket, cpu) {
+                    break;
+                }
+                spin_loop();
+            }
+        }
+
+        Self { cpu }
     }
 }
 
 impl Drop for UartLogGuard {
     fn drop(&mut self) {
-        UART_LOG_LOCK.store(false, Ordering::Release);
+        UART_LOG_TICKET[self.cpu].store(0, Ordering::SeqCst);
     }
 }
 
