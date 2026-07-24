@@ -9,7 +9,5 @@ mod reports;
 mod state;
 
 pub use keys::Key;
-pub use reports::{
-    ConsumerReport, HostLedState, KeyboardModifiers, KeyboardReport, SystemReport,
-};
+pub use reports::{ConsumerReport, HostLedState, KeyboardModifiers, KeyboardReport, SystemReport};
 pub use state::{DirtyReports, HidState};

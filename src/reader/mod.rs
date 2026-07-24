@@ -23,14 +23,14 @@ impl Reader {
     }
 
     pub fn from_slice<T>(slice: &[T]) -> Self {
-    let len = slice.len() * core::mem::size_of::<T>();
+        let len = slice.len() * core::mem::size_of::<T>();
 
-    Self {
-        base: slice.as_ptr() as *const u8,
-        pos: 0,
-        len,
+        Self {
+            base: slice.as_ptr() as *const u8,
+            pos: 0,
+            len,
+        }
     }
-}
 
     pub fn from_vec<T>(vec: &Vec<T>) -> Self {
         let len = vec.len() * core::mem::size_of::<T>();

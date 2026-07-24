@@ -1,9 +1,6 @@
 // src/util/early_timing.rs
 
-use core::{
-    cell::UnsafeCell,
-    time::Duration,
-};
+use core::{cell::UnsafeCell, time::Duration};
 
 const MAX_EARLY_TIMINGS: usize = 128;
 
@@ -60,15 +57,10 @@ impl GlobalEarlyTimingBuffer {
     }
 }
 
-static EARLY_TIMINGS: GlobalEarlyTimingBuffer =
-    GlobalEarlyTimingBuffer::new();
+static EARLY_TIMINGS: GlobalEarlyTimingBuffer = GlobalEarlyTimingBuffer::new();
 
 #[inline]
-pub fn record(
-    label: &'static str,
-    started_at: Duration,
-    elapsed: Duration,
-) {
+pub fn record(label: &'static str, started_at: Duration, elapsed: Duration) {
     // Early boot is single-core here. Do not call this concurrently later.
     unsafe {
         (*EARLY_TIMINGS.inner.get()).push(EarlyTiming {
@@ -82,10 +74,7 @@ pub fn record(
 pub fn flush_early_timings() {
     let buffer = unsafe { &mut *EARLY_TIMINGS.inner.get() };
 
-    for timing in buffer.entries[..buffer.len]
-        .iter()
-        .flatten()
-    {
+    for timing in buffer.entries[..buffer.len].iter().flatten() {
         crate::info!(
             "[EARLY TIME][{}] started at {} sec {} ns; took {} sec {} ns",
             timing.label,
@@ -112,18 +101,13 @@ pub fn flush_early_timings() {
 #[macro_export]
 macro_rules! early_timeit {
     ($label:expr, $block:block) => {{
-        let __timer =
-            $crate::util::timing::TimeSpan::start();
+        let __timer = $crate::util::timing::TimeSpan::start();
 
         let __result = { $block };
 
         let __elapsed = __timer.elapsed();
 
-        $crate::util::early_timing::record(
-            $label,
-            __timer.started_at(),
-            __elapsed,
-        );
+        $crate::util::early_timing::record($label, __timer.started_at(), __elapsed);
 
         __result
     }};

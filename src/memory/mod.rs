@@ -7,10 +7,7 @@ pub mod phys;
 
 use core::cell::UnsafeCell;
 
-use crate::fdt::{
-    MemoryKind as BootMemoryKind,
-    MemoryLayout as BootMemoryLayout,
-};
+use crate::fdt::{MemoryKind as BootMemoryKind, MemoryLayout as BootMemoryLayout};
 
 /// Physical address / size types.
 pub type PhysAddr = u64;
@@ -139,6 +136,19 @@ impl MemoryMap {
             .map(|region| region.as_ref().unwrap())
     }
 
+    /// Total bytes currently tracked with the requested classification.
+    pub fn bytes_of_kind(&self, kind: MemoryRegionKind) -> PhysSize {
+        self.iter()
+            .filter(|region| region.kind == kind)
+            .fold(0, |total, region| total.saturating_add(region.size))
+    }
+
+    /// Total bytes represented by the memory map.
+    pub fn total_bytes(&self) -> PhysSize {
+        self.iter()
+            .fold(0, |total, region| total.saturating_add(region.size))
+    }
+
     /// Replace the classification of `[region.start, region.end())`.
     ///
     /// Any existing region intersecting the new one is split as needed. The
@@ -231,10 +241,7 @@ impl MemoryMap {
                 let previous = self.regions[position - 1].unwrap();
 
                 if previous.start < value.start
-                    || (
-                        previous.start == value.start
-                            && previous.end() <= value.end()
-                    )
+                    || (previous.start == value.start && previous.end() <= value.end())
                 {
                     break;
                 }
@@ -350,16 +357,8 @@ impl MemoryManager {
             BootMemoryKind::Reserved,
             MemoryRegionKind::Reserved,
         );
-        self.import_reservations_of_kind(
-            layout,
-            BootMemoryKind::Dma,
-            MemoryRegionKind::Dma,
-        );
-        self.import_reservations_of_kind(
-            layout,
-            BootMemoryKind::NoMap,
-            MemoryRegionKind::NoMap,
-        );
+        self.import_reservations_of_kind(layout, BootMemoryKind::Dma, MemoryRegionKind::Dma);
+        self.import_reservations_of_kind(layout, BootMemoryKind::NoMap, MemoryRegionKind::NoMap);
 
         self.map.normalize();
     }
@@ -389,12 +388,7 @@ impl MemoryManager {
     /// Unlike the previous implementation, this carves the interval out of
     /// every overlapping usable region instead of appending an overlapping
     /// second entry.
-    pub fn reserve_range(
-        &mut self,
-        start: PhysAddr,
-        end: PhysAddr,
-        kind: MemoryRegionKind,
-    ) {
+    pub fn reserve_range(&mut self, start: PhysAddr, end: PhysAddr, kind: MemoryRegionKind) {
         if end <= start {
             return;
         }
@@ -410,10 +404,7 @@ impl MemoryManager {
     pub fn find_usable_region(&self, size: PhysSize) -> Option<&MemoryRegion> {
         self.map
             .iter()
-            .filter(|region| {
-                region.kind == MemoryRegionKind::Usable
-                    && region.size >= size
-            })
+            .filter(|region| region.kind == MemoryRegionKind::Usable && region.size >= size)
             .min_by(|left, right| {
                 left.size
                     .cmp(&right.size)

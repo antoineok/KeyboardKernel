@@ -6,7 +6,6 @@ use core::arch::global_asm;
 use aarch64_cpu::registers::*;
 use tock_registers::interfaces::Readable;
 
-
 global_asm!(include_str!("el1.s"));
 
 //--------------------------------------------------------------------------------------------------

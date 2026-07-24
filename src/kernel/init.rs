@@ -1,5 +1,15 @@
 use crate::{
-    drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART}, early_timeit, fdt::BootInfo, graphics::framebuffer::FRAMEBUFFER, memory::{MEMORY_MANAGER, MemoryRegionKind, boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR}, storage::{devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE}, fs::vfs::{FsId, VFS}, partition::mbr}
+    arch::mmu,
+    drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART},
+    early_timeit,
+    fdt::BootInfo,
+    graphics::framebuffer::FRAMEBUFFER,
+    memory::{boot::BOOT_ALLOCATOR, heap, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER},
+    storage::{
+        devices::{BOOT_SLICE, EMMC_DEV, ROM_SLICE},
+        fs::vfs::{FsId, VFS},
+        partition::mbr,
+    },
 };
 
 extern "C" {
@@ -18,23 +28,13 @@ extern "C" {
     static __heap_end: u8;
 }
 
-const REQUIRED_ALIASES: &[&str] = &[
-    "gpio",
-    "aux",
-    "mailbox",
-    "mmc0",
-    "watchdog",
-    "usb"
-];
+const REQUIRED_ALIASES: &[&str] = &["gpio", "aux", "mailbox", "mmc0", "watchdog", "usb"];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let boot_info = early_timeit!("Parse boot FDT", {
         unsafe {
-            BootInfo::from_ptr(
-                device_tree_ptr as *const u8,
-                REQUIRED_ALIASES,
-            )
-            .expect("Invalid boot FDT")
+            BootInfo::from_ptr(device_tree_ptr as *const u8, REQUIRED_ALIASES)
+                .expect("Invalid boot FDT")
         }
     });
 
@@ -78,7 +78,9 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     //bt.init(mmio_table.entries.get("bluetooth"));
 
     early_timeit!("Memory manager init from FDT", {
-        MEMORY_MANAGER.get_mut().init_from_boot_layout(&boot_info.memory);
+        MEMORY_MANAGER
+            .get_mut()
+            .init_from_boot_layout(&boot_info.memory);
     });
 
     early_timeit!("Kernel memory reservation", {
@@ -106,6 +108,18 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         let heap_end = &__heap_end as *const u8 as u64;
         mm.reserve_range(heap_start, heap_end, MemoryRegionKind::Reserved);
 
+        // The framebuffer is allocated by VideoCore, but exposed to the ARM as
+        // ordinary physical memory. Keep those pages out of PHYS_ALLOCATOR and
+        // classify them as shared DMA memory for the MMU.
+        if !framebuffer.buffer().is_null() && framebuffer.buffer_size() != 0 {
+            let framebuffer_start = framebuffer.buffer() as u64;
+            let framebuffer_end = framebuffer_start
+                .checked_add(framebuffer.buffer_size() as u64)
+                .expect("Framebuffer reservation overflow");
+
+            mm.reserve_range(framebuffer_start, framebuffer_end, MemoryRegionKind::Dma);
+        }
+
         // Re-normalize now that we added regions
         mm.map_mut().normalize();
     });
@@ -114,14 +128,23 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         init_boot_allocator();
     });
 
+    crate::info!("Building EL1 identity map");
+    let mmu = early_timeit!("MMU page-table build", { mmu::map_kernel_and_mmio() });
+
+    crate::info!(
+        "Enabling EL1 MMU with TTBR0={:#018x} (data cache remains disabled)",
+        mmu.l1_phys()
+    );
+    early_timeit!("MMU enable", {
+        mmu.enable();
+    });
+    assert!(mmu::is_enabled(), "EL1 MMU failed to enable");
+    crate::info!("EL1 MMU enabled");
+
     init_phys_allocator();
 
     early_timeit!("USB power domain", {
-        if !mailbox.set_power_state(
-            mailbox::POWER_DEVICE_USB_HCD,
-            true,
-            true,
-        ) {
+        if !mailbox.set_power_state(mailbox::POWER_DEVICE_USB_HCD, true, true) {
             panic!("Failed to power the USB controller");
         }
     });
@@ -138,11 +161,9 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
             .expect("DWC2 device-mode preparation failed");
     });
 
-
     early_timeit!("VFS init", {
         init_vfs();
     });
-
 }
 
 unsafe fn init_boot_allocator() {

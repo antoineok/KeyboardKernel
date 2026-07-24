@@ -18,7 +18,9 @@ impl Debug for BlockError {
         match self {
             BlockError::Unsupported => write!(f, "BlockError::Unsupported"),
             BlockError::Timeout => write!(f, "BlockError::Timeout"),
-            BlockError::OutOfBounds(sector) => write!(f, "BlockError::OutOfBounds({:016x})", sector),
+            BlockError::OutOfBounds(sector) => {
+                write!(f, "BlockError::OutOfBounds({:016x})", sector)
+            }
             BlockError::Io => write!(f, "BlockError::Io"),
             BlockError::Corrupt(msg) => write!(f, "BlockError::Corrupt({})", msg),
         }
@@ -58,28 +60,31 @@ impl EmmcBlockDevice {
 }
 
 impl BlockDevice for EmmcBlockDevice {
-
     fn read_sector(&self, sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), BlockError> {
         let sector: u32 = self.lba_u32(sector)?;
-        EMMC.get().read_block(sector, buffer).map_err(|error| {
-            match error {
+        EMMC.get()
+            .read_block(sector, buffer)
+            .map_err(|error| match error {
                 crate::drivers::emmc::EmmcError::Timeout(_) => BlockError::Timeout,
-                crate::drivers::emmc::EmmcError::NotInitialized => BlockError::Corrupt("emmc not initialized"),
+                crate::drivers::emmc::EmmcError::NotInitialized => {
+                    BlockError::Corrupt("emmc not initialized")
+                }
                 _ => BlockError::Io,
-            }
-        })?;
+            })?;
         Ok(())
     }
 
     fn write_sector(&self, sector: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), BlockError> {
         let sector: u32 = self.lba_u32(sector)?;
-        EMMC.get().write_block(sector, data).map_err(|error| {
-            match error {
+        EMMC.get()
+            .write_block(sector, data)
+            .map_err(|error| match error {
                 crate::drivers::emmc::EmmcError::Timeout(_) => BlockError::Timeout,
-                crate::drivers::emmc::EmmcError::NotInitialized => BlockError::Corrupt("emmc not initialized"),
+                crate::drivers::emmc::EmmcError::NotInitialized => {
+                    BlockError::Corrupt("emmc not initialized")
+                }
                 _ => BlockError::Io,
-            }
-        })?;
+            })?;
         Ok(())
     }
 

@@ -4,6 +4,7 @@
 
 extern crate alloc;
 mod arch;
+mod assets;
 mod drivers;
 mod fdt;
 mod graphics;

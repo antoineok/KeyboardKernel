@@ -22,6 +22,7 @@ pub const MBOX_TAG_SETPOWER: u32 = 0x28001;
 pub const POWER_DEVICE_USB_HCD: u32 = 3;
 pub const MBOX_TAG_SETCLKRATE: u32 = 0x38002;
 
+pub const MBOX_TAG_SETALPHAMODE: u32 = 0x0004_8007;
 pub const MBOX_TAG_SETPHYWH: u32 = 0x48003;
 pub const MBOX_TAG_SETVIRTWH: u32 = 0x48004;
 pub const MBOX_TAG_SETVIRTOFF: u32 = 0x48009;
@@ -32,10 +33,9 @@ pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 
 pub const MBOX_TAG_LAST: u32 = 0;
 
-
 #[repr(C, align(16))]
 pub struct MailboxBuffer {
-    pub(crate) buffer: [u32; 36],
+    pub(crate) buffer: [u32; 39],
     mbox_read: Address,
     mbox_poll: Address,
     mbox_sender: Address,
@@ -61,7 +61,7 @@ impl MailboxStatic {
 impl MailboxBuffer {
     pub const fn new() -> Self {
         MailboxBuffer {
-            buffer: [0; 36],
+            buffer: [0; 39],
             mbox_read: Address(0),
             mbox_poll: Address(0),
             mbox_sender: Address(4),
@@ -75,7 +75,7 @@ impl MailboxBuffer {
         let base_addr = mmio
             .unwrap_or_else(|| panic!("Mailbox MMIO entry not found in device tree"))
             .arm_phys;
-        
+
         self.mbox_read.set_address(base_addr);
         self.mbox_poll.set_address(base_addr + 0x10);
         self.mbox_sender.set_address(base_addr + 0x14);
@@ -114,17 +114,10 @@ impl MailboxBuffer {
             }
         }
     }
-    pub fn set_power_state(
-        &mut self,
-        device_id: u32,
-        on: bool,
-        wait: bool,
-    ) -> bool {
+    pub fn set_power_state(&mut self, device_id: u32, on: bool, wait: bool) -> bool {
         self.buffer.fill(0);
 
-        let state =
-            u32::from(on) |
-            (u32::from(wait) << 1);
+        let state = u32::from(on) | (u32::from(wait) << 1);
 
         self.buffer[0] = 8 * 4;
         self.buffer[1] = MBOX_REQUEST;
@@ -149,9 +142,6 @@ impl MailboxBuffer {
         let device_exists = returned_state & 0b10 == 0;
         let actual_on = returned_state & 1 != 0;
 
-        tag_succeeded
-            && returned_id == device_id
-            && device_exists
-            && actual_on == on
+        tag_succeeded && returned_id == device_id && device_exists && actual_on == on
     }
 }

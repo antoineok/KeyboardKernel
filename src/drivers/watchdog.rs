@@ -45,7 +45,8 @@ impl Watchdog {
 
     pub fn init(&mut self, mmio_entry: Option<AliasEntry>) {
         let base_addr = mmio_entry
-            .unwrap_or_else(|| panic!("Watchdog/PM MMIO entry not found in device tree")).arm_phys;
+            .unwrap_or_else(|| panic!("Watchdog/PM MMIO entry not found in device tree"))
+            .arm_phys;
 
         early_timeit!("Watchdog set base", {
             self.base.set_address(base_addr);
@@ -74,11 +75,8 @@ impl Watchdog {
 
         let rstc = self.rstc.read();
 
-        self.rstc.write(
-            PM_PASSWORD
-                | (rstc & !PM_RSTC_WRCFG_MASK)
-                | PM_RSTC_WRCFG_FULL_RESET,
-        );
+        self.rstc
+            .write(PM_PASSWORD | (rstc & !PM_RSTC_WRCFG_MASK) | PM_RSTC_WRCFG_FULL_RESET);
 
         loop {
             core::hint::spin_loop();

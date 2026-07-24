@@ -64,15 +64,9 @@ pub trait KeyworkTransport {
 
     fn poll(&mut self) -> Result<(), Self::Error>;
 
-    fn send_keyboard(
-        &mut self,
-        report: KeyboardReport,
-    ) -> Result<SendStatus, Self::Error>;
+    fn send_keyboard(&mut self, report: KeyboardReport) -> Result<SendStatus, Self::Error>;
 
-    fn send_consumer(
-        &mut self,
-        report: ConsumerReport,
-    ) -> Result<SendStatus, Self::Error>;
+    fn send_consumer(&mut self, report: ConsumerReport) -> Result<SendStatus, Self::Error>;
 
     fn send_system(&mut self, report: SystemReport) -> Result<SendStatus, Self::Error>;
 
@@ -80,8 +74,5 @@ pub trait KeyworkTransport {
 
     fn send_management(&mut self, frame: &[u8]) -> Result<SendStatus, Self::Error>;
 
-    fn receive_management(
-        &mut self,
-        buffer: &mut [u8],
-    ) -> Result<ReceiveStatus, Self::Error>;
+    fn receive_management(&mut self, buffer: &mut [u8]) -> Result<ReceiveStatus, Self::Error>;
 }

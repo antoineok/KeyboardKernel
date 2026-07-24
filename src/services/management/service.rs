@@ -170,7 +170,8 @@ impl<const RESPONSE_CAPACITY: usize> ManagementService<RESPONSE_CAPACITY> {
                     Err(_) => return ManagementStatus::InvalidPayload,
                 };
 
-                if reader.finish().is_err() || requested_length > writer.remaining().saturating_sub(2)
+                if reader.finish().is_err()
+                    || requested_length > writer.remaining().saturating_sub(2)
                 {
                     return ManagementStatus::InvalidPayload;
                 }
@@ -335,7 +336,8 @@ impl<const RESPONSE_CAPACITY: usize> ManagementService<RESPONSE_CAPACITY> {
                     Ok(value) => value as usize,
                     Err(_) => return ManagementStatus::InvalidPayload,
                 };
-                if reader.finish().is_err() || requested_length > writer.remaining().saturating_sub(2)
+                if reader.finish().is_err()
+                    || requested_length > writer.remaining().saturating_sub(2)
                 {
                     return ManagementStatus::InvalidPayload;
                 }

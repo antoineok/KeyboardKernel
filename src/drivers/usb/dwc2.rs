@@ -217,24 +217,14 @@ impl Dwc2 {
     pub fn core_soft_reset(&mut self) -> Result<(), Dwc2Error> {
         self.ensure_initialized()?;
 
-        self.wait_for_bits(
-            GRSTCTL,
-            GRSTCTL_AHBIDLE,
-            true,
-            Duration::from_millis(100),
-        )?;
+        self.wait_for_bits(GRSTCTL, GRSTCTL_AHBIDLE, true, Duration::from_millis(100))?;
 
         // GRSTCTL contains command/status bits. Do not replay a value read
         // from it; issue only the core-soft-reset command.
         self.write_raw(GRSTCTL, GRSTCTL_CSFTRST);
         self.device_barrier();
 
-        self.wait_for_bits(
-            GRSTCTL,
-            GRSTCTL_CSFTRST,
-            false,
-            Duration::from_millis(100),
-        )?;
+        self.wait_for_bits(GRSTCTL, GRSTCTL_CSFTRST, false, Duration::from_millis(100))?;
 
         // The core requires a few PHY clocks after CSFTRST deasserts before
         // accessing additional registers. Three microseconds is deliberately
@@ -461,15 +451,11 @@ impl Dwc2 {
     pub fn arm_ep0_setup(&mut self) -> Result<(), Dwc2Error> {
         self.ensure_initialized()?;
 
-        self.write_raw(
-            doeptsiz(0),
-            8 | DEPTSIZ0_PKTCNT_ONE | DOEPTSIZ0_SUPCNT_ONE,
-        );
+        self.write_raw(doeptsiz(0), 8 | DEPTSIZ0_PKTCNT_ONE | DOEPTSIZ0_SUPCNT_ONE);
 
         self.modify_raw(doepctl(0), |mut value| {
             value &= !(DEPCTL0_MPS_MASK | DEPCTL_STALL);
-            value |=
-                DEPCTL0_MPS_64 | DEPCTL_USBACTEP | DEPCTL_CNAK | DEPCTL_EPENA;
+            value |= DEPCTL0_MPS_64 | DEPCTL_USBACTEP | DEPCTL_CNAK | DEPCTL_EPENA;
             value
         });
         self.device_barrier();
@@ -575,11 +561,7 @@ impl Dwc2 {
         Ok(self.read_raw(fifo(endpoint)))
     }
 
-    pub fn discard_fifo_bytes(
-        &self,
-        _endpoint: usize,
-        byte_count: usize,
-    ) -> Result<(), Dwc2Error> {
+    pub fn discard_fifo_bytes(&self, _endpoint: usize, byte_count: usize) -> Result<(), Dwc2Error> {
         self.ensure_initialized()?;
         for _ in 0..byte_count.div_ceil(4) {
             let _ = self.read_raw(fifo(0));
@@ -854,11 +836,7 @@ impl Dwc2 {
         Ok(self.read_raw(DSTS) & DSTS_SUSPSTS != 0)
     }
 
-    fn wait_for_tx_space(
-        &self,
-        endpoint: usize,
-        required_words: usize,
-    ) -> Result<(), Dwc2Error> {
+    fn wait_for_tx_space(&self, endpoint: usize, required_words: usize) -> Result<(), Dwc2Error> {
         let started = uptime();
         let timeout = Duration::from_millis(100);
         loop {
@@ -940,23 +918,13 @@ impl Dwc2 {
     fn flush_rx_fifo(&mut self) -> Result<(), Dwc2Error> {
         self.write_raw(GRSTCTL, GRSTCTL_RXFFLSH);
         self.device_barrier();
-        self.wait_for_bits(
-            GRSTCTL,
-            GRSTCTL_RXFFLSH,
-            false,
-            Duration::from_millis(100),
-        )
+        self.wait_for_bits(GRSTCTL, GRSTCTL_RXFFLSH, false, Duration::from_millis(100))
     }
 
     fn flush_tx_fifo_all(&mut self) -> Result<(), Dwc2Error> {
         self.write_raw(GRSTCTL, GRSTCTL_TXFFLSH | GRSTCTL_TXFNUM_ALL);
         self.device_barrier();
-        self.wait_for_bits(
-            GRSTCTL,
-            GRSTCTL_TXFFLSH,
-            false,
-            Duration::from_millis(100),
-        )
+        self.wait_for_bits(GRSTCTL, GRSTCTL_TXFFLSH, false, Duration::from_millis(100))
     }
 
     fn configure_ep0_max_packet(&mut self, packet_size: usize) -> Result<(), Dwc2Error> {

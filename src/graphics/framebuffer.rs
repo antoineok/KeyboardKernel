@@ -3,18 +3,30 @@ use core::cell::UnsafeCell;
 use crate::{
     drivers::mailbox::{
         MAILBOX, MBOX_CH_PROP, MBOX_REQUEST, MBOX_TAG_GETFB, MBOX_TAG_GETPITCH, MBOX_TAG_LAST,
-        MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR, MBOX_TAG_SETVIRTOFF,
-        MBOX_TAG_SETVIRTWH,
+        MBOX_TAG_SETALPHAMODE, MBOX_TAG_SETDEPTH, MBOX_TAG_SETPHYWH, MBOX_TAG_SETPXLORDR,
+        MBOX_TAG_SETVIRTOFF, MBOX_TAG_SETVIRTWH,
     },
     early_timeit, warn,
 };
 
+use crate::graphics::{
+    blit::{blit_alpha as blit_surface_alpha, blit_opaque},
+    surface::{PixelFormat, Surface, SurfaceError, SurfaceInfo, SurfaceMut},
+};
 pub struct Framebuffer {
     width: u32,
     height: u32,
+    virtual_height: u32,
     pitch: u32,
-    is_rgb: bool,
+    pixel_format: PixelFormat,
+
+    /// Size of the allocation returned by MBOX_TAG_GETFB.
+    buffer_size: usize,
     buffer: *mut u8,
+
+    page_count: u32,
+    front_page: u32,
+    back_page: u32,
 }
 
 pub struct FramebufferStatic(UnsafeCell<Framebuffer>);
@@ -22,8 +34,7 @@ pub struct FramebufferStatic(UnsafeCell<Framebuffer>);
 unsafe impl Sync for Framebuffer {}
 unsafe impl Sync for FramebufferStatic {}
 
-pub static FRAMEBUFFER: FramebufferStatic =
-    FramebufferStatic(UnsafeCell::new(Framebuffer::new()));
+pub static FRAMEBUFFER: FramebufferStatic = FramebufferStatic(UnsafeCell::new(Framebuffer::new()));
 
 impl FramebufferStatic {
     pub fn get(&self) -> &mut Framebuffer {
@@ -36,9 +47,14 @@ impl Framebuffer {
         Self {
             width: 0,
             height: 0,
+            virtual_height: 0,
             pitch: 0,
-            is_rgb: false,
+            pixel_format: PixelFormat::None,
+            buffer_size: 0,
             buffer: core::ptr::null_mut(),
+            page_count: 0,
+            front_page: 0,
+            back_page: 0,
         }
     }
 
@@ -47,7 +63,7 @@ impl Framebuffer {
             let mbox = MAILBOX.get();
             let mbox_buf = &mut mbox.buffer;
 
-            mbox_buf[0] = 35 * 4; // Length of message in bytes.
+            mbox_buf[0] = 39 * 4; // Length of message in bytes.
             mbox_buf[1] = MBOX_REQUEST;
 
             mbox_buf[2] = MBOX_TAG_SETPHYWH;
@@ -60,7 +76,7 @@ impl Framebuffer {
             mbox_buf[8] = 8;
             mbox_buf[9] = 8;
             mbox_buf[10] = 1366;
-            mbox_buf[11] = 768;
+            mbox_buf[11] = 768 * 2;
 
             mbox_buf[12] = MBOX_TAG_SETVIRTOFF;
             mbox_buf[13] = 8;
@@ -89,30 +105,79 @@ impl Framebuffer {
             mbox_buf[32] = 4;
             mbox_buf[33] = 0;
 
-            mbox_buf[34] = MBOX_TAG_LAST;
+            mbox_buf[34] = MBOX_TAG_SETALPHAMODE;
+            mbox_buf[35] = 4;
+            mbox_buf[36] = 0;
+            mbox_buf[37] = 2; // Alpha ignored
+
+            mbox_buf[38] = MBOX_TAG_LAST;
         }
 
         let mbox = MAILBOX.get();
-        let result = early_timeit!("Mailbox framebuffer call", {
-            mbox.call(MBOX_CH_PROP)
-        });
+        let result = early_timeit!("Mailbox framebuffer call", { mbox.call(MBOX_CH_PROP) });
 
         if result && mbox.buffer[20] == 32 && mbox.buffer[28] != 0 {
+            let pixel_format = match mbox.buffer[24] {
+                1 => PixelFormat::Rgbx8888,
+                0 => PixelFormat::Bgrx8888,
+                value => {
+                    warn!("Unsupported framebuffer pixel order: {}", value);
+                    self.reset();
+                    return;
+                }
+            };
+
             // Convert the VideoCore bus address to an ARM physical address.
-            mbox.buffer[28] &= 0x3fff_ffff;
+            let buffer_address = mbox.buffer[28] & 0x3fff_ffff;
+            let buffer_size = mbox.buffer[29] as usize;
 
             self.width = mbox.buffer[5];
             self.height = mbox.buffer[6];
+            self.virtual_height = mbox.buffer[11];
             self.pitch = mbox.buffer[33];
-            self.is_rgb = mbox.buffer[24] == 1;
-            self.buffer = mbox.buffer[28] as *mut u8;
+            self.pixel_format = pixel_format;
+            self.buffer_size = buffer_size;
+            self.buffer = buffer_address as *mut u8;
 
-            /*
-             * Deliberately do not clear the framebuffer here.
-             *
-             * The first complete UI frame should overwrite the display, avoiding
-             * a redundant full-framebuffer write during the boot-critical path.
-             */
+            self.page_count = self.virtual_height / self.height;
+
+            if self.page_count >= 2 {
+                self.page_count = 2;
+                self.front_page = 0;
+                self.back_page = 1;
+            } else {
+                warn!("Double buffering unavailable; using a single framebuffer page");
+
+                self.page_count = 1;
+                self.front_page = 0;
+                self.back_page = 0;
+            }
+
+            let required_size =
+                match (self.pitch as usize).checked_mul(self.virtual_height as usize) {
+                    Some(size) => size,
+                    None => {
+                        warn!("Framebuffer allocation size overflow");
+                        self.reset();
+                        return;
+                    }
+                };
+
+            if self.buffer_size < required_size {
+                warn!(
+                    "Framebuffer allocation is too small: {} < {}",
+                    self.buffer_size, required_size,
+                );
+
+                self.reset();
+                return;
+            }
+
+            if let Err(error) = self.as_surface_mut() {
+                warn!("Invalid framebuffer surface: {}", error);
+                self.reset();
+                return;
+            }
         } else {
             warn!("No framebuffer available, continuing headless");
             self.reset();
@@ -123,9 +188,16 @@ impl Framebuffer {
     fn reset(&mut self) {
         self.width = 0;
         self.height = 0;
+        self.virtual_height = 0;
         self.pitch = 0;
-        self.is_rgb = false;
+        self.pixel_format = PixelFormat::None;
+
+        self.buffer_size = 0;
         self.buffer = core::ptr::null_mut();
+
+        self.page_count = 0;
+        self.front_page = 0;
+        self.back_page = 0;
     }
 
     #[inline(always)]
@@ -144,8 +216,8 @@ impl Framebuffer {
     }
 
     #[inline(always)]
-    pub fn is_rgb(&self) -> bool {
-        self.is_rgb
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.pixel_format
     }
 
     #[inline(always)]
@@ -154,31 +226,79 @@ impl Framebuffer {
     }
 
     #[inline(always)]
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+
+    #[inline(always)]
+    fn page_size(&self) -> Option<usize> {
+        (self.pitch as usize).checked_mul(self.height as usize)
+    }
+
+    #[inline(always)]
+    fn page_offset(&self, page: u32) -> Option<usize> {
+        if page >= self.page_count {
+            return None;
+        }
+
+        self.page_size()?.checked_mul(page as usize)
+    }
+
+    fn page_surface_mut(&mut self, page: u32) -> Result<SurfaceMut<'_>, SurfaceError> {
+        if self.buffer.is_null() {
+            return Err(SurfaceError::NullBuffer);
+        }
+
+        let page_size = self.page_size().ok_or(SurfaceError::SizeOverflow)?;
+
+        let offset = self.page_offset(page).ok_or(SurfaceError::SizeOverflow)?;
+
+        let end = offset
+            .checked_add(page_size)
+            .ok_or(SurfaceError::SizeOverflow)?;
+
+        if end > self.buffer_size {
+            return Err(SurfaceError::BufferTooSmall {
+                available: self.buffer_size,
+                required: end,
+            });
+        }
+
+        let info = SurfaceInfo::new(
+            self.width,
+            self.height,
+            self.pitch as usize,
+            self.pixel_format,
+        )?;
+
+        // Safety:
+        //
+        // - offset and page_size were checked against buffer_size;
+        // - this page lies inside the mailbox framebuffer allocation;
+        // - &mut self prevents another safe mutable page view.
+        let pixels = unsafe { core::slice::from_raw_parts_mut(self.buffer.add(offset), page_size) };
+
+        SurfaceMut::new(pixels, info)
+    }
+
+    #[inline(always)]
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
-        if self.buffer.is_null() || x >= self.width || y >= self.height {
+        let buffer = self.draw_buffer();
+
+        if buffer.is_null() || x >= self.width || y >= self.height {
             return;
         }
 
         let offset = y as usize * self.pitch as usize + x as usize * size_of::<u32>();
+
         let packed = self.pack_pixel(color);
 
         unsafe {
-            self.buffer
-                .add(offset)
-                .cast::<u32>()
-                .write(packed);
+            buffer.add(offset).cast::<u32>().write(packed);
         }
     }
 
-    pub fn draw_rect(
-        &mut self,
-        x1: u32,
-        y1: u32,
-        x2: u32,
-        y2: u32,
-        color: u32,
-        fill: bool,
-    ) {
+    pub fn draw_rect(&mut self, x1: u32, y1: u32, x2: u32, y2: u32, color: u32, fill: bool) {
         if self.buffer.is_null() {
             return;
         }
@@ -297,70 +417,127 @@ impl Framebuffer {
         }
     }
 
-    /// Copy a rectangular ARGB8888 pixel buffer into the framebuffer.
-    pub fn blit(&mut self, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) {
-        if self.buffer.is_null() {
+    /// Copy a tightly packed RGBA8888 pixel buffer into the framebuffer.
+    ///
+    /// Source alpha is ignored. The operation is clipped to the framebuffer.
+    pub fn blit(&mut self, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) {
+        if width == 0 || height == 0 {
             return;
         }
 
-        let pitch = self.pitch as usize;
-
-        for row in 0..h {
-            let fb_y = y + row;
-
-            if fb_y >= self.height {
-                break;
+        let source_pitch = match (width as usize).checked_mul(4) {
+            Some(pitch) => pitch,
+            None => {
+                warn!("Framebuffer blit source pitch overflow");
+                return;
             }
+        };
 
-            let dst = unsafe {
-                self.buffer
-                    .add(fb_y as usize * pitch + x as usize * size_of::<u32>())
-            };
-
-            let src = &pixels[row as usize * w as usize * size_of::<u32>()..];
-
-            if self.is_rgb {
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src.as_ptr(),
-                        dst,
-                        w as usize * size_of::<u32>(),
-                    );
-                }
-            } else {
-                for i in 0..w as usize {
-                    let source_offset = i * size_of::<u32>();
-
-                    unsafe {
-                        *dst.add(source_offset) = src[source_offset + 2];
-                        *dst.add(source_offset + 1) = src[source_offset + 1];
-                        *dst.add(source_offset + 2) = src[source_offset];
-                        *dst.add(source_offset + 3) = src[source_offset + 3];
-                    }
-                }
+        let source_info = match SurfaceInfo::new(width, height, source_pitch, PixelFormat::Rgba8888)
+        {
+            Ok(info) => info,
+            Err(error) => {
+                warn!("Invalid framebuffer blit source: {}", error);
+                return;
             }
+        };
+
+        let source = match Surface::new(pixels, source_info) {
+            Ok(surface) => surface,
+            Err(error) => {
+                warn!("Invalid framebuffer blit buffer: {}", error);
+                return;
+            }
+        };
+
+        let mut destination = match self.as_surface_mut() {
+            Ok(surface) => surface,
+            Err(error) => {
+                warn!("Framebuffer is unavailable for blitting: {}", error);
+                return;
+            }
+        };
+
+        if let Err(error) = blit_opaque(
+            &source,
+            &mut destination,
+            0,
+            0,
+            i64::from(x),
+            i64::from(y),
+            width,
+            height,
+        ) {
+            warn!("Framebuffer blit failed: {}", error);
         }
     }
 
-    #[inline(always)]
-    fn pack_pixel(&self, color: u32) -> u32 {
-        // Input format: 0xAARRGGBB.
-        let a = (color >> 24) & 0xff;
-        let r = (color >> 16) & 0xff;
-        let g = (color >> 8) & 0xff;
-        let b = color & 0xff;
+    /// Alpha-blend a tightly packed RGBA8888 buffer over the framebuffer.
+    pub fn blit_alpha(&mut self, x: i64, y: i64, width: u32, height: u32, pixels: &[u8]) {
+        if width == 0 || height == 0 {
+            return;
+        }
 
-        if self.is_rgb {
-            // Bytes in memory: R G B A.
-            (a << 24) | (b << 16) | (g << 8) | r
-        } else {
-            // Bytes in memory: B G R A.
-            (a << 24) | (r << 16) | (g << 8) | b
+        let source_pitch = match (width as usize).checked_mul(4) {
+            Some(pitch) => pitch,
+            None => {
+                warn!("Alpha blit source pitch overflow");
+                return;
+            }
+        };
+
+        let source_info = match SurfaceInfo::new(width, height, source_pitch, PixelFormat::Rgba8888)
+        {
+            Ok(info) => info,
+
+            Err(error) => {
+                warn!("Invalid alpha blit source: {}", error);
+                return;
+            }
+        };
+
+        let source = match Surface::new(pixels, source_info) {
+            Ok(surface) => surface,
+
+            Err(error) => {
+                warn!("Invalid alpha blit buffer: {}", error);
+                return;
+            }
+        };
+
+        let mut destination = match self.as_surface_mut() {
+            Ok(surface) => surface,
+
+            Err(error) => {
+                warn!("Framebuffer unavailable for alpha blitting: {}", error);
+                return;
+            }
+        };
+
+        if let Err(error) = blit_surface_alpha(&source, &mut destination, 0, 0, x, y, width, height)
+        {
+            warn!("Framebuffer alpha blit failed: {}", error);
+        }
+    }
+
+    fn pack_pixel(&self, color: u32) -> u32 {
+        // Input format: 0xRRGGBBAA.
+        let [r, g, b, _a] = color.to_be_bytes();
+
+        match self.pixel_format() {
+            PixelFormat::Rgbx8888 => u32::from_le_bytes([r, g, b, 0xff]),
+            PixelFormat::Bgrx8888 => u32::from_le_bytes([b, g, r, 0xff]),
+
+            _ => {
+                unreachable!("invalid framebuffer pixel format")
+            }
         }
     }
 
     pub fn clear(&mut self, color: u32) {
-        if self.buffer.is_null() {
+        let buffer = self.draw_buffer();
+
+        if buffer.is_null() {
             return;
         }
 
@@ -368,7 +545,6 @@ impl Framebuffer {
         let width = self.width as usize;
         let height = self.height as usize;
         let pitch = self.pitch as usize;
-        let base = self.buffer;
 
         let bytes = pixel.to_ne_bytes();
 
@@ -379,7 +555,8 @@ impl Framebuffer {
 
         unsafe {
             for y in 0..height {
-                let row = base.add(y * pitch).cast::<u32>();
+                let row = buffer.add(y * pitch).cast::<u32>();
+
                 core::slice::from_raw_parts_mut(row, width).fill(pixel);
             }
         }
@@ -389,15 +566,105 @@ impl Framebuffer {
     ///
     /// Examples: `0x00000000` and `0xffffffff`.
     fn clear_same(&mut self, color: u8) {
-        if self.buffer.is_null() {
+        let buffer = self.draw_buffer();
+
+        if buffer.is_null() {
             return;
         }
 
-        let len = self.pitch as usize * self.height as usize;
+        let Some(len) = self.page_size() else {
+            return;
+        };
 
         unsafe {
-            core::ptr::write_bytes(self.buffer, color, len);
+            core::ptr::write_bytes(buffer, color, len);
         }
+    }
+
+    pub fn as_surface_mut(&mut self) -> Result<SurfaceMut<'_>, SurfaceError> {
+        let page = self.back_page;
+        self.page_surface_mut(page)
+    }
+
+    #[inline(always)]
+    fn draw_buffer(&self) -> *mut u8 {
+        if self.buffer.is_null() {
+            return core::ptr::null_mut();
+        }
+
+        let Some(offset) = self.page_offset(self.back_page) else {
+            return core::ptr::null_mut();
+        };
+
+        // Safety: page_offset checked that the page is valid.
+        unsafe { self.buffer.add(offset) }
+    }
+
+    pub fn present(&mut self) -> bool {
+        if self.buffer.is_null() {
+            return false;
+        }
+
+        // Single-buffer fallback: drawing is already visible.
+        if self.page_count < 2 {
+            return true;
+        }
+
+        let Some(y_offset) = self.back_page.checked_mul(self.height) else {
+            return false;
+        };
+
+        {
+            let mbox = MAILBOX.get();
+            let mbox_buf = &mut mbox.buffer;
+
+            mbox_buf[0] = 8 * 4;
+            mbox_buf[1] = MBOX_REQUEST;
+
+            mbox_buf[2] = MBOX_TAG_SETVIRTOFF;
+            mbox_buf[3] = 8;
+            mbox_buf[4] = 0;
+            mbox_buf[5] = 0;
+            mbox_buf[6] = y_offset;
+
+            mbox_buf[7] = MBOX_TAG_LAST;
+        }
+
+        let mbox = MAILBOX.get();
+
+        if !mbox.call(MBOX_CH_PROP) {
+            warn!("Framebuffer page flip mailbox call failed");
+            return false;
+        }
+
+        if mbox.buffer[5] != 0 || mbox.buffer[6] != y_offset {
+            warn!(
+                "Framebuffer page flip rejected: requested y={}, returned ({}, {})",
+                y_offset, mbox.buffer[5], mbox.buffer[6],
+            );
+
+            return false;
+        }
+
+        self.front_page = self.back_page;
+        self.back_page = if self.front_page == 0 { 1 } else { 0 };
+
+        true
+    }
+
+    #[inline(always)]
+    pub fn is_double_buffered(&self) -> bool {
+        self.page_count >= 2
+    }
+
+    #[inline(always)]
+    pub fn front_page(&self) -> u32 {
+        self.front_page
+    }
+
+    #[inline(always)]
+    pub fn back_page(&self) -> u32 {
+        self.back_page
     }
 }
 

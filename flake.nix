@@ -69,6 +69,7 @@
           python3
           python3Packages.pyserial
           python3Packages.pyusb
+          python3Packages.pillow
           bash
 
           # Simply for convenience, to format the nix files in this project

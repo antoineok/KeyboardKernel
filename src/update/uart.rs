@@ -407,7 +407,7 @@ pub fn write_reply(reply: UartUpdateReply) {
             uart.write_byte(0x16);
             write_u32_le_uart(0);
         }
-        
+
         UartUpdateReply::CommitOk => {
             uart.write_byte(0x17);
             write_u32_le_uart(0);
@@ -421,9 +421,6 @@ fn parse_u32_payload(payload: &[u8]) -> Result<u32, UpdateError> {
     }
 
     Ok(u32::from_le_bytes([
-        payload[0],
-        payload[1],
-        payload[2],
-        payload[3],
+        payload[0], payload[1], payload[2], payload[3],
     ]))
 }

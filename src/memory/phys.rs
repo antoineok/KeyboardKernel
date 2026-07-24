@@ -13,7 +13,7 @@
 
 use core::cell::UnsafeCell;
 
-use crate::{early_timeit};
+use crate::early_timeit;
 
 use super::boot::BOOT_ALLOCATOR;
 use super::{MemoryMap, MemoryRegionKind, PhysAddr, PhysSize};
@@ -85,7 +85,8 @@ impl PhysAllocator {
         let bitmap_u64s = (bitmap_bits + 63) / 64;
         let bitmap_bytes = (bitmap_u64s * core::mem::size_of::<u64>()) as u64;
 
-        let bitmap_phys = BOOT_ALLOCATOR.get_mut()
+        let bitmap_phys = BOOT_ALLOCATOR
+            .get_mut()
             .alloc(bitmap_bytes, 8)
             .expect("PhysAllocator: failed to allocate bitmap from boot allocator");
 
@@ -243,6 +244,28 @@ impl PhysAllocator {
         }
         let bytes = self.arena_end - self.arena_start;
         Some((self.arena_start, self.arena_end, bytes))
+    }
+
+    /// Number of currently free 4 KiB pages.
+    pub fn free_pages(&self) -> Option<usize> {
+        if !self.initialized {
+            return None;
+        }
+
+        let mut free_pages = 0usize;
+
+        for word_index in 0..self.bitmap_len {
+            let word = unsafe { core::ptr::read_volatile(self.bitmap.add(word_index)) };
+            free_pages = free_pages.saturating_add(word.count_zeros() as usize);
+        }
+
+        Some(free_pages.min(self.total_pages))
+    }
+
+    /// Number of bytes that can still be allocated as physical pages.
+    pub fn free_bytes(&self) -> Option<PhysSize> {
+        self.free_pages()
+            .map(|pages| (pages as PhysSize).saturating_mul(self.page_size))
     }
 
     fn mark_range(&mut self, start: PhysAddr, end: PhysAddr, free: bool) {

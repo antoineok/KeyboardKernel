@@ -131,14 +131,14 @@ impl<'a> ManagementFrame<'a> {
         }
 
         let raw_flags = reader.read_u8().map_err(|_| FrameDecodeError::TooShort)?;
-        let flags = FrameFlags::from_bits(raw_flags)
-            .ok_or(FrameDecodeError::InvalidFlags(raw_flags))?;
+        let flags =
+            FrameFlags::from_bits(raw_flags).ok_or(FrameDecodeError::InvalidFlags(raw_flags))?;
         let command = reader.read_u16().map_err(|_| FrameDecodeError::TooShort)?;
         let request_id = reader.read_u32().map_err(|_| FrameDecodeError::TooShort)?;
         let payload_length = reader.read_u32().map_err(|_| FrameDecodeError::TooShort)?;
 
-        let payload_length_usize = usize::try_from(payload_length)
-            .map_err(|_| FrameDecodeError::PayloadLengthOverflow)?;
+        let payload_length_usize =
+            usize::try_from(payload_length).map_err(|_| FrameDecodeError::PayloadLengthOverflow)?;
         let actual_payload_length = bytes.len() - MANAGEMENT_HEADER_SIZE;
 
         if payload_length_usize != actual_payload_length {

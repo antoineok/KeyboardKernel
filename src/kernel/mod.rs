@@ -5,17 +5,22 @@ use core::time::Duration;
 
 use crate::arch::exceptions::PrivilegeLevel;
 
+use crate::assets::ImageAsset;
 use crate::drivers::{
     gpio::{GpioPin, GpioPull},
     uart::UART,
 };
 use crate::graphics::framebuffer::FRAMEBUFFER;
+use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
 use crate::hid::Key;
+use crate::memory::{heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER};
+use crate::storage::fs::vfs::{FsId, VFS};
 use crate::time::time_manager;
 
 use crate::{
-    early_timeit, info, timeit,
+    early_timeit,
     hid::{KeyboardModifiers, KeyboardReport},
+    info,
     services::{KernelManagementBackend, KeyworkServices},
     transport::{KeyworkTransport, TransportState},
     usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
@@ -28,10 +33,9 @@ use crate::jtag::breakpoint;
 pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     // We are now in EL1, with a basic stack (set by EL2 code).
     unsafe {
-        early_timeit!(
-            "Kernel early EL1 init",
-            {init::early_el1_init(device_tree_ptr)}
-        );
+        early_timeit!("Kernel early EL1 init", {
+            init::early_el1_init(device_tree_ptr)
+        });
 
         crate::util::early_timing::flush_early_timings();
     }
@@ -49,20 +53,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
-
-    let framebuffer = FRAMEBUFFER.get();
-    timeit!("Framebuffer test", {
-        framebuffer.clear(0xFFFFFFFF); //cyan
-    });
-    framebuffer.draw_rect(150, 150, 400, 400, 0x00FFFF, false); //cyan
-    framebuffer.draw_rect(200, 200, 300, 300, 0xFF00FF, true); //magenta
-
-    framebuffer.draw_circle(960, 540, 250, 0x000000FF, false);
-    framebuffer.draw_circle(960, 540, 50, 0xADD8E6, true); //light blue
-
-    framebuffer.set_pixel(250, 250, 0x000000FF);
-
-    framebuffer.draw_line(100, 500, 350, 700, 0xFF0000);
 
     let usb_transport = unsafe { USB_TRANSPORT.get_mut() };
     usb_transport
@@ -87,7 +77,14 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     if hid_test_stable {
         services.hid_mut().set_keyboard(KeyboardReport {
             modifiers: KeyboardModifiers::LEFT_SHIFT,
-            keys: [Key::F, Key::None, Key::None, Key::None, Key::None, Key::None],
+            keys: [
+                Key::F,
+                Key::None,
+                Key::None,
+                Key::None,
+                Key::None,
+                Key::None,
+            ],
         });
     }
 
@@ -95,6 +92,37 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         "HID GPIO test enabled on GPIO{}: connect pin to GND to hold A",
         HID_TEST_GPIO
     );
+
+    let vfs = VFS.get();
+    let background_file = vfs
+        .open_fs(FsId::Rom, "background.kwim")
+        .expect("failed to load background image");
+    let background =
+        ImageAsset::parse(background_file.as_bytes()).expect("failed to parse background image");
+    let background_surface = background.surface();
+
+    let compositor = Compositor::new(0x000000ff);
+    let layers = [Layer::Image(ImageLayer {
+        source: background_surface,
+        source_rect: SourceRect::whole(&background_surface),
+        position: Point::new(0, 0),
+        blend_mode: BlendMode::Opaque,
+    })];
+    let framebuffer = FRAMEBUFFER.get();
+
+    {
+        let mut backbuffer = framebuffer
+            .as_surface_mut()
+            .expect("framebuffer backbuffer unavailable");
+
+        compositor
+            .render(&mut backbuffer, &layers)
+            .expect("frame composition failed");
+    }
+
+    assert!(framebuffer.present());
+
+    log_memory_summary();
 
     loop {
         let now = time_manager().uptime();
@@ -113,7 +141,14 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             let report = if hid_test_stable {
                 KeyboardReport {
                     modifiers: KeyboardModifiers::LEFT_SHIFT,
-                    keys: [Key::F, Key::None, Key::None, Key::None, Key::None, Key::None],
+                    keys: [
+                        Key::F,
+                        Key::None,
+                        Key::None,
+                        Key::None,
+                        Key::None,
+                        Key::None,
+                    ],
                 }
             } else {
                 KeyboardReport::released()
@@ -122,19 +157,20 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             services.hid_mut().set_keyboard(report);
             info!(
                 "HID GPIO test: F {}",
-                if hid_test_stable { "pressed" } else { "released" }
+                if hid_test_stable {
+                    "pressed"
+                } else {
+                    "released"
+                }
             );
         }
 
-        let transition = services.update_transport_selection(
-            usb_transport.state(),
-            TransportState::Disconnected,
-        );
+        let transition = services
+            .update_transport_selection(usb_transport.state(), TransportState::Disconnected);
         if transition.changed() {
             info!(
                 "Active host transport changed: {:?} -> {:?}",
-                transition.previous,
-                transition.current
+                transition.previous, transition.current
             );
         }
         management_backend.set_active_transport(services.active_transport());
@@ -142,7 +178,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .poll_selected_transport(usb_transport, &mut management_backend)
             .expect("USB service polling failed");
         management_backend.poll_pending_action();
-        
+
         let updater = crate::update::uart::UART_UPDATE.get_mut();
 
         updater.poll();
@@ -153,6 +189,51 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
         UART.get_mut().flush_tx();
         nop();
+    }
+}
+
+fn log_memory_summary() {
+    const MIB: u64 = 1024 * 1024;
+
+    let map = MEMORY_MANAGER.get().map();
+    let tracked = map.total_bytes();
+    let usable = map.bytes_of_kind(MemoryRegionKind::Usable);
+    let reserved = map.bytes_of_kind(MemoryRegionKind::Reserved);
+    let dma = map.bytes_of_kind(MemoryRegionKind::Dma);
+    let no_map = map.bytes_of_kind(MemoryRegionKind::NoMap);
+
+    info!(
+        "Memory map: tracked={} MiB, usable={} MiB, reserved={} MiB, DMA={} MiB, no-map={} MiB",
+        tracked / MIB,
+        usable / MIB,
+        reserved / MIB,
+        dma / MIB,
+        no_map / MIB,
+    );
+
+    let phys = PHYS_ALLOCATOR.get();
+    if let (Some((arena_start, arena_end, arena_bytes)), Some(free_bytes)) =
+        (phys.info(), phys.free_bytes())
+    {
+        info!(
+            "Physical allocator: arena={:#018x}..{:#018x} ({} MiB), free={} MiB",
+            arena_start,
+            arena_end,
+            arena_bytes / MIB,
+            free_bytes / MIB,
+        );
+    }
+
+    let heap = KERNEL_HEAP.get();
+    if let (Some(capacity), Some(used), Some(free)) =
+        (heap.capacity_bytes(), heap.used_bytes(), heap.free_bytes())
+    {
+        info!(
+            "Kernel heap: capacity={} MiB, used={} KiB, free={} KiB",
+            (capacity as u64) / MIB,
+            used / 1024,
+            free / 1024,
+        );
     }
 }
 

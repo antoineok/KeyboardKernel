@@ -11,11 +11,11 @@ use crate::{
 };
 
 use super::management::{
-    AssetId, BeginAssetDownloadResponse, BeginAssetUploadRequest,
-    BeginFirmwareUpdateRequest, BeginFirmwareUpdateResponse, BeginTransferResponse,
-    DeviceInfo, DeviceStatus, FirmwareSlot, FirmwareUpdatePhase, FirmwareUpdateStatus,
-    ManagementBackend, ManagementStatus, ProfileWriteOptions, RebootMode, TransferId,
-    CAPABILITY_DISPLAY, CAPABILITY_FIRMWARE_UPDATE, CAPABILITY_USB,
+    AssetId, BeginAssetDownloadResponse, BeginAssetUploadRequest, BeginFirmwareUpdateRequest,
+    BeginFirmwareUpdateResponse, BeginTransferResponse, DeviceInfo, DeviceStatus, FirmwareSlot,
+    FirmwareUpdatePhase, FirmwareUpdateStatus, ManagementBackend, ManagementStatus,
+    ProfileWriteOptions, RebootMode, TransferId, CAPABILITY_DISPLAY, CAPABILITY_FIRMWARE_UPDATE,
+    CAPABILITY_USB,
 };
 
 const MAX_FIRMWARE_IMAGE_SIZE: usize = 3 * 1024 * 1024;
@@ -51,15 +51,18 @@ impl FirmwareTransfer {
         &mut self,
         request: BeginFirmwareUpdateRequest<'_>,
     ) -> Result<BeginFirmwareUpdateResponse, ManagementStatus> {
-        if !matches!(self.phase, FirmwareUpdatePhase::Idle | FirmwareUpdatePhase::Failed) {
+        if !matches!(
+            self.phase,
+            FirmwareUpdatePhase::Idle | FirmwareUpdatePhase::Failed
+        ) {
             return Err(ManagementStatus::Busy);
         }
         if !request.signature.is_empty() {
             return Err(ManagementStatus::InvalidSignature);
         }
 
-        let image_size = usize::try_from(request.image_size)
-            .map_err(|_| ManagementStatus::InvalidFirmware)?;
+        let image_size =
+            usize::try_from(request.image_size).map_err(|_| ManagementStatus::InvalidFirmware)?;
         if !(4096..=MAX_FIRMWARE_IMAGE_SIZE).contains(&image_size) {
             return Err(ManagementStatus::InvalidFirmware);
         }
@@ -139,10 +142,8 @@ impl FirmwareTransfer {
         // only 4 MiB.
         self.image = Vec::new();
 
-        if let Err(error) = KernelUpdater::verify_staged(
-            self.expected_size,
-            &self.expected_sha256,
-        ) {
+        if let Err(error) = KernelUpdater::verify_staged(self.expected_size, &self.expected_sha256)
+        {
             return self.fail(map_update_error(error));
         }
 
@@ -242,7 +243,7 @@ impl ManagementBackend for KernelManagementBackend {
     fn get_device_info(&mut self) -> Result<DeviceInfo, ManagementStatus> {
         Ok(DeviceInfo {
             hardware_revision: 1,
-            firmware_version: 0x0001_0000,
+            firmware_version: 0x0001_0003,
             bootloader_version: 0,
             active_slot: FirmwareSlot::Unknown,
             profile_count: 0,
@@ -347,10 +348,7 @@ impl ManagementBackend for KernelManagementBackend {
         Err(ManagementStatus::Unsupported)
     }
 
-    fn finish_asset_download(
-        &mut self,
-        _transfer_id: TransferId,
-    ) -> Result<(), ManagementStatus> {
+    fn finish_asset_download(&mut self, _transfer_id: TransferId) -> Result<(), ManagementStatus> {
         Err(ManagementStatus::Unsupported)
     }
 
@@ -370,23 +368,15 @@ impl ManagementBackend for KernelManagementBackend {
         self.firmware.write_chunk(transfer_id, offset, data)
     }
 
-    fn finish_firmware_update(
-        &mut self,
-        transfer_id: TransferId,
-    ) -> Result<(), ManagementStatus> {
+    fn finish_firmware_update(&mut self, transfer_id: TransferId) -> Result<(), ManagementStatus> {
         self.firmware.finish(transfer_id)
     }
 
-    fn abort_firmware_update(
-        &mut self,
-        transfer_id: TransferId,
-    ) -> Result<(), ManagementStatus> {
+    fn abort_firmware_update(&mut self, transfer_id: TransferId) -> Result<(), ManagementStatus> {
         self.firmware.abort(transfer_id)
     }
 
-    fn get_firmware_update_status(
-        &mut self,
-    ) -> Result<FirmwareUpdateStatus, ManagementStatus> {
+    fn get_firmware_update_status(&mut self) -> Result<FirmwareUpdateStatus, ManagementStatus> {
         Ok(self.firmware.status())
     }
 

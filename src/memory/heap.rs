@@ -17,7 +17,7 @@ use crate::memory::phys::PHYS_ALLOCATOR;
 use crate::memory::PhysSize;
 
 const PAGE_SIZE: PhysSize = 4096;
-const HEAP_PAGES: usize = 1024; // 4 MiB heap by default: 1024 * 4 KiB
+const HEAP_PAGES: usize = 16 * 1024; // 64 MiB: 16,384 * 4 KiB
 
 #[repr(C)]
 struct FreeBlock {
@@ -58,7 +58,8 @@ impl KernelHeap {
         }
 
         let pages = HEAP_PAGES;
-        let pa = PHYS_ALLOCATOR.get_mut()
+        let pa = PHYS_ALLOCATOR
+            .get_mut()
             .alloc_contiguous(pages)
             .expect("KernelHeap: failed to allocate heap region from PHYS_ALLOCATOR");
 
@@ -119,10 +120,7 @@ impl KernelHeap {
                 }
             };
 
-            let alloc_end = align_up(
-                raw_alloc_end,
-                core::mem::align_of::<FreeBlock>(),
-            );
+            let alloc_end = align_up(raw_alloc_end, core::mem::align_of::<FreeBlock>());
 
             if alloc_end > block_end {
                 // Doesn't fit in this block; try next.
@@ -180,6 +178,33 @@ impl KernelHeap {
         }
 
         self.insert_free_block(alloc_start, alloc_size);
+    }
+
+    pub fn capacity_bytes(&self) -> Option<usize> {
+        self.initialized
+            .then_some(self.end.saturating_sub(self.start))
+    }
+
+    pub fn free_bytes(&self) -> Option<usize> {
+        if !self.initialized {
+            return None;
+        }
+
+        let mut total = 0usize;
+        let mut current = self.free_list;
+
+        unsafe {
+            while !current.is_null() {
+                total = total.saturating_add((*current).size);
+                current = (*current).next;
+            }
+        }
+
+        Some(total)
+    }
+
+    pub fn used_bytes(&self) -> Option<usize> {
+        Some(self.capacity_bytes()?.saturating_sub(self.free_bytes()?))
     }
 
     /// Insert a free block [start, start + size) into the free list,

@@ -27,7 +27,8 @@ impl GpioRegisters {
 
     pub fn init(&mut self, mmio_entry: Option<AliasEntry>) {
         let base_addr = mmio_entry
-            .unwrap_or_else(|| panic!("GPIO MMIO entry not found in device tree")).arm_phys;
+            .unwrap_or_else(|| panic!("GPIO MMIO entry not found in device tree"))
+            .arm_phys;
         self.sel_0.set_address(base_addr);
         self.set_0 = self.sel_0.offset(0x1C);
         self.clr_0 = self.sel_0.offset(0x28);
@@ -51,7 +52,6 @@ impl GpioRegsStatic {
         unsafe { &*self.0.get() }
     }
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub enum GpioFunction {
@@ -95,7 +95,10 @@ impl GpioPin {
     }
 
     pub fn set_pull(&self, pull: GpioPull) {
-        let reg = GPIO_REGS.get().pup_pdn_0.offset(((self.pin / 16) * 4) as usize);
+        let reg = GPIO_REGS
+            .get()
+            .pup_pdn_0
+            .offset(((self.pin / 16) * 4) as usize);
         let shift = (self.pin % 16) * 2;
         let mut val = reg.read();
         val &= !(0b11 << shift);
@@ -109,10 +112,7 @@ impl GpioPin {
     }
 
     pub fn level(&self) -> bool {
-        let reg = GPIO_REGS
-            .get()
-            .lev_0
-            .offset(((self.pin / 32) * 4) as usize);
+        let reg = GPIO_REGS.get().lev_0.offset(((self.pin / 32) * 4) as usize);
         let mask = 1u32 << (self.pin % 32);
 
         reg.read() & mask != 0

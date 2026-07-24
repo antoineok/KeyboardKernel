@@ -139,7 +139,10 @@ impl Default for SmallName {
 
 impl fmt::Debug for SmallName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("SmallName").field(&self.as_str()).finish()
+        formatter
+            .debug_tuple("SmallName")
+            .field(&self.as_str())
+            .finish()
     }
 }
 
@@ -201,7 +204,9 @@ impl AliasTable {
     }
 
     pub fn unresolved(&self) -> impl Iterator<Item = &AliasRecord> {
-        self.records().iter().filter(|record| record.entry.is_none())
+        self.records()
+            .iter()
+            .filter(|record| record.entry.is_none())
     }
 
     fn find_index(&self, name: &str) -> Option<usize> {
@@ -394,10 +399,8 @@ impl MemoryLayout {
             return Ok(());
         }
 
-        self.ram.push(
-            PhysRange::new(start, size),
-            Capacity::RamRegions,
-        )
+        self.ram
+            .push(PhysRange::new(start, size), Capacity::RamRegions)
     }
 
     pub fn reserve(&mut self, start: u64, size: u64, kind: MemoryKind) -> Result<()> {
@@ -421,19 +424,13 @@ impl MemoryLayout {
             return Ok(());
         }
 
-        self.dynamic
-            .push(request, Capacity::DynamicReservations)
+        self.dynamic.push(request, Capacity::DynamicReservations)
     }
 
     /// Add a kernel/runtime reservation and regenerate the allocator-safe RAM
     /// list. This is intended for the kernel image, stacks, DTB, framebuffer,
     /// temporary heap, and any later fixed allocation.
-    pub fn reserve_runtime(
-        &mut self,
-        start: u64,
-        size: u64,
-        kind: MemoryKind,
-    ) -> Result<()> {
+    pub fn reserve_runtime(&mut self, start: u64, size: u64, kind: MemoryKind) -> Result<()> {
         self.reserve(start, size, kind)?;
         self.rebuild_usable()
     }
@@ -449,10 +446,7 @@ impl MemoryLayout {
         let mut exclusions: FixedVec<PhysRange, MAX_RESERVED_REGIONS> = FixedVec::new();
 
         for reservation in self.reservations() {
-            exclusions.push(
-                reservation.range,
-                Capacity::ReservedRegions,
-            )?;
+            exclusions.push(reservation.range, Capacity::ReservedRegions)?;
         }
 
         sort_ranges(exclusions.as_mut_slice());
@@ -468,11 +462,7 @@ impl MemoryLayout {
             let mut next: FixedVec<PhysRange, MAX_USABLE_REGIONS> = FixedVec::new();
 
             for region in current.as_slice() {
-                subtract_range(
-                    *region,
-                    *excluded,
-                    &mut next,
-                )?;
+                subtract_range(*region, *excluded, &mut next)?;
             }
 
             current = next;
@@ -532,10 +522,7 @@ impl BootInfo {
     /// `pointer` must point to a readable FDT header and to at least the
     /// `totalsize` bytes declared by that header. The memory must remain
     /// readable for the duration of this call.
-    pub unsafe fn from_ptr(
-        pointer: *const u8,
-        requested_aliases: &[&str],
-    ) -> Result<Self> {
+    pub unsafe fn from_ptr(pointer: *const u8, requested_aliases: &[&str]) -> Result<Self> {
         if pointer.is_null() {
             return Err(Error::NullPointer);
         }
@@ -681,9 +668,7 @@ impl PathFingerprint {
 
     #[inline(always)]
     fn matches(self, other: Self) -> bool {
-        self.first == other.first
-            && self.second == other.second
-            && self.len == other.len
+        self.first == other.first && self.second == other.second && self.len == other.len
     }
 }
 
@@ -894,8 +879,7 @@ impl<'a> Parser<'a> {
                 return Ok(());
             }
 
-            self.memory
-                .reserve(address, size, MemoryKind::Reserved)?;
+            self.memory.reserve(address, size, MemoryKind::Reserved)?;
         }
     }
 
@@ -926,8 +910,8 @@ impl<'a> Parser<'a> {
             self.push_path_bytes(name.as_bytes())?;
         }
 
-        let parent_is_reserved_memory_root = self.depth > 0
-            && self.stack[self.depth - 1].is_reserved_memory_root;
+        let parent_is_reserved_memory_root =
+            self.depth > 0 && self.stack[self.depth - 1].is_reserved_memory_root;
 
         let mut frame = NodeFrame::empty();
         frame.parent_path_len = parent_path_len;
@@ -1185,9 +1169,7 @@ impl<'a> Parser<'a> {
         let tuple_cells = address_cells
             .checked_add(size_cells)
             .ok_or(Error::InvalidRegLength)? as usize;
-        let tuple_bytes = tuple_cells
-            .checked_mul(4)
-            .ok_or(Error::InvalidRegLength)?;
+        let tuple_bytes = tuple_cells.checked_mul(4).ok_or(Error::InvalidRegLength)?;
 
         if tuple_bytes == 0 || data.len() < tuple_bytes || data.len() % tuple_bytes != 0 {
             return Err(Error::InvalidRegLength);
@@ -1227,19 +1209,14 @@ impl<'a> Parser<'a> {
         let tuple_cells = address_cells
             .checked_add(size_cells)
             .ok_or(Error::InvalidRegLength)? as usize;
-        let tuple_bytes = tuple_cells
-            .checked_mul(4)
-            .ok_or(Error::InvalidRegLength)?;
+        let tuple_bytes = tuple_cells.checked_mul(4).ok_or(Error::InvalidRegLength)?;
 
         if tuple_bytes == 0 || data.len() % tuple_bytes != 0 {
             return Err(Error::InvalidRegLength);
         }
 
         for tuple in data.chunks_exact(tuple_bytes) {
-            let bus_address = decode_cells(
-                &tuple[..address_cells as usize * 4],
-                address_cells,
-            )?;
+            let bus_address = decode_cells(&tuple[..address_cells as usize * 4], address_cells)?;
             let size_offset = address_cells as usize * 4;
             let size = decode_cells(
                 &tuple[size_offset..size_offset + size_cells as usize * 4],
@@ -1257,12 +1234,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn translate_address(
-        &self,
-        node_index: usize,
-        mut address: u64,
-        size: u64,
-    ) -> Result<u64> {
+    fn translate_address(&self, node_index: usize, mut address: u64, size: u64) -> Result<u64> {
         if node_index == 0 {
             return Ok(address);
         }
@@ -1358,18 +1330,12 @@ fn translate_one_bus(
         let child_bytes = child_address_cells as usize * 4;
         let parent_bytes = parent_address_cells as usize * 4;
 
-        let child_base = decode_cells(
-            &tuple[..child_bytes],
-            child_address_cells,
-        )?;
+        let child_base = decode_cells(&tuple[..child_bytes], child_address_cells)?;
         let parent_base = decode_cells(
             &tuple[child_bytes..child_bytes + parent_bytes],
             parent_address_cells,
         )?;
-        let range_size = decode_cells(
-            &tuple[child_bytes + parent_bytes..],
-            size_cells,
-        )?;
+        let range_size = decode_cells(&tuple[child_bytes + parent_bytes..], size_cells)?;
 
         let requested_end = address
             .checked_add(requested_size)
@@ -1416,8 +1382,7 @@ fn decode_cells(data: &[u8], cells: u32) -> Result<u64> {
                 return Err(Error::Truncated);
             }
 
-            Ok((u64::from(read_be_u32(data, 0)?) << 32)
-                | u64::from(read_be_u32(data, 4)?))
+            Ok((u64::from(read_be_u32(data, 0)?) << 32) | u64::from(read_be_u32(data, 4)?))
         }
 
         value => Err(Error::UnsupportedAddressCells(value)),
@@ -1469,20 +1434,14 @@ fn subtract_range(
 
     if source.start < excluded.start {
         output.push(
-            PhysRange::new(
-                source.start,
-                excluded.start - source.start,
-            ),
+            PhysRange::new(source.start, excluded.start - source.start),
             Capacity::UsableRegions,
         )?;
     }
 
     if excluded_end < source_end {
         output.push(
-            PhysRange::new(
-                excluded_end,
-                source_end - excluded_end,
-            ),
+            PhysRange::new(excluded_end, source_end - excluded_end),
             Capacity::UsableRegions,
         )?;
     }
@@ -1496,13 +1455,9 @@ fn sort_ranges(ranges: &mut [PhysRange]) {
         let mut position = index;
 
         while position > 0
-            && (
-                ranges[position - 1].start > value.start
-                    || (
-                        ranges[position - 1].start == value.start
-                            && ranges[position - 1].size > value.size
-                    )
-            )
+            && (ranges[position - 1].start > value.start
+                || (ranges[position - 1].start == value.start
+                    && ranges[position - 1].size > value.size))
         {
             ranges[position] = ranges[position - 1];
             position -= 1;

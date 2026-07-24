@@ -79,7 +79,9 @@ pub fn parse_mbr(dev: &dyn BlockDevice) -> Result<[Option<MbrPartition>; 4], Mbr
 
         // Basic sanity checks
         if start_lba == 0 {
-            return Err(MbrError::Corrupt("MBR partition has start_lba=0 but is non-empty"));
+            return Err(MbrError::Corrupt(
+                "MBR partition has start_lba=0 but is non-empty",
+            ));
         }
 
         // Optional bounds check if we know device size
@@ -107,7 +109,9 @@ pub fn parse_mbr(dev: &dyn BlockDevice) -> Result<[Option<MbrPartition>; 4], Mbr
 }
 
 /// Convenience: return a Vec of partitions (easier to iterate).
-pub fn list_mbr_partitions(dev: &dyn BlockDevice) -> Result<alloc::vec::Vec<MbrPartition>, MbrError> {
+pub fn list_mbr_partitions(
+    dev: &dyn BlockDevice,
+) -> Result<alloc::vec::Vec<MbrPartition>, MbrError> {
     // Requires alloc; you said heap is ready by the time you call it.
     let arr = parse_mbr(dev)?;
     let mut v = alloc::vec::Vec::new();

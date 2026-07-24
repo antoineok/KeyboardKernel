@@ -3,10 +3,10 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::info;
 use crate::storage::block::{BlockDevice, BlockError, SECTOR_SIZE};
 use crate::storage::fs::fat32::fat::FatLink;
 use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
-use crate::info;
 
 #[derive(Clone, Debug)]
 pub struct FatFile {
@@ -19,6 +19,64 @@ pub struct FatFile {
 
     /// Byte offset within that sector (0..512-32, multiple of 32).
     pub dirent_off: usize,
+}
+
+/// Sequential, allocation-free reader for a FAT file.
+///
+/// The cursor retains its current cluster and a one-sector cache, so repeated
+/// small reads do not restart the FAT traversal or reread a partially consumed
+/// sector.
+pub struct FatFileReader {
+    file: FatFile,
+    position: usize,
+    current_cluster: u32,
+    cluster_offset: usize,
+    cached_lba: Option<u64>,
+    sector: [u8; SECTOR_SIZE],
+}
+
+impl FatFileReader {
+    pub fn new(file: FatFile) -> Result<Self, Fat32Error> {
+        if file.size != 0 && file.first_cluster < 2 {
+            return Err(Fat32Error::Invalid("file has invalid first_cluster"));
+        }
+
+        let current_cluster = file.first_cluster;
+
+        Ok(Self {
+            file,
+            position: 0,
+            current_cluster,
+            cluster_offset: 0,
+            cached_lba: None,
+            sector: [0; SECTOR_SIZE],
+        })
+    }
+
+    #[inline(always)]
+    pub fn name(&self) -> &str {
+        &self.file.name
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.file.size as usize
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.file.size == 0
+    }
+
+    #[inline(always)]
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    #[inline(always)]
+    pub fn remaining(&self) -> usize {
+        self.len().saturating_sub(self.position)
+    }
 }
 
 impl Fat32Volume {
@@ -68,6 +126,91 @@ impl Fat32Volume {
     // Open helpers
     //----------------------------------------------------------------------------------------------
 
+    /// Create a sequential reader for an already resolved file.
+    pub fn open_file_reader(&self, file: FatFile) -> Result<FatFileReader, Fat32Error> {
+        FatFileReader::new(file)
+    }
+
+    /// Continue reading a file from the reader's current position.
+    ///
+    /// Returns the number of bytes copied into `out`. A return value of zero
+    /// means either `out` is empty or the reader reached the declared file
+    /// length.
+    pub fn read_file(
+        &self,
+        dev: &dyn BlockDevice,
+        reader: &mut FatFileReader,
+        out: &mut [u8],
+    ) -> Result<usize, Fat32Error> {
+        if out.is_empty() || reader.position >= reader.len() {
+            return Ok(0);
+        }
+
+        let bytes_per_cluster = (self.bpb.sec_per_clus as usize)
+            .checked_mul(SECTOR_SIZE)
+            .ok_or(Fat32Error::Invalid("FAT32 cluster size overflow"))?;
+
+        if bytes_per_cluster == 0 {
+            return Err(Fat32Error::Invalid("FAT32 cluster size is zero"));
+        }
+
+        let requested = core::cmp::min(out.len(), reader.remaining());
+        let mut written = 0usize;
+
+        while written < requested {
+            if reader.cluster_offset == bytes_per_cluster {
+                reader.current_cluster = match self.fat32_get_link(dev, reader.current_cluster)? {
+                    FatLink::Next(next) => {
+                        if next == reader.current_cluster {
+                            return Err(Fat32Error::Invalid("FAT self-loop in file chain"));
+                        }
+
+                        next
+                    }
+                    FatLink::Eoc => {
+                        return Err(Fat32Error::Invalid(
+                            "file cluster chain ended before declared size",
+                        ));
+                    }
+                    FatLink::Bad => {
+                        return Err(Fat32Error::Invalid("BAD cluster in file chain"));
+                    }
+                    FatLink::Free => {
+                        return Err(Fat32Error::Invalid("FREE cluster in file chain"));
+                    }
+                    FatLink::Reserved(_) => {
+                        return Err(Fat32Error::Invalid("reserved cluster in file chain"));
+                    }
+                };
+
+                reader.cluster_offset = 0;
+            }
+
+            let sector_index = reader.cluster_offset / SECTOR_SIZE;
+            let sector_offset = reader.cluster_offset % SECTOR_SIZE;
+            let base_lba = self.cluster_to_lba(reader.current_cluster)?;
+            let lba = base_lba + sector_index as u64;
+
+            if reader.cached_lba != Some(lba) {
+                dev.read_sector(lba, &mut reader.sector)
+                    .map_err(Self::map_block_err)?;
+                reader.cached_lba = Some(lba);
+            }
+
+            let available = SECTOR_SIZE - sector_offset;
+            let take = core::cmp::min(requested - written, available);
+
+            out[written..written + take]
+                .copy_from_slice(&reader.sector[sector_offset..sector_offset + take]);
+
+            reader.position += take;
+            reader.cluster_offset += take;
+            written += take;
+        }
+
+        Ok(written)
+    }
+
     /// Read up to `out.len()` bytes from a file, starting at offset 0.
     /// Returns number of bytes written to `out`.
     pub fn read_file_prefix(
@@ -76,71 +219,13 @@ impl Fat32Volume {
         file: &FatFile,
         out: &mut [u8],
     ) -> Result<usize, Fat32Error> {
-        if file.first_cluster < 2 {
-            return Err(Fat32Error::Invalid("file has invalid first_cluster"));
-        }
-
-        let mut remaining = core::cmp::min(out.len(), file.size as usize);
-        let mut out_off = 0usize;
-
-        let spc = self.bpb.sec_per_clus as u64;
-
-        // Walk cluster chain
-        let mut cur = file.first_cluster;
-
-        // Upper bound to avoid infinite loops
-        let max_steps = (self.bpb.tot_sec as u64 / self.bpb.sec_per_clus as u64).max(1);
-
-        for _ in 0..max_steps {
-            if remaining == 0 {
-                break;
-            }
-
-            let base_lba = self.cluster_to_lba(cur)?;
-            for s in 0..spc {
-                if remaining == 0 {
-                    break;
-                }
-
-                let mut sec = [0u8; SECTOR_SIZE];
-                dev.read_sector(base_lba + s, &mut sec)
-                    .map_err(Self::map_block_err)?;
-
-                let take = core::cmp::min(remaining, SECTOR_SIZE);
-                out[out_off..out_off + take].copy_from_slice(&sec[..take]);
-
-                out_off += take;
-                remaining -= take;
-            }
-
-            if remaining == 0 {
-                break;
-            }
-
-            match self.fat32_get_link(dev, cur)? {
-                FatLink::Next(n) => {
-                    if n == cur {
-                        return Err(Fat32Error::Invalid("FAT self-loop in file chain"));
-                    }
-                    cur = n;
-                }
-                FatLink::Eoc => break,
-                FatLink::Bad => return Err(Fat32Error::Invalid("BAD cluster in file chain")),
-                FatLink::Free => return Err(Fat32Error::Invalid("FREE cluster in file chain")),
-                FatLink::Reserved(_) => break, // conservative
-            }
-        }
-
-        Ok(out_off)
+        let mut reader = self.open_file_reader(file.clone())?;
+        self.read_file(dev, &mut reader, out)
     }
 
-        pub fn exists(
-            &self,
-            dev: &dyn BlockDevice,
-            path: &str,
-        ) -> bool {
-            self.resolve_path(dev, path).is_ok()
-        }
+    pub fn exists(&self, dev: &dyn BlockDevice, path: &str) -> bool {
+        self.resolve_path(dev, path).is_ok()
+    }
 
     //----------------------------------------------------------------------------------------------
     // Write (phase 1): overwrite existing file, no allocation
@@ -162,9 +247,12 @@ impl Fat32Volume {
 
         info!(
             "FAT32: write_file_all '{}' size {} -> {} bytes (dirent lba=0x{:x} off={})",
-            file.name, file.size, data.len(), file.dirent_lba, file.dirent_off
+            file.name,
+            file.size,
+            data.len(),
+            file.dirent_lba,
+            file.dirent_off
         );
-
 
         // Compute chain capacity in bytes by walking the chain and counting clusters.
         let spc = self.bpb.sec_per_clus as u64;
@@ -275,10 +363,8 @@ impl Fat32Volume {
         }
 
         let bytes_per_cluster = self.bpb.sec_per_clus as usize * SECTOR_SIZE;
-        let needed_clusters = core::cmp::max(
-            1,
-            (data.len() + bytes_per_cluster - 1) / bytes_per_cluster,
-        );
+        let needed_clusters =
+            core::cmp::max(1, (data.len() + bytes_per_cluster - 1) / bytes_per_cluster);
 
         let mut chain = Vec::new();
         let mut cur = file.first_cluster;
@@ -370,7 +456,6 @@ impl Fat32Volume {
             sector[dirent_off + 30],
             sector[dirent_off + 31],
         ]);
-
 
         // Sanity: ensure entry is valid
         let first = sector[dirent_off];
