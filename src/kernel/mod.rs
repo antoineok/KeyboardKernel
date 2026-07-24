@@ -54,7 +54,8 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     );
     info!("Current CPU: {}", crate::arch::cpu::current_id());
 
-    bring_up_secondary_cpu1();
+    bring_up_secondary_cpu(1);
+    bring_up_secondary_cpu(2);
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
@@ -198,35 +199,35 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     }
 }
 
-fn bring_up_secondary_cpu1() {
+fn bring_up_secondary_cpu(raw_id: u8) {
     const SECONDARY_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
 
-    let cpu1 = CpuId::new(1).expect("BCM2711 must expose CPU1");
-    info!("Releasing {} for secondary EL1 bring-up", cpu1);
+    let cpu = CpuId::new(raw_id).expect("BCM2711 secondary CPU ID must be valid");
+    info!("Releasing {} for secondary EL1 bring-up", cpu);
 
     assert!(
-        cpu::release_secondary(cpu1),
+        cpu::release_secondary(cpu),
         "refused to release secondary CPU"
     );
 
     let start = time_manager().uptime();
 
     loop {
-        let status = cpu::secondary_status(cpu1);
+        let status = cpu::secondary_status(cpu);
 
         if status.online {
             info!(
                 "{} online: EL1={}, MMU={}",
-                cpu1, status.at_el1, status.mmu_enabled
+                cpu, status.at_el1, status.mmu_enabled
             );
 
-            assert!(status.at_el1, "{} did not enter EL1", cpu1);
-            assert!(status.mmu_enabled, "{} failed to enable its EL1 MMU", cpu1);
+            assert!(status.at_el1, "{} did not enter EL1", cpu);
+            assert!(status.mmu_enabled, "{} failed to enable its EL1 MMU", cpu);
             return;
         }
 
         if time_manager().uptime().saturating_sub(start) >= SECONDARY_BOOT_TIMEOUT {
-            panic!("timed out waiting for {} secondary bring-up", cpu1);
+            panic!("timed out waiting for {} secondary bring-up", cpu);
         }
 
         spin_loop();

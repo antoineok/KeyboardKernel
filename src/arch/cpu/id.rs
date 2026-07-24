@@ -9,9 +9,9 @@ pub struct CpuId(u8);
 impl CpuId {
     pub const BOOT: Self = Self(0);
 
-    pub const fn new(index: usize) -> Option<Self> {
-        if index < CPU_COUNT {
-            Some(Self(index as u8))
+    pub const fn new(raw: u8) -> Option<Self> {
+        if (raw as usize) < CPU_COUNT {
+            Some(Self(raw))
         } else {
             None
         }
@@ -29,7 +29,7 @@ impl CpuId {
             );
         }
 
-        let affinity0 = (mpidr & 0xff) as usize;
+        let affinity0 = (mpidr & 0xff) as u8;
 
         Self::new(affinity0)
             .unwrap_or_else(|| panic!("unsupported CPU affinity level 0 ID: {affinity0}"))
