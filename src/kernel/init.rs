@@ -107,6 +107,22 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         let heap_end = &__heap_end as *const u8 as u64;
         mm.reserve_range(heap_start, heap_end, MemoryRegionKind::Reserved);
 
+        // The framebuffer is allocated by VideoCore, but exposed to the ARM as
+        // ordinary physical memory. Keep those pages out of PHYS_ALLOCATOR and
+        // classify them as shared DMA memory for the MMU.
+        if !framebuffer.buffer().is_null() && framebuffer.buffer_size() != 0 {
+            let framebuffer_start = framebuffer.buffer() as u64;
+            let framebuffer_end = framebuffer_start
+                .checked_add(framebuffer.buffer_size() as u64)
+                .expect("Framebuffer reservation overflow");
+
+            mm.reserve_range(
+                framebuffer_start,
+                framebuffer_end,
+                MemoryRegionKind::Dma,
+            );
+        }
+
         // Re-normalize now that we added regions
         mm.map_mut().normalize();
     });
