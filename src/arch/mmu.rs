@@ -123,9 +123,7 @@ impl MappingKind {
             Self::NormalNonCacheable => {
                 desc::ATTRIDX_NORMAL_NC | desc::SH_INNER | desc::UXN | desc::PXN
             }
-            Self::Device => {
-                desc::ATTRIDX_DEVICE | desc::SH_OUTER | desc::UXN | desc::PXN
-            }
+            Self::Device => desc::ATTRIDX_DEVICE | desc::SH_OUTER | desc::UXN | desc::PXN,
         }
     }
 }
@@ -233,9 +231,7 @@ impl Mmu {
             return;
         }
 
-        let raw_end = start
-            .checked_add(size)
-            .expect("MMU mapping range overflow");
+        let raw_end = start.checked_add(size).expect("MMU mapping range overflow");
         let mut addr = align_down(start, PAGE_SIZE);
         let end = align_up(raw_end, PAGE_SIZE).expect("MMU mapping alignment overflow");
 
@@ -272,9 +268,7 @@ impl Mmu {
             return;
         }
 
-        let raw_end = start
-            .checked_add(size)
-            .expect("MMU unmap range overflow");
+        let raw_end = start.checked_add(size).expect("MMU unmap range overflow");
         let mut addr = align_down(start, PAGE_SIZE);
         let end = align_up(raw_end, PAGE_SIZE).expect("MMU unmap alignment overflow");
 

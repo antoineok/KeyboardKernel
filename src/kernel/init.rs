@@ -117,11 +117,7 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
                 .checked_add(framebuffer.buffer_size() as u64)
                 .expect("Framebuffer reservation overflow");
 
-            mm.reserve_range(
-                framebuffer_start,
-                framebuffer_end,
-                MemoryRegionKind::Dma,
-            );
+            mm.reserve_range(framebuffer_start, framebuffer_end, MemoryRegionKind::Dma);
         }
 
         // Re-normalize now that we added regions
