@@ -10,9 +10,7 @@ use crate::{
     usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
 };
 
-use super::{
-    KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportState,
-};
+use super::{KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportState};
 
 const HID_QUEUE_SLOTS: usize = 33;
 const MANAGEMENT_QUEUE_SLOTS: usize = 3;
@@ -206,10 +204,7 @@ pub fn run_usb_transport_core() -> ! {
     }
 }
 
-fn service_hid_queue(
-    usb: &mut crate::usb::UsbTransport,
-    pending: &mut Option<HidCommand>,
-) {
+fn service_hid_queue(usb: &mut crate::usb::UsbTransport, pending: &mut Option<HidCommand>) {
     if pending.is_none() {
         *pending = CPU0_TO_CPU2_HID.try_pop();
     }
