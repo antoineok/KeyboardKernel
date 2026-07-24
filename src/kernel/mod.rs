@@ -49,6 +49,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         "Current privilege level: {}",
         PrivilegeLevel::current().as_str()
     );
+    info!("Current CPU: {}", crate::arch::cpu::current_id());
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));

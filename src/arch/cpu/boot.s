@@ -16,9 +16,9 @@ _start:
 
 el2_start:
 
-    // Check processor ID is zero (executing on main core), else hang
+    // Check MPIDR_EL1.Aff0 is zero (executing on the boot CPU), else park.
     mrs     x1, mpidr_el1
-    and     x1, x1, #3
+    and     x1, x1, #0xff
     cbz     x1, 2f
     // We're not on the main core, so hang in an infinite wait loop
 1:  wfe
@@ -31,8 +31,8 @@ el2_start:
     cbz     x1, 3f
 
 3:
-    // Set stack to start below our code
-    ldr     x1, =__el2_stack_top
+    // CPU0 owns its EL2 transition stack. Secondary CPUs remain parked above.
+    ldr     x1, =__el2_stack_cpu0_top
     mov     sp, x1
 
     // Clean the BSS section
