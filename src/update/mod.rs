@@ -1,8 +1,6 @@
-pub mod crc32;
 pub mod error;
 pub mod kernel;
 pub mod sha256;
-pub mod uart;
 
 pub use error::UpdateError;
 

@@ -1,6 +1,5 @@
 pub mod init;
 
-use aarch64_cpu::asm::nop;
 use core::{hint::spin_loop, time::Duration};
 
 use crate::arch::{
@@ -179,16 +178,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .poll_selected_transport(&mut usb_transport, &mut management_backend)
             .expect("USB service polling failed");
         management_backend.poll_pending_action();
-
-        let updater = crate::update::uart::UART_UPDATE.get_mut();
-
-        updater.poll();
-
-        if updater.is_binary_mode() {
-            continue;
-        }
-
-        nop();
     }
 }
 

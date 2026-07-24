@@ -10,10 +10,6 @@ use core::{
 };
 
 const AUX_UART_CLOCK: u32 = 500_000_000;
-const UART_MAX_QUEUE: usize = 16 * 1024;
-
-static UART_LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
-
 // The Cortex-A72 bring-up deliberately keeps SCTLR_EL1.C clear for now.
 // Avoid LL/SC-based atomic RMW operations (LDXR/STXR) in the logger until
 // the cache/coherency work is complete. Lamport's bakery algorithm gives us
@@ -87,9 +83,6 @@ fn aux_mu_baud(baud: u32) -> u32 {
 
 pub struct Uart {
     initialized: bool,
-    output_queue: [u8; UART_MAX_QUEUE],
-    output_queue_write: usize,
-    output_queue_read: usize,
     aux_base: Address,        // = MmioAddress(PERIPHERAL_BASE + 0x215000);
     aux_enable: Address,      // = aux_base.offset(4);
     aux_mu_io_reg: Address,   // = aux_base.offset(64);
@@ -121,9 +114,6 @@ impl Uart {
     pub const fn new() -> Self {
         Uart {
             initialized: false,
-            output_queue: [0; UART_MAX_QUEUE],
-            output_queue_write: 0,
-            output_queue_read: 0,
             aux_base: Address(0),
             aux_enable: Address(0),
             aux_mu_io_reg: Address(0),
@@ -182,30 +172,9 @@ impl Uart {
         self.aux_mu_lsr_reg.read() & 0x20 != 0
     }
 
-    fn is_read_ready(&self) -> bool {
-        self.aux_mu_lsr_reg.read() & 0x01 != 0
-    }
-
     pub fn write_byte(&self, byte: u8) {
         while !self.is_write_ready() {}
         self.aux_mu_io_reg.write(byte as u32);
-    }
-
-    pub fn read_byte(&self) -> u8 {
-        while !self.is_read_ready() {}
-        (self.aux_mu_io_reg.read() & 0xFF) as u8
-    }
-
-    pub fn try_read_byte(&self) -> Option<u8> {
-        if self.is_read_ready() {
-            Some((self.aux_mu_io_reg.read() & 0xFF) as u8)
-        } else {
-            None
-        }
-    }
-
-    pub fn flush_tx(&mut self) {
-        self.load_output_fifo();
     }
 
     pub fn write_text(&self, text: &str) {
@@ -214,39 +183,6 @@ impl Uart {
                 self.write_byte(b'\r');
             }
             self.write_byte(byte);
-        }
-    }
-
-    fn is_output_queue_empty(&self) -> bool {
-        self.output_queue_write == self.output_queue_read
-    }
-
-    fn write_blocking_byte(&mut self, byte: u8) {
-        let next = (self.output_queue_write + 1) & (UART_MAX_QUEUE - 1);
-        while next == self.output_queue_read {
-            self.load_output_fifo();
-        }
-        self.output_queue[self.output_queue_write] = byte;
-        self.output_queue_write = next;
-    }
-
-    fn load_output_fifo(&mut self) {
-        while !self.is_output_queue_empty() && self.is_write_ready() {
-            let byte = self.output_queue[self.output_queue_read];
-            self.output_queue_read = (self.output_queue_read + 1) & (UART_MAX_QUEUE - 1);
-            self.write_blocking_byte(byte);
-        }
-    }
-
-    pub fn update(&mut self) {
-        self.load_output_fifo();
-        if self.is_read_ready() {
-            let byte = self.read_byte();
-            if byte == b'\r' {
-                self.write_text("\n");
-            } else {
-                self.write_blocking_byte(byte);
-            }
         }
     }
 
@@ -272,36 +208,18 @@ macro_rules! uart_println {
 pub fn _uart_print(args: core::fmt::Arguments) {
     use core::fmt::Write;
 
-    // Before EL1 enables the MMU only CPU0 can execute Rust. Avoid atomic
-    // locking there: exclusive accesses are only needed once secondary CPUs
-    // can run concurrently under the Normal-memory mappings.
+    // Before EL1 enables the MMU only CPU0 can execute Rust, so there is no
+    // concurrent logger to synchronize with yet.
     if !crate::arch::mmu::is_enabled() {
         let mut writer = SharedUartWriter(UART.get());
         writer.write_fmt(args).unwrap();
         return;
     }
 
-    if !UART_LOGGING_ENABLED.load(Ordering::Acquire) {
-        return;
-    }
-
     let _guard = UartLogGuard::acquire();
-
-    // Re-check after taking the lock so disabling logging can wait for any
-    // in-flight line to finish before a binary UART protocol takes ownership.
-    if !UART_LOGGING_ENABLED.load(Ordering::Relaxed) {
-        return;
-    }
 
     let mut writer = SharedUartWriter(UART.get());
     writer.write_fmt(args).unwrap();
-}
-
-/// Disable normal formatted logging and wait for any line already being
-/// emitted to finish. The panic logger deliberately bypasses this mechanism.
-pub fn disable_logging() {
-    let _guard = UartLogGuard::acquire();
-    UART_LOGGING_ENABLED.store(false, Ordering::Release);
 }
 
 struct SharedUartWriter(&'static Uart);

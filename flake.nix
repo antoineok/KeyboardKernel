@@ -64,10 +64,9 @@
           # Build essentials
           pkg-config
 
-          # Useful utilities for serial communication
+          # Development utilities
           tmux
           python3
-          python3Packages.pyserial
           python3Packages.pyusb
           python3Packages.pillow
           bash
