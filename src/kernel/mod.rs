@@ -1,19 +1,19 @@
 pub mod init;
 
 use aarch64_cpu::asm::nop;
-use core::{cell::UnsafeCell, time::Duration};
+use core::time::Duration;
 
 use crate::arch::exceptions::PrivilegeLevel;
 
-use crate::assets::blit_streamed_image;
+use crate::assets::ImageAsset;
 use crate::drivers::{
     gpio::{GpioPin, GpioPull},
     uart::UART,
 };
 use crate::graphics::framebuffer::FRAMEBUFFER;
-use crate::graphics::{BlendMode, Compositor};
+use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
 use crate::hid::Key;
-use crate::storage::fs::vfs::VFS;
+use crate::storage::fs::vfs::{FsId, VFS};
 use crate::time::time_manager;
 
 use crate::{
@@ -27,21 +27,6 @@ use crate::{
 
 #[cfg(feature = "jtag")]
 use crate::jtag::breakpoint;
-
-const BACKGROUND_ROW_BUFFER_SIZE: usize = 1366 * 4;
-
-struct BackgroundRowBuffer(UnsafeCell<[u8; BACKGROUND_ROW_BUFFER_SIZE]>);
-
-unsafe impl Sync for BackgroundRowBuffer {}
-
-impl BackgroundRowBuffer {
-    fn get_mut(&self) -> &mut [u8; BACKGROUND_ROW_BUFFER_SIZE] {
-        unsafe { &mut *self.0.get() }
-    }
-}
-
-static BACKGROUND_ROW_BUFFER: BackgroundRowBuffer =
-    BackgroundRowBuffer(UnsafeCell::new([0; BACKGROUND_ROW_BUFFER_SIZE]));
 
 #[no_mangle]
 pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
@@ -108,11 +93,20 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     );
 
     let vfs = VFS.get();
-    let mut image_stream = vfs
-        .open_stream_fs(crate::storage::fs::vfs::FsId::Rom, "background.kwim")
-        .expect("failed to open background image");
+    let background_file = vfs
+        .open_fs(FsId::Rom, "background.kwim")
+        .expect("failed to load background image");
+    let background =
+        ImageAsset::parse(background_file.as_bytes()).expect("failed to parse background image");
+    let background_surface = background.surface();
 
     let compositor = Compositor::new(0x000000ff);
+    let layers = [Layer::Image(ImageLayer {
+        source: background_surface,
+        source_rect: SourceRect::whole(&background_surface),
+        position: Point::new(0, 0),
+        blend_mode: BlendMode::Opaque,
+    })];
     let framebuffer = FRAMEBUFFER.get();
 
     {
@@ -120,22 +114,9 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .as_surface_mut()
             .expect("framebuffer backbuffer unavailable");
 
-        // Start from a complete frame, then stream the fullscreen image
-        // directly from eMMC one row at a time.
         compositor
-            .render(&mut backbuffer, &[])
+            .render(&mut backbuffer, &layers)
             .expect("frame composition failed");
-
-        blit_streamed_image(
-            vfs,
-            &mut image_stream,
-            &mut backbuffer,
-            0,
-            0,
-            BlendMode::Opaque,
-            BACKGROUND_ROW_BUFFER.get_mut(),
-        )
-        .expect("failed to stream background image");
     }
 
     assert!(framebuffer.present());

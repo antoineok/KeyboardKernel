@@ -13,7 +13,7 @@ use crate::storage::fs::fat32::{Fat32Error, Fat32Volume};
 
 /// Files opened through `open_fs` are intentionally limited because that API
 /// materializes the complete file in the general-purpose kernel heap.
-pub const MAX_EAGER_FILE_SIZE: usize = 1024 * 1024;
+pub const MAX_EAGER_FILE_SIZE: usize = 16 * 1024 * 1024;
 
 //--------------------------------------------------------------------------------------------------
 // Drive IDs
