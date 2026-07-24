@@ -17,7 +17,7 @@ use crate::memory::phys::PHYS_ALLOCATOR;
 use crate::memory::PhysSize;
 
 const PAGE_SIZE: PhysSize = 4096;
-const HEAP_PAGES: usize = 1024; // 4 MiB heap by default: 1024 * 4 KiB
+const HEAP_PAGES: usize = 16 * 1024; // 64 MiB: 16,384 * 4 KiB
 
 #[repr(C)]
 struct FreeBlock {
