@@ -13,6 +13,7 @@ use crate::drivers::{
 use crate::graphics::framebuffer::FRAMEBUFFER;
 use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
 use crate::hid::Key;
+use crate::memory::{heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER};
 use crate::storage::fs::vfs::{FsId, VFS};
 use crate::time::time_manager;
 
@@ -121,6 +122,8 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
     assert!(framebuffer.present());
 
+    log_memory_summary();
+
     loop {
         let now = time_manager().uptime();
         let sample = hid_test_pin.is_low();
@@ -186,6 +189,51 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
         UART.get_mut().flush_tx();
         nop();
+    }
+}
+
+fn log_memory_summary() {
+    const MIB: u64 = 1024 * 1024;
+
+    let map = MEMORY_MANAGER.get().map();
+    let tracked = map.total_bytes();
+    let usable = map.bytes_of_kind(MemoryRegionKind::Usable);
+    let reserved = map.bytes_of_kind(MemoryRegionKind::Reserved);
+    let dma = map.bytes_of_kind(MemoryRegionKind::Dma);
+    let no_map = map.bytes_of_kind(MemoryRegionKind::NoMap);
+
+    info!(
+        "Memory map: tracked={} MiB, usable={} MiB, reserved={} MiB, DMA={} MiB, no-map={} MiB",
+        tracked / MIB,
+        usable / MIB,
+        reserved / MIB,
+        dma / MIB,
+        no_map / MIB,
+    );
+
+    let phys = PHYS_ALLOCATOR.get();
+    if let (Some((arena_start, arena_end, arena_bytes)), Some(free_bytes)) =
+        (phys.info(), phys.free_bytes())
+    {
+        info!(
+            "Physical allocator: arena={:#018x}..{:#018x} ({} MiB), free={} MiB",
+            arena_start,
+            arena_end,
+            arena_bytes / MIB,
+            free_bytes / MIB,
+        );
+    }
+
+    let heap = KERNEL_HEAP.get();
+    if let (Some(capacity), Some(used), Some(free)) =
+        (heap.capacity_bytes(), heap.used_bytes(), heap.free_bytes())
+    {
+        info!(
+            "Kernel heap: capacity={} MiB, used={} KiB, free={} KiB",
+            (capacity as u64) / MIB,
+            used / 1024,
+            free / 1024,
+        );
     }
 }
 

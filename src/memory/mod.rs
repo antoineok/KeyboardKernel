@@ -136,6 +136,19 @@ impl MemoryMap {
             .map(|region| region.as_ref().unwrap())
     }
 
+    /// Total bytes currently tracked with the requested classification.
+    pub fn bytes_of_kind(&self, kind: MemoryRegionKind) -> PhysSize {
+        self.iter()
+            .filter(|region| region.kind == kind)
+            .fold(0, |total, region| total.saturating_add(region.size))
+    }
+
+    /// Total bytes represented by the memory map.
+    pub fn total_bytes(&self) -> PhysSize {
+        self.iter()
+            .fold(0, |total, region| total.saturating_add(region.size))
+    }
+
     /// Replace the classification of `[region.start, region.end())`.
     ///
     /// Any existing region intersecting the new one is split as needed. The

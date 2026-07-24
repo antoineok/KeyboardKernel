@@ -180,6 +180,33 @@ impl KernelHeap {
         self.insert_free_block(alloc_start, alloc_size);
     }
 
+    pub fn capacity_bytes(&self) -> Option<usize> {
+        self.initialized
+            .then_some(self.end.saturating_sub(self.start))
+    }
+
+    pub fn free_bytes(&self) -> Option<usize> {
+        if !self.initialized {
+            return None;
+        }
+
+        let mut total = 0usize;
+        let mut current = self.free_list;
+
+        unsafe {
+            while !current.is_null() {
+                total = total.saturating_add((*current).size);
+                current = (*current).next;
+            }
+        }
+
+        Some(total)
+    }
+
+    pub fn used_bytes(&self) -> Option<usize> {
+        Some(self.capacity_bytes()?.saturating_sub(self.free_bytes()?))
+    }
+
     /// Insert a free block [start, start + size) into the free list,
     /// sorted by address, and coalesce with neighbors if adjacent.
     unsafe fn insert_free_block(&mut self, start: usize, size: usize) {
