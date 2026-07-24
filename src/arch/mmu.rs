@@ -37,6 +37,13 @@ const ENTRIES_PER_TABLE: usize = 512;
 /// Identity mapping for the initial kernel address space.
 pub const KERNEL_VIRT_OFFSET: u64 = 0;
 
+/// High virtual alias for the BCM2711 firmware secondary-CPU spin table.
+///
+/// Physical page zero is intentionally kept out of the ordinary identity map
+/// so null-pointer faults remain useful. CPU0 uses this alias to write the
+/// armstub release slots at physical 0xE0/0xE8/0xF0.
+pub const SECONDARY_SPIN_TABLE_VIRT: u64 = 0x0000_007f_ffff_f000;
+
 /// BCM2711 peripheral space used by the drivers in this kernel.
 const MMIO_START: u64 = 0xFE00_0000;
 const MMIO_END: u64 = 0x1_0000_0000;
@@ -473,6 +480,15 @@ pub unsafe fn map_kernel_and_mmio() -> Mmu {
             mmu.unmap_identity(region.start, region.size);
         }
     }
+
+    // The Raspberry Pi armstub keeps secondary-core release slots in physical
+    // page zero. Map that page only through a high Normal-NC alias instead of
+    // identity-mapping VA 0, preserving a useful null-pointer guard.
+    mmu.map_page_l3(
+        SECONDARY_SPIN_TABLE_VIRT,
+        0,
+        MappingKind::NormalNonCacheable,
+    );
 
     mmu.map_device_identity(MMIO_START, MMIO_END - MMIO_START);
     mmu

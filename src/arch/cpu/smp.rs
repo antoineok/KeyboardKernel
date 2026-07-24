@@ -1,27 +1,30 @@
 use core::{
     arch::asm,
-    sync::atomic::{AtomicU64, Ordering},
+    ptr,
+    sync::atomic::{AtomicU8, Ordering},
 };
 
-use super::{current_id, CpuId};
+use super::{current_id, CpuId, CPU_COUNT};
 use crate::arch::{exceptions::PrivilegeLevel, mmu};
 
-// Keep this non-zero so the release word is emitted into `.data`, not `.bss`.
-// Secondary CPUs are already spinning before CPU0 clears `.bss`, so a zero-
-// initialized release word could otherwise contain arbitrary RAM contents for
-// a short period and spuriously release a CPU during early boot.
-const RELEASE_WORD_SENTINEL: u64 = 1 << 63;
+// The Raspberry Pi armstub keeps secondary BCM2711 CPUs in a spin table in
+// physical page zero. CPU1/2/3 release slots are 0xE0, 0xE8 and 0xF0.
+const CPU_RELEASE_ADDRS: [usize; CPU_COUNT] = [0xD8, 0xE0, 0xE8, 0xF0];
 
-/// Bitmask observed directly by the assembly secondary-CPU parking loop.
-///
-/// Low bits 0..CPU_COUNT are release requests. Bit 63 is a permanent sentinel
-/// used only to keep this word out of `.bss` before CPU0 has cleared it.
-#[no_mangle]
-pub static SECONDARY_RELEASE_MASK: AtomicU64 = AtomicU64::new(RELEASE_WORD_SENTINEL);
+const STATUS_ONLINE: u8 = 1 << 0;
+const STATUS_EL1: u8 = 1 << 1;
+const STATUS_MMU: u8 = 1 << 2;
 
-static SECONDARY_ONLINE_MASK: AtomicU64 = AtomicU64::new(0);
-static SECONDARY_EL1_MASK: AtomicU64 = AtomicU64::new(0);
-static SECONDARY_MMU_MASK: AtomicU64 = AtomicU64::new(0);
+static SECONDARY_STATUS: [AtomicU8; CPU_COUNT] = [
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+];
+
+extern "C" {
+    fn secondary_start();
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecondaryCpuStatus {
@@ -38,43 +41,26 @@ impl SecondaryCpuStatus {
     };
 }
 
-#[inline(always)]
-const fn cpu_bit(cpu: CpuId) -> u64 {
-    1u64 << cpu.index()
-}
-
-/// Release one already-parked secondary CPU from the assembly wait loop.
-///
-/// The boot CPU is deliberately excluded: it is already executing the kernel.
+/// Release one firmware-parked BCM2711 secondary CPU through the armstub spin
+/// table. The boot CPU is deliberately excluded: it is already executing.
 pub fn release_secondary(cpu: CpuId) -> bool {
     if cpu.is_boot() {
         return false;
     }
 
-    // CPU0 is the sole writer of the release word. Avoid an atomic RMW during
-    // initial SMP bring-up; a simple release store is sufficient and avoids an
-    // LDXR/STXR retry loop before secondary-core coherency is fully validated.
-    crate::panic::panic_logger::early_aux_write_str(
-        "[SMP] release_secondary: publishing release bit\n",
-    );
+    let release_offset = CPU_RELEASE_ADDRS[cpu.index()];
+    let release_slot = ((mmu::SECONDARY_SPIN_TABLE_VIRT as usize) + release_offset) as *mut usize;
+    let entry_phys = secondary_start as usize;
 
-    let release_mask = SECONDARY_RELEASE_MASK.load(Ordering::Relaxed);
-    SECONDARY_RELEASE_MASK.store(release_mask | cpu_bit(cpu), Ordering::Release);
-
-    crate::panic::panic_logger::early_aux_write_str(
-        "[SMP] release_secondary: release bit stored\n",
-    );
-
-    // CPU1 is still executing in EL2 with its MMU disabled. Use a full-system
-    // barrier for this first bring-up rather than depending on stage-1
-    // shareability attributes that only exist on CPU0 at this point.
     unsafe {
+        // The spin-table alias is Normal-NC and D-cache is still disabled, so
+        // the armstub can observe the physical slot directly.
+        ptr::write_volatile(release_slot, entry_phys);
+
+        // Complete the release-slot write before waking the firmware's WFE
+        // loop. The spin-table protocol uses SEV as the wake-up event.
         asm!("dsb sy", "sev", options(nostack, preserves_flags));
     }
-
-    crate::panic::panic_logger::early_aux_write_str(
-        "[SMP] release_secondary: SEV sent\n",
-    );
 
     true
 }
@@ -85,29 +71,27 @@ pub fn secondary_status(cpu: CpuId) -> SecondaryCpuStatus {
         return SecondaryCpuStatus::OFFLINE;
     }
 
-    let bit = cpu_bit(cpu);
+    let status = SECONDARY_STATUS[cpu.index()].load(Ordering::Acquire);
 
     SecondaryCpuStatus {
-        online: SECONDARY_ONLINE_MASK.load(Ordering::Acquire) & bit != 0,
-        at_el1: SECONDARY_EL1_MASK.load(Ordering::Acquire) & bit != 0,
-        mmu_enabled: SECONDARY_MMU_MASK.load(Ordering::Acquire) & bit != 0,
+        online: status & STATUS_ONLINE != 0,
+        at_el1: status & STATUS_EL1 != 0,
+        mmu_enabled: status & STATUS_MMU != 0,
     }
 }
 
 fn publish_secondary_status(cpu: CpuId, at_el1: bool, mmu_enabled: bool) {
-    let bit = cpu_bit(cpu);
+    let mut status = STATUS_ONLINE;
 
     if at_el1 {
-        SECONDARY_EL1_MASK.fetch_or(bit, Ordering::Relaxed);
+        status |= STATUS_EL1;
     }
 
     if mmu_enabled {
-        SECONDARY_MMU_MASK.fetch_or(bit, Ordering::Relaxed);
+        status |= STATUS_MMU;
     }
 
-    // Publish `online` last. CPU0's Acquire load of this bit synchronizes with
-    // all status writes above.
-    SECONDARY_ONLINE_MASK.fetch_or(bit, Ordering::Release);
+    SECONDARY_STATUS[cpu.index()].store(status, Ordering::Release);
 
     unsafe {
         asm!("sev", options(nomem, nostack, preserves_flags));
