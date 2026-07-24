@@ -51,17 +51,30 @@ pub fn release_secondary(cpu: CpuId) -> bool {
         return false;
     }
 
-    SECONDARY_RELEASE_MASK.fetch_or(cpu_bit(cpu), Ordering::Release);
+    // CPU0 is the sole writer of the release word. Avoid an atomic RMW during
+    // initial SMP bring-up; a simple release store is sufficient and avoids an
+    // LDXR/STXR retry loop before secondary-core coherency is fully validated.
+    crate::panic::panic_logger::early_aux_write_str(
+        "[SMP] release_secondary: publishing release bit\n",
+    );
 
-    // Ensure the release store and all preceding CPU0 initialization are
-    // globally observable before waking CPUs that may currently be in WFE.
+    let release_mask = SECONDARY_RELEASE_MASK.load(Ordering::Relaxed);
+    SECONDARY_RELEASE_MASK.store(release_mask | cpu_bit(cpu), Ordering::Release);
+
+    crate::panic::panic_logger::early_aux_write_str(
+        "[SMP] release_secondary: release bit stored\n",
+    );
+
+    // CPU1 is still executing in EL2 with its MMU disabled. Use a full-system
+    // barrier for this first bring-up rather than depending on stage-1
+    // shareability attributes that only exist on CPU0 at this point.
     unsafe {
-        asm!(
-            "dsb ishst",
-            "sev",
-            options(nostack, preserves_flags),
-        );
+        asm!("dsb sy", "sev", options(nostack, preserves_flags));
     }
+
+    crate::panic::panic_logger::early_aux_write_str(
+        "[SMP] release_secondary: SEV sent\n",
+    );
 
     true
 }
