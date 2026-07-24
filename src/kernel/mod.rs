@@ -9,10 +9,7 @@ use crate::arch::{
 };
 
 use crate::assets::ImageAsset;
-use crate::drivers::{
-    gpio::{GpioPin, GpioPull},
-    uart::UART,
-};
+use crate::drivers::gpio::{GpioPin, GpioPull};
 use crate::graphics::framebuffer::FRAMEBUFFER;
 use crate::graphics::{BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect};
 use crate::hid::Key;
@@ -25,8 +22,8 @@ use crate::{
     hid::{KeyboardModifiers, KeyboardReport},
     info,
     services::{KernelManagementBackend, KeyworkServices},
-    transport::{KeyworkTransport, TransportState},
-    usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
+    transport::{usb_core_ready, KeyworkTransport, TransportState, UsbCoreProxy},
+    usb::MANAGEMENT_FRAME_CAPACITY,
 };
 
 #[cfg(feature = "jtag")]
@@ -56,16 +53,13 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
     bring_up_secondary_cpu(1);
     bring_up_secondary_cpu(2);
+    wait_for_usb_transport_core();
 
     info!("Timer test, spinning for 1 second");
     time_manager().spin_for(core::time::Duration::from_secs(1));
     info!("1 second elapsed");
 
-    let usb_transport = unsafe { USB_TRANSPORT.get_mut() };
-    usb_transport
-        .initialize()
-        .expect("USB transport initialization failed");
-
+    let mut usb_transport = UsbCoreProxy::new();
     let mut services = KeyworkServices::<MANAGEMENT_FRAME_CAPACITY>::new();
     let mut management_backend = KernelManagementBackend::new();
 
@@ -182,7 +176,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         }
         management_backend.set_active_transport(services.active_transport());
         services
-            .poll_selected_transport(usb_transport, &mut management_backend)
+            .poll_selected_transport(&mut usb_transport, &mut management_backend)
             .expect("USB service polling failed");
         management_backend.poll_pending_action();
 
@@ -196,6 +190,20 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
         nop();
     }
+}
+
+fn wait_for_usb_transport_core() {
+    const USB_CORE_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    let start = time_manager().uptime();
+    while !usb_core_ready() {
+        if time_manager().uptime().saturating_sub(start) >= USB_CORE_BOOT_TIMEOUT {
+            panic!("timed out waiting for CPU2 USB transport worker");
+        }
+        spin_loop();
+    }
+
+    info!("CPU2 USB transport worker is ready");
 }
 
 fn bring_up_secondary_cpu(raw_id: u8) {

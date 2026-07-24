@@ -12,8 +12,8 @@ use super::{
 
 /// USB binding for the transport-independent Keywork services.
 ///
-/// The low-level DWC2 instance remains owned by `drivers::usb::USB`; this
-/// adapter serializes all access through the single polling kernel loop.
+/// The low-level DWC2 instance remains owned by `drivers::usb::USB`. After
+/// early boot, CPU2 is the sole runtime owner of this adapter and controller.
 pub struct UsbTransport {
     initialized: bool,
 }
@@ -32,9 +32,8 @@ impl UsbTransport {
     }
 
     fn device(&self) -> &super::UsbDevice {
-        // The kernel is currently single-core and all USB access is serialized
-        // through this transport. This shared access is used only for state
-        // queries between mutable operations.
+        // CPU2 is the sole runtime owner after SMP handoff. This shared access
+        // is used only for state queries between mutable operations on CPU2.
         unsafe { USB_DEVICE.get() }
     }
 

@@ -1,10 +1,12 @@
 //! Shared transport contracts for USB and Bluetooth.
 
 mod router;
+mod smp;
 
 use crate::hid::{ConsumerReport, HostLedState, KeyboardReport, SystemReport};
 
 pub use router::{ActiveTransport, TransportRouter, TransportTransition};
+pub use smp::{run_usb_transport_core, usb_core_ready, UsbCoreProxy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportKind {

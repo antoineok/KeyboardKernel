@@ -100,12 +100,9 @@ fn publish_secondary_status(cpu: CpuId, at_el1: bool, mmu_enabled: bool) {
 
 /// First Rust entry point for secondary CPUs.
 ///
-/// This deliberately touches no existing mutable kernel singleton. Until the
-/// SMP ownership/synchronization audit is complete, a secondary CPU may only:
-/// - identify itself,
-/// - install the already-built CPU0 translation tables locally,
-/// - publish status through atomics,
-/// - park again.
+/// Every secondary first installs CPU0's published translation tables and
+/// reports its EL1/MMU status. CPU2 then transfers into the dedicated USB
+/// transport worker; the other released secondary CPUs remain parked.
 #[no_mangle]
 pub extern "C" fn secondary_el1_entry() -> ! {
     let cpu = current_id();
@@ -115,6 +112,10 @@ pub extern "C" fn secondary_el1_entry() -> ! {
     let mmu_enabled = mmu_installed && mmu::is_enabled();
 
     publish_secondary_status(cpu, at_el1, mmu_enabled);
+
+    if cpu.raw() == 2 {
+        crate::transport::run_usb_transport_core();
+    }
 
     loop {
         unsafe {
