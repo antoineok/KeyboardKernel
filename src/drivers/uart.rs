@@ -3,10 +3,37 @@ use super::{
     gpio::{GpioFunction, GpioPin, GpioPull},
 };
 
-use core::cell::UnsafeCell;
+use core::{
+    cell::UnsafeCell,
+    hint::spin_loop,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 const AUX_UART_CLOCK: u32 = 500_000_000;
 const UART_MAX_QUEUE: usize = 16 * 1024;
+
+static UART_LOG_LOCK: AtomicBool = AtomicBool::new(false);
+static UART_LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
+
+struct UartLogGuard;
+
+impl UartLogGuard {
+    fn acquire() -> Self {
+        while UART_LOG_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        Self
+    }
+}
+
+impl Drop for UartLogGuard {
+    fn drop(&mut self) {
+        UART_LOG_LOCK.store(false, Ordering::Release);
+    }
+}
 
 fn aux_mu_baud(baud: u32) -> u32 {
     (AUX_UART_CLOCK / (baud * 8)) - 1
@@ -198,8 +225,46 @@ macro_rules! uart_println {
 
 pub fn _uart_print(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    let uart = UART.get_mut();
-    uart.write_fmt(args).unwrap();
+
+    // Before EL1 enables the MMU only CPU0 can execute Rust. Avoid atomic
+    // locking there: exclusive accesses are only needed once secondary CPUs
+    // can run concurrently under the Normal-memory mappings.
+    if !crate::arch::mmu::is_enabled() {
+        let mut writer = SharedUartWriter(UART.get());
+        writer.write_fmt(args).unwrap();
+        return;
+    }
+
+    if !UART_LOGGING_ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+
+    let _guard = UartLogGuard::acquire();
+
+    // Re-check after taking the lock so disabling logging can wait for any
+    // in-flight line to finish before a binary UART protocol takes ownership.
+    if !UART_LOGGING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let mut writer = SharedUartWriter(UART.get());
+    writer.write_fmt(args).unwrap();
+}
+
+/// Disable normal formatted logging and wait for any line already being
+/// emitted to finish. The panic logger deliberately bypasses this mechanism.
+pub fn disable_logging() {
+    let _guard = UartLogGuard::acquire();
+    UART_LOGGING_ENABLED.store(false, Ordering::Release);
+}
+
+struct SharedUartWriter(&'static Uart);
+
+impl core::fmt::Write for SharedUartWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.write_text(s);
+        Ok(())
+    }
 }
 
 impl core::fmt::Write for Uart {

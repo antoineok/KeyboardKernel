@@ -194,7 +194,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             continue;
         }
 
-        UART.get_mut().flush_tx();
         nop();
     }
 }

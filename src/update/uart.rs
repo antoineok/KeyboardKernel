@@ -263,6 +263,9 @@ impl UartUpdateService {
                     self.trigger_pos = 0;
                     self.binary_mode = true;
 
+                    // Once the binary updater owns UART TX, suppress normal
+                    // logs from every CPU so they cannot corrupt the protocol.
+                    crate::drivers::uart::disable_logging();
                     uart.write_text("UPDATE MODE\n");
                     return;
                 }
