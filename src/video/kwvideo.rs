@@ -105,6 +105,525 @@ pub fn parse_file_type(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HevcConfiguration {
+    pub profile_idc: u8,
+    pub level_idc: u8,
+    pub chroma_format_idc: u8,
+    pub bit_depth_luma: u8,
+    pub bit_depth_chroma: u8,
+    pub nal_length_size: u8,
+    pub vps_count: u16,
+    pub sps_count: u16,
+    pub pps_count: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FirstFragment {
+    pub base_decode_time: u64,
+    pub sample_count: u32,
+    pub duration_ticks: u64,
+    pub first_sample_offset: usize,
+    pub first_sample_size: u32,
+    pub total_sample_bytes: usize,
+    pub first_sample_sync: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoMetadata {
+    pub track_id: u32,
+    pub width: u16,
+    pub height: u16,
+    pub timescale: u32,
+    pub hevc: HevcConfiguration,
+    pub first_fragment: FirstFragment,
+}
+
+#[derive(Clone, Copy)]
+struct MemoryBox<'a> {
+    box_type: FourCc,
+    start: usize,
+    payload_start: usize,
+    payload: &'a [u8],
+}
+
+fn next_memory_box<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+    base: usize,
+) -> Result<Option<MemoryBox<'a>>, KwVideoError> {
+    if *cursor == bytes.len() {
+        return Ok(None);
+    }
+    if *cursor > bytes.len() {
+        return Err(KwVideoError::InvalidStructure("box cursor escaped container"));
+    }
+
+    let remaining = &bytes[*cursor..];
+    let header = super::isobmff::BoxHeader::parse(remaining, remaining.len())?;
+    let start = *cursor;
+    let payload_start = start
+        .checked_add(header.header_size())
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    let end = start
+        .checked_add(header.box_size())
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    *cursor = end;
+
+    Ok(Some(MemoryBox {
+        box_type: header.box_type(),
+        start: base.checked_add(start).ok_or(KwVideoError::OffsetOverflow)?,
+        payload_start: base
+            .checked_add(payload_start)
+            .ok_or(KwVideoError::OffsetOverflow)?,
+        payload: &bytes[payload_start..end],
+    }))
+}
+
+fn find_box<'a>(
+    bytes: &'a [u8],
+    base: usize,
+    wanted: FourCc,
+) -> Result<MemoryBox<'a>, KwVideoError> {
+    let mut cursor = 0;
+    while let Some(current) = next_memory_box(bytes, &mut cursor, base)? {
+        if current.box_type == wanted {
+            return Ok(current);
+        }
+    }
+    Err(KwVideoError::InvalidStructure("required MP4 box missing"))
+}
+
+fn count_boxes(bytes: &[u8], base: usize, wanted: FourCc) -> Result<usize, KwVideoError> {
+    let mut cursor = 0;
+    let mut count = 0;
+    while let Some(current) = next_memory_box(bytes, &mut cursor, base)? {
+        if current.box_type == wanted {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn parse_video_metadata(
+    bootstrap: &[u8],
+    first_fragment_offset: usize,
+) -> Result<VideoMetadata, KwVideoError> {
+    let moov = find_box(bootstrap, 0, FourCc::new(*b"moov"))?;
+    if count_boxes(moov.payload, moov.payload_start, FourCc::new(*b"trak"))? != 1 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 requires exactly one track",
+        ));
+    }
+
+    let trak = find_box(moov.payload, moov.payload_start, FourCc::new(*b"trak"))?;
+    let tkhd = find_box(trak.payload, trak.payload_start, FourCc::new(*b"tkhd"))?;
+    let (track_id, tkhd_width, tkhd_height) = parse_tkhd(tkhd.payload)?;
+
+    let mdia = find_box(trak.payload, trak.payload_start, FourCc::new(*b"mdia"))?;
+    let hdlr = find_box(mdia.payload, mdia.payload_start, FourCc::new(*b"hdlr"))?;
+    if hdlr.payload.len() < 12 || &hdlr.payload[8..12] != b"vide" {
+        return Err(KwVideoError::UnsupportedProfile("kwv1 track is not video"));
+    }
+
+    let mdhd = find_box(mdia.payload, mdia.payload_start, FourCc::new(*b"mdhd"))?;
+    let timescale = parse_mdhd_timescale(mdhd.payload)?;
+
+    let minf = find_box(mdia.payload, mdia.payload_start, FourCc::new(*b"minf"))?;
+    let stbl = find_box(minf.payload, minf.payload_start, FourCc::new(*b"stbl"))?;
+    let stsd = find_box(stbl.payload, stbl.payload_start, FourCc::new(*b"stsd"))?;
+    let (width, height, hevc) = parse_stsd(stsd.payload, stsd.payload_start)?;
+
+    let _display_dimensions = (tkhd_width, tkhd_height);
+    if width == 0 || height == 0 || width > 1366 || height > 768 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "video dimensions exceed kwv1 limits",
+        ));
+    }
+
+    let moof = find_box(bootstrap, 0, FourCc::new(*b"moof"))?;
+    if moof.start != first_fragment_offset {
+        return Err(KwVideoError::InvalidStructure(
+            "cached first fragment offset does not match first moof",
+        ));
+    }
+    let moof_end = moof
+        .payload_start
+        .checked_add(moof.payload.len())
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    let mdat = find_box(&bootstrap[moof_end..], moof_end, FourCc::new(*b"mdat"))?;
+    let first_fragment = parse_first_fragment(moof, mdat, track_id)?;
+
+    Ok(VideoMetadata {
+        track_id,
+        width,
+        height,
+        timescale,
+        hevc,
+        first_fragment,
+    })
+}
+
+fn parse_tkhd(bytes: &[u8]) -> Result<(u32, u16, u16), KwVideoError> {
+    let track_id_offset = match bytes.first().copied() {
+        Some(0) => 12,
+        Some(1) => 20,
+        _ => return Err(KwVideoError::InvalidStructure("unsupported tkhd version")),
+    };
+    if bytes.len() < track_id_offset + 4 || bytes.len() < 8 {
+        return Err(KwVideoError::InvalidStructure("truncated tkhd"));
+    }
+
+    let track_id = read_u32(bytes, track_id_offset)?;
+    let width = (read_u32(bytes, bytes.len() - 8)? >> 16) as u16;
+    let height = (read_u32(bytes, bytes.len() - 4)? >> 16) as u16;
+    Ok((track_id, width, height))
+}
+
+fn parse_mdhd_timescale(bytes: &[u8]) -> Result<u32, KwVideoError> {
+    let offset = match bytes.first().copied() {
+        Some(0) => 12,
+        Some(1) => 20,
+        _ => return Err(KwVideoError::InvalidStructure("unsupported mdhd version")),
+    };
+    let timescale = read_u32(bytes, offset)?;
+    if timescale == 0 {
+        return Err(KwVideoError::InvalidStructure("zero media timescale"));
+    }
+    Ok(timescale)
+}
+
+fn parse_stsd(
+    bytes: &[u8],
+    base: usize,
+) -> Result<(u16, u16, HevcConfiguration), KwVideoError> {
+    if bytes.len() < 8 || read_u32(bytes, 4)? != 1 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 requires one sample description",
+        ));
+    }
+
+    let entries = &bytes[8..];
+    let entry = find_box(entries, base + 8, FourCc::new(*b"hvc1"))?;
+    if entry.payload.len() < 78 {
+        return Err(KwVideoError::InvalidStructure("truncated hvc1 sample entry"));
+    }
+
+    let width = read_u16(entry.payload, 24)?;
+    let height = read_u16(entry.payload, 26)?;
+    let hvcc = find_box(
+        &entry.payload[78..],
+        entry.payload_start + 78,
+        FourCc::new(*b"hvcC"),
+    )?;
+    let hevc = parse_hvcc(hvcc.payload)?;
+    Ok((width, height, hevc))
+}
+
+fn parse_hvcc(bytes: &[u8]) -> Result<HevcConfiguration, KwVideoError> {
+    if bytes.len() < 23 || bytes[0] != 1 {
+        return Err(KwVideoError::InvalidStructure("invalid hvcC header"));
+    }
+
+    let profile_idc = bytes[1] & 0x1f;
+    let level_idc = bytes[12];
+    let chroma_format_idc = bytes[16] & 0x03;
+    let bit_depth_luma = 8 + (bytes[17] & 0x07);
+    let bit_depth_chroma = 8 + (bytes[18] & 0x07);
+    let nal_length_size = 1 + (bytes[21] & 0x03);
+
+    if profile_idc != 1
+        || chroma_format_idc != 1
+        || bit_depth_luma != 8
+        || bit_depth_chroma != 8
+        || nal_length_size != 4
+    {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 requires HEVC Main 8-bit 4:2:0 with 4-byte NAL lengths",
+        ));
+    }
+
+    let mut cursor = 23usize;
+    let mut vps_count = 0u16;
+    let mut sps_count = 0u16;
+    let mut pps_count = 0u16;
+    for _ in 0..bytes[22] {
+        let nal_type = *bytes
+            .get(cursor)
+            .ok_or(KwVideoError::InvalidStructure("truncated hvcC array"))?
+            & 0x3f;
+        cursor += 1;
+        let count = read_u16(bytes, cursor)?;
+        cursor += 2;
+        match nal_type {
+            32 => vps_count = vps_count.saturating_add(count),
+            33 => sps_count = sps_count.saturating_add(count),
+            34 => pps_count = pps_count.saturating_add(count),
+            _ => {}
+        }
+        for _ in 0..count {
+            let length = read_u16(bytes, cursor)? as usize;
+            cursor += 2;
+            cursor = cursor
+                .checked_add(length)
+                .ok_or(KwVideoError::OffsetOverflow)?;
+            if cursor > bytes.len() {
+                return Err(KwVideoError::InvalidStructure("NAL exceeds hvcC payload"));
+            }
+        }
+    }
+    if vps_count == 0 || sps_count == 0 || pps_count == 0 {
+        return Err(KwVideoError::InvalidStructure("hvcC is missing VPS/SPS/PPS"));
+    }
+
+    Ok(HevcConfiguration {
+        profile_idc,
+        level_idc,
+        chroma_format_idc,
+        bit_depth_luma,
+        bit_depth_chroma,
+        nal_length_size,
+        vps_count,
+        sps_count,
+        pps_count,
+    })
+}
+
+fn parse_first_fragment(
+    moof: MemoryBox<'_>,
+    mdat: MemoryBox<'_>,
+    track_id: u32,
+) -> Result<FirstFragment, KwVideoError> {
+    let traf = find_box(moof.payload, moof.payload_start, FourCc::new(*b"traf"))?;
+    let tfhd = find_box(traf.payload, traf.payload_start, FourCc::new(*b"tfhd"))?;
+    let defaults = parse_tfhd(tfhd.payload, track_id)?;
+    let tfdt = find_box(traf.payload, traf.payload_start, FourCc::new(*b"tfdt"))?;
+    let base_decode_time = parse_tfdt(tfdt.payload)?;
+    if count_boxes(traf.payload, traf.payload_start, FourCc::new(*b"trun"))? != 1 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 requires one trun per fragment",
+        ));
+    }
+    let trun = find_box(traf.payload, traf.payload_start, FourCc::new(*b"trun"))?;
+    parse_trun(
+        trun.payload,
+        defaults,
+        moof.start,
+        mdat.payload_start,
+        mdat.payload.len(),
+        base_decode_time,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct FragmentDefaults {
+    duration: Option<u32>,
+    size: Option<u32>,
+    flags: Option<u32>,
+}
+
+fn parse_tfhd(bytes: &[u8], expected_track: u32) -> Result<FragmentDefaults, KwVideoError> {
+    if bytes.len() < 8 {
+        return Err(KwVideoError::InvalidStructure("truncated tfhd"));
+    }
+    let flags = read_u32(bytes, 0)? & 0x00ff_ffff;
+    if read_u32(bytes, 4)? != expected_track {
+        return Err(KwVideoError::InvalidStructure("fragment track ID mismatch"));
+    }
+    if flags & 0x020000 == 0 || flags & 0x000001 != 0 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 fragments must use default-base-is-moof",
+        ));
+    }
+
+    let mut cursor = 8usize;
+    if flags & 0x000002 != 0 {
+        cursor += 4;
+    }
+    let duration = if flags & 0x000008 != 0 {
+        let value = read_u32(bytes, cursor)?;
+        cursor += 4;
+        Some(value)
+    } else {
+        None
+    };
+    let size = if flags & 0x000010 != 0 {
+        let value = read_u32(bytes, cursor)?;
+        cursor += 4;
+        Some(value)
+    } else {
+        None
+    };
+    let sample_flags = if flags & 0x000020 != 0 {
+        Some(read_u32(bytes, cursor)?)
+    } else {
+        None
+    };
+
+    if cursor > bytes.len() {
+        return Err(KwVideoError::InvalidStructure("truncated tfhd"));
+    }
+
+    Ok(FragmentDefaults {
+        duration,
+        size,
+        flags: sample_flags,
+    })
+}
+
+fn parse_tfdt(bytes: &[u8]) -> Result<u64, KwVideoError> {
+    match bytes.first().copied() {
+        Some(0) => Ok(read_u32(bytes, 4)? as u64),
+        Some(1) => read_u64(bytes, 4),
+        _ => Err(KwVideoError::InvalidStructure("unsupported tfdt version")),
+    }
+}
+
+fn parse_trun(
+    bytes: &[u8],
+    defaults: FragmentDefaults,
+    moof_start: usize,
+    mdat_start: usize,
+    mdat_size: usize,
+    base_decode_time: u64,
+) -> Result<FirstFragment, KwVideoError> {
+    if bytes.len() < 12 {
+        return Err(KwVideoError::InvalidStructure("truncated trun"));
+    }
+    let flags = read_u32(bytes, 0)? & 0x00ff_ffff;
+    if flags & 0x000001 == 0 || flags & 0x000800 != 0 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 trun requires data_offset and no composition offsets",
+        ));
+    }
+
+    let sample_count = read_u32(bytes, 4)?;
+    if sample_count == 0 {
+        return Err(KwVideoError::InvalidStructure("empty trun"));
+    }
+    let data_offset = read_u32(bytes, 8)? as i32;
+    let first_sample_offset = (moof_start as i128) + (data_offset as i128);
+    if first_sample_offset < 0 || first_sample_offset > usize::MAX as i128 {
+        return Err(KwVideoError::OffsetOverflow);
+    }
+    let first_sample_offset = first_sample_offset as usize;
+
+    let mut cursor = 12usize;
+    let first_sample_flags = if flags & 0x000004 != 0 {
+        let value = read_u32(bytes, cursor)?;
+        cursor += 4;
+        Some(value)
+    } else {
+        None
+    };
+    let has_duration = flags & 0x000100 != 0;
+    let has_size = flags & 0x000200 != 0;
+    let has_flags = flags & 0x000400 != 0;
+
+    let mut duration_ticks = 0u64;
+    let mut total_sample_bytes = 0usize;
+    let mut first_sample_size = 0u32;
+    let mut first_flags = first_sample_flags;
+
+    for index in 0..sample_count {
+        let duration = if has_duration {
+            let value = read_u32(bytes, cursor)?;
+            cursor += 4;
+            value
+        } else {
+            defaults
+                .duration
+                .ok_or(KwVideoError::InvalidStructure("sample duration missing"))?
+        };
+        let size = if has_size {
+            let value = read_u32(bytes, cursor)?;
+            cursor += 4;
+            value
+        } else {
+            defaults
+                .size
+                .ok_or(KwVideoError::InvalidStructure("sample size missing"))?
+        };
+        let sample_flags = if has_flags {
+            let value = read_u32(bytes, cursor)?;
+            cursor += 4;
+            Some(value)
+        } else {
+            defaults.flags
+        };
+
+        if index == 0 {
+            first_sample_size = size;
+            if first_flags.is_none() {
+                first_flags = sample_flags;
+            }
+        }
+        duration_ticks = duration_ticks
+            .checked_add(duration as u64)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        total_sample_bytes = total_sample_bytes
+            .checked_add(size as usize)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+    }
+
+    let first_sample_sync = first_flags
+        .map(|value| value & 0x00010000 == 0)
+        .ok_or(KwVideoError::InvalidStructure("first sample flags missing"))?;
+    if !first_sample_sync {
+        return Err(KwVideoError::UnsupportedProfile(
+            "first fragment must begin with a sync sample",
+        ));
+    }
+
+    let mdat_end = mdat_start
+        .checked_add(mdat_size)
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    let samples_end = first_sample_offset
+        .checked_add(total_sample_bytes)
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    if first_sample_offset < mdat_start || samples_end > mdat_end {
+        return Err(KwVideoError::InvalidStructure(
+            "fragment sample bytes escape first mdat",
+        ));
+    }
+
+    Ok(FirstFragment {
+        base_decode_time,
+        sample_count,
+        duration_ticks,
+        first_sample_offset,
+        first_sample_size,
+        total_sample_bytes,
+        first_sample_sync,
+    })
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, KwVideoError> {
+    let end = offset.checked_add(2).ok_or(KwVideoError::OffsetOverflow)?;
+    let data = bytes
+        .get(offset..end)
+        .ok_or(KwVideoError::InvalidStructure("truncated u16"))?;
+    Ok(u16::from_be_bytes([data[0], data[1]]))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, KwVideoError> {
+    let end = offset.checked_add(4).ok_or(KwVideoError::OffsetOverflow)?;
+    let data = bytes
+        .get(offset..end)
+        .ok_or(KwVideoError::InvalidStructure("truncated u32"))?;
+    Ok(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, KwVideoError> {
+    let end = offset.checked_add(8).ok_or(KwVideoError::OffsetOverflow)?;
+    let data = bytes
+        .get(offset..end)
+        .ok_or(KwVideoError::InvalidStructure("truncated u64"))?;
+    Ok(u64::from_be_bytes([
+        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+    ]))
+}
+
 
 /// A `kwv1` asset prepared for instant profile transitions.
 ///
@@ -115,6 +634,7 @@ pub fn parse_file_type(
 /// the next fragment.
 pub struct VideoAsset {
     file_type: FileType,
+    metadata: VideoMetadata,
     stream: FileStream,
     bootstrap: Box<[u8]>,
     first_fragment_offset: usize,
@@ -198,8 +718,11 @@ impl VideoAsset {
 
         debug_assert_eq!(stream.position(), resume_offset);
 
+        let metadata = parse_video_metadata(&bootstrap, first_fragment_offset)?;
+
         Ok(Self {
             file_type,
+            metadata,
             stream,
             bootstrap: bootstrap.into_boxed_slice(),
             first_fragment_offset,
@@ -210,6 +733,21 @@ impl VideoAsset {
     #[inline(always)]
     pub const fn file_type(&self) -> FileType {
         self.file_type
+    }
+
+    #[inline(always)]
+    pub const fn metadata(&self) -> VideoMetadata {
+        self.metadata
+    }
+
+    #[inline(always)]
+    pub fn stream_name(&self) -> &str {
+        self.stream.name()
+    }
+
+    #[inline(always)]
+    pub fn file_len(&self) -> usize {
+        self.stream.len()
     }
 
     /// Cached bytes from file offset zero through the first `mdat`.
@@ -330,6 +868,8 @@ pub enum KwVideoError {
         maximum: usize,
     },
     OffsetOverflow,
+    InvalidStructure(&'static str),
+    UnsupportedProfile(&'static str),
     VideoProfileSlotOutOfRange(usize),
     IsoBmff(IsoBmffError),
 }
@@ -381,6 +921,8 @@ impl fmt::Display for KwVideoError {
                 )
             }
             Self::OffsetOverflow => write!(f, "Keywork Video box offset overflow"),
+            Self::InvalidStructure(reason) => write!(f, "invalid Keywork Video structure: {reason}"),
+            Self::UnsupportedProfile(reason) => write!(f, "unsupported kwv1 profile: {reason}"),
             Self::VideoProfileSlotOutOfRange(slot) => write!(
                 f,
                 "video profile slot {slot} is out of range; maximum is {}",

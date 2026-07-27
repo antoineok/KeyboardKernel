@@ -16,6 +16,7 @@ use crate::memory::{
 };
 use crate::storage::fs::vfs::{FsId, VFS};
 use crate::time::time_manager;
+use crate::video::kwvideo::VideoTransitionCache;
 
 use crate::{
     early_timeit,
@@ -64,6 +65,58 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     let mut management_backend = KernelManagementBackend::new();
 
     let vfs = VFS.get();
+
+    let mut video_cache = VideoTransitionCache::new();
+    video_cache
+        .load(vfs, 0, FsId::Rom, "output.kwv")
+        .expect("failed to load output.kwv KWVIDEO test asset");
+
+    let video = video_cache
+        .get(0)
+        .expect("KWVIDEO test asset disappeared from transition cache");
+    let metadata = video.metadata();
+    let hevc = metadata.hevc;
+    let fragment = metadata.first_fragment;
+    let fragment_ms = fragment
+        .duration_ticks
+        .saturating_mul(1000)
+        / metadata.timescale as u64;
+
+    info!(
+        "KWVIDEO loaded: name={}, brand={}, bytes={}, bootstrap={} KiB",
+        video.stream_name(),
+        video.file_type().major_brand(),
+        video.file_len(),
+        video.bootstrap().len() / 1024,
+    );
+    info!(
+        "KWVIDEO HEVC: track={}, {}x{}, timescale={}, profile={}, level={}, chroma={}, bit_depth={}/{}, nal_length={} bytes, VPS/SPS/PPS={}/{}/{}",
+        metadata.track_id,
+        metadata.width,
+        metadata.height,
+        metadata.timescale,
+        hevc.profile_idc,
+        hevc.level_idc,
+        hevc.chroma_format_idc,
+        hevc.bit_depth_luma,
+        hevc.bit_depth_chroma,
+        hevc.nal_length_size,
+        hevc.vps_count,
+        hevc.sps_count,
+        hevc.pps_count,
+    );
+    info!(
+        "KWVIDEO first fragment: decode_time={}, samples={}, duration={} ticks (~{} ms), bytes={}, first_offset={}, first_size={}, sync={}",
+        fragment.base_decode_time,
+        fragment.sample_count,
+        fragment.duration_ticks,
+        fragment_ms,
+        fragment.total_sample_bytes,
+        fragment.first_sample_offset,
+        fragment.first_sample_size,
+        fragment.first_sample_sync,
+    );
+
     let background_file = vfs
         .open_fs(FsId::Rom, "background.kwim")
         .expect("failed to load background image");
