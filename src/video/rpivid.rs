@@ -4,7 +4,10 @@
 //! physical addresses discovered from the FDT can be used directly as virtual
 //! addresses after EL1 translation is enabled.
 
-use core::ptr::{read_volatile, write_volatile};
+use core::{
+    cell::UnsafeCell,
+    ptr::{read_volatile, write_volatile},
+};
 
 use crate::{info, memory::dma::DmaBuffer};
 
@@ -211,6 +214,36 @@ impl RpividBitstreamBuffer {
     }
 }
 
+pub struct RpividWorkspaceStatic(UnsafeCell<Option<RpividDecodeWorkspace>>);
+
+unsafe impl Sync for RpividWorkspaceStatic {}
+
+impl RpividWorkspaceStatic {
+    pub const fn new() -> Self {
+        Self(UnsafeCell::new(None))
+    }
+
+    fn get_mut(&self) -> &mut Option<RpividDecodeWorkspace> {
+        unsafe { &mut *self.0.get() }
+    }
+
+    pub fn stage_bitstream(&self, data: &[u8]) -> RpividBitstreamWindow {
+        assert_eq!(
+            crate::arch::cpu::current_id(),
+            crate::arch::cpu::CpuId::BOOT,
+            "RPIVID bitstream staging currently belongs to CPU0",
+        );
+        let workspace = self
+            .get_mut()
+            .as_mut()
+            .expect("RPIVID workspace used before initialization");
+        workspace.bitstream.load(data);
+        workspace.bitstream.window(0, data.len())
+    }
+}
+
+pub static RPIVID_WORKSPACE: RpividWorkspaceStatic = RpividWorkspaceStatic::new();
+
 fn round_up_workspace_size(bytes: usize) -> usize {
     // Match hevc_d_round_up_size() from Raspberry Pi's RPIVID driver. The
     // decoder grows these buffers in a 3x/4x power-of-two progression.
@@ -308,7 +341,17 @@ impl RpividDecodeWorkspace {
     }
 }
 
-pub fn validate_decode_workspace(width: usize, height: usize) {
+pub fn initialize_decode_workspace(width: usize, height: usize) {
+    assert_eq!(
+        crate::arch::cpu::current_id(),
+        crate::arch::cpu::CpuId::BOOT,
+        "RPIVID workspace must be initialized on CPU0",
+    );
+    assert!(
+        RPIVID_WORKSPACE.get_mut().is_none(),
+        "RPIVID workspace initialized more than once",
+    );
+
     let mut workspace = RpividDecodeWorkspace::allocate(width, height);
     workspace.validate_dma_encoding();
 
@@ -331,7 +374,10 @@ pub fn validate_decode_workspace(width: usize, height: usize) {
     let window = workspace.bitstream.window(probe_offset, probe_len);
     let reconstructed = ((window.base_register_value() as u64) << 6)
         + window.byte_offset() as u64;
-    assert_eq!(reconstructed, workspace.bitstream.phys_addr() + probe_offset as u64);
+    assert_eq!(
+        reconstructed,
+        workspace.bitstream.phys_addr() + probe_offset as u64,
+    );
     assert_eq!(window.byte_len(), probe_len as u32);
 
     info!(
@@ -352,6 +398,8 @@ pub fn validate_decode_workspace(width: usize, height: usize) {
         workspace.pu[0].phys_addr(),
         workspace.coeff[0].phys_addr(),
     );
+
+    *RPIVID_WORKSPACE.get_mut() = Some(workspace);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -8,6 +8,7 @@ use core::fmt;
 
 use alloc::boxed::Box;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::storage::fs::vfs::{FileStream, FsId, Vfs, VfsError};
 
@@ -137,6 +138,42 @@ pub struct VideoMetadata {
     pub timescale: u32,
     pub hevc: HevcConfiguration,
     pub first_fragment: FirstFragment,
+}
+
+#[derive(Debug)]
+pub struct FirstAccessUnit {
+    bytes: Box<[u8]>,
+    parameter_set_count: u16,
+    sample_nal_count: u16,
+    vcl_nal_count: u16,
+    first_vcl_type: u8,
+}
+
+impl FirstAccessUnit {
+    #[inline(always)]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[inline(always)]
+    pub const fn parameter_set_count(&self) -> u16 {
+        self.parameter_set_count
+    }
+
+    #[inline(always)]
+    pub const fn sample_nal_count(&self) -> u16 {
+        self.sample_nal_count
+    }
+
+    #[inline(always)]
+    pub const fn vcl_nal_count(&self) -> u16 {
+        self.vcl_nal_count
+    }
+
+    #[inline(always)]
+    pub const fn first_vcl_type(&self) -> u8 {
+        self.first_vcl_type
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -598,6 +635,135 @@ fn parse_trun(
     })
 }
 
+fn find_hvcc_in_bootstrap(bootstrap: &[u8]) -> Result<MemoryBox<'_>, KwVideoError> {
+    let moov = find_box(bootstrap, 0, FourCc::new(*b"moov"))?;
+    let trak = find_box(moov.payload, moov.payload_start, FourCc::new(*b"trak"))?;
+    let mdia = find_box(trak.payload, trak.payload_start, FourCc::new(*b"mdia"))?;
+    let minf = find_box(mdia.payload, mdia.payload_start, FourCc::new(*b"minf"))?;
+    let stbl = find_box(minf.payload, minf.payload_start, FourCc::new(*b"stbl"))?;
+    let stsd = find_box(stbl.payload, stbl.payload_start, FourCc::new(*b"stsd"))?;
+    if stsd.payload.len() < 8 {
+        return Err(KwVideoError::InvalidStructure("truncated stsd"));
+    }
+    let entry = find_box(
+        &stsd.payload[8..],
+        stsd.payload_start + 8,
+        FourCc::new(*b"hvc1"),
+    )?;
+    if entry.payload.len() < 78 {
+        return Err(KwVideoError::InvalidStructure("truncated hvc1 sample entry"));
+    }
+    find_box(
+        &entry.payload[78..],
+        entry.payload_start + 78,
+        FourCc::new(*b"hvcC"),
+    )
+}
+
+fn append_annex_b_nal(destination: &mut Vec<u8>, nal: &[u8]) -> Result<(), KwVideoError> {
+    if nal.len() < 2 {
+        return Err(KwVideoError::InvalidStructure("truncated HEVC NAL unit"));
+    }
+    destination.extend_from_slice(&[0, 0, 0, 1]);
+    destination.extend_from_slice(nal);
+    Ok(())
+}
+
+fn append_parameter_sets(
+    hvcc: &[u8],
+    destination: &mut Vec<u8>,
+) -> Result<u16, KwVideoError> {
+    if hvcc.len() < 23 {
+        return Err(KwVideoError::InvalidStructure("truncated hvcC"));
+    }
+
+    let mut cursor = 23usize;
+    let mut appended = 0u16;
+    for _ in 0..hvcc[22] {
+        let nal_type = *hvcc
+            .get(cursor)
+            .ok_or(KwVideoError::InvalidStructure("truncated hvcC array"))?
+            & 0x3f;
+        cursor += 1;
+        let count = read_u16(hvcc, cursor)?;
+        cursor += 2;
+        for _ in 0..count {
+            let length = read_u16(hvcc, cursor)? as usize;
+            cursor += 2;
+            let end = cursor
+                .checked_add(length)
+                .ok_or(KwVideoError::OffsetOverflow)?;
+            let nal = hvcc
+                .get(cursor..end)
+                .ok_or(KwVideoError::InvalidStructure("NAL exceeds hvcC payload"))?;
+            if matches!(nal_type, 32..=34) {
+                append_annex_b_nal(destination, nal)?;
+                appended = appended.saturating_add(1);
+            }
+            cursor = end;
+        }
+    }
+
+    if appended == 0 {
+        return Err(KwVideoError::InvalidStructure(
+            "hvcC contains no decodable parameter sets",
+        ));
+    }
+    Ok(appended)
+}
+
+fn append_length_prefixed_sample(
+    sample: &[u8],
+    nal_length_size: usize,
+    destination: &mut Vec<u8>,
+) -> Result<(u16, u16, u8), KwVideoError> {
+    if nal_length_size != 4 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 access units require 4-byte NAL lengths",
+        ));
+    }
+
+    let mut cursor = 0usize;
+    let mut nal_count = 0u16;
+    let mut vcl_count = 0u16;
+    let mut first_vcl_type = None;
+
+    while cursor < sample.len() {
+        let length = read_u32(sample, cursor)? as usize;
+        cursor += nal_length_size;
+        if length == 0 {
+            return Err(KwVideoError::InvalidStructure("zero-length HEVC NAL unit"));
+        }
+        let end = cursor
+            .checked_add(length)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let nal = sample
+            .get(cursor..end)
+            .ok_or(KwVideoError::InvalidStructure("HEVC NAL exceeds sample"))?;
+        if nal.len() < 2 {
+            return Err(KwVideoError::InvalidStructure("truncated HEVC NAL unit"));
+        }
+        let nal_type = (nal[0] >> 1) & 0x3f;
+        if nal_type <= 31 {
+            vcl_count = vcl_count.saturating_add(1);
+            if first_vcl_type.is_none() {
+                first_vcl_type = Some(nal_type);
+            }
+        }
+        append_annex_b_nal(destination, nal)?;
+        nal_count = nal_count.saturating_add(1);
+        cursor = end;
+    }
+
+    if nal_count == 0 {
+        return Err(KwVideoError::InvalidStructure("empty HEVC sample"));
+    }
+    let first_vcl_type = first_vcl_type.ok_or(KwVideoError::InvalidStructure(
+        "first HEVC sample contains no VCL NAL",
+    ))?;
+    Ok((nal_count, vcl_count, first_vcl_type))
+}
+
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, KwVideoError> {
     let end = offset.checked_add(2).ok_or(KwVideoError::OffsetOverflow)?;
     let data = bytes
@@ -754,6 +920,48 @@ impl VideoAsset {
     #[inline(always)]
     pub fn bootstrap(&self) -> &[u8] {
         &self.bootstrap
+    }
+
+    /// Rebuild the first `hvc1` sample as one Annex-B access unit.
+    ///
+    /// MP4 stores VPS/SPS/PPS in `hvcC` and the sample itself as 4-byte
+    /// length-prefixed NAL units. The decoder bring-up path consumes one
+    /// contiguous byte window, so prepend the out-of-band parameter sets and
+    /// replace every sample length prefix with a four-byte Annex-B start code.
+    pub fn first_access_unit_annex_b(&self) -> Result<FirstAccessUnit, KwVideoError> {
+        let fragment = self.metadata.first_fragment;
+        let sample_start = fragment.first_sample_offset;
+        let sample_end = sample_start
+            .checked_add(fragment.first_sample_size as usize)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let sample = self
+            .bootstrap
+            .get(sample_start..sample_end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "first HEVC sample escapes transition bootstrap",
+            ))?;
+
+        let hvcc = find_hvcc_in_bootstrap(&self.bootstrap)?;
+        let mut bytes = Vec::with_capacity(
+            sample
+                .len()
+                .checked_add(2048)
+                .ok_or(KwVideoError::OffsetOverflow)?,
+        );
+        let parameter_set_count = append_parameter_sets(hvcc.payload, &mut bytes)?;
+        let (sample_nal_count, vcl_nal_count, first_vcl_type) = append_length_prefixed_sample(
+            sample,
+            self.metadata.hevc.nal_length_size as usize,
+            &mut bytes,
+        )?;
+
+        Ok(FirstAccessUnit {
+            bytes: bytes.into_boxed_slice(),
+            parameter_set_count,
+            sample_nal_count,
+            vcl_nal_count,
+            first_vcl_type,
+        })
     }
 
     /// Offset of the first cached `moof` within `bootstrap()`.

@@ -117,6 +117,23 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         fragment.first_sample_sync,
     );
 
+    let first_access_unit = video
+        .first_access_unit_annex_b()
+        .expect("failed to reconstruct first KWVIDEO HEVC access unit");
+    let bitstream_window = crate::video::rpivid::RPIVID_WORKSPACE
+        .stage_bitstream(first_access_unit.bytes());
+    info!(
+        "KWVIDEO first access unit staged: annex_b={} bytes, parameter_sets={}, sample_nals={}, vcl_nals={}, first_vcl_type={}, rpivid_base={:#010x}, rpivid_offset={}, rpivid_len={}",
+        first_access_unit.bytes().len(),
+        first_access_unit.parameter_set_count(),
+        first_access_unit.sample_nal_count(),
+        first_access_unit.vcl_nal_count(),
+        first_access_unit.first_vcl_type(),
+        bitstream_window.base_register_value(),
+        bitstream_window.byte_offset(),
+        bitstream_window.byte_len(),
+    );
+
     let background_file = vfs
         .open_fs(FsId::Rom, "background.kwim")
         .expect("failed to load background image");

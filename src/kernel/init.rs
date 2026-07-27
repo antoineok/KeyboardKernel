@@ -178,7 +178,7 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     init_phys_allocator();
 
     early_timeit!("HEVC decode workspace", {
-        crate::video::rpivid::validate_decode_workspace(1366, 768);
+        crate::video::rpivid::initialize_decode_workspace(1366, 768);
     });
 
     early_timeit!("USB power domain", {
