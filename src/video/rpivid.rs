@@ -368,24 +368,6 @@ impl RpividPhase2Snapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RpividPhase1Pending {
-    irq_before: u32,
-    started: Duration,
-    command_count: u32,
-    pu_stride: u32,
-    coeff_stride: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RpividPhase2Pending {
-    irq_before: u32,
-    started: Duration,
-    current_index: usize,
-    config2: u32,
-    layout: RpividFrameLayout,
-}
-
 pub struct RpividDecodedFrame {
     pixels: Vec<u8>,
     width: u32,
@@ -472,58 +454,6 @@ impl RpividWorkspaceStatic {
             .as_mut()
             .expect("RPIVID workspace used before initialization")
             .submit_picture_phase2(picture, picture_index)
-    }
-
-    pub fn begin_picture_phase1(
-        &self,
-        picture: &FirstPictureSyntax,
-        cabac_ebsp: &[u8],
-    ) -> RpividPhase1Pending {
-        assert_eq!(
-            crate::arch::cpu::current_id(),
-            crate::arch::cpu::CpuId::new(1).expect("CPU1 must exist"),
-            "RPIVID phase 1 belongs to CPU1",
-        );
-        self.get_mut()
-            .as_mut()
-            .expect("RPIVID workspace used before initialization")
-            .begin_picture_phase1(picture, cabac_ebsp)
-    }
-
-    pub fn poll_picture_phase1(
-        &self,
-        pending: RpividPhase1Pending,
-    ) -> Option<RpividPhase1Snapshot> {
-        self.get_mut()
-            .as_mut()
-            .expect("RPIVID workspace used before initialization")
-            .poll_picture_phase1(pending)
-    }
-
-    pub fn begin_picture_phase2(
-        &self,
-        picture: &FirstPictureSyntax,
-        picture_index: usize,
-    ) -> RpividPhase2Pending {
-        assert_eq!(
-            crate::arch::cpu::current_id(),
-            crate::arch::cpu::CpuId::new(1).expect("CPU1 must exist"),
-            "RPIVID phase 2 belongs to CPU1",
-        );
-        self.get_mut()
-            .as_mut()
-            .expect("RPIVID workspace used before initialization")
-            .begin_picture_phase2(picture, picture_index)
-    }
-
-    pub fn poll_picture_phase2(
-        &self,
-        pending: RpividPhase2Pending,
-    ) -> Option<RpividPhase2Snapshot> {
-        self.get_mut()
-            .as_mut()
-            .expect("RPIVID workspace used before initialization")
-            .poll_picture_phase2(pending)
     }
 
     pub fn copy_frame_rgbx(
@@ -678,20 +608,6 @@ impl RpividDecodeWorkspace {
         picture: &FirstPictureSyntax,
         cabac_ebsp: &[u8],
     ) -> RpividPhase1Snapshot {
-        let pending = self.begin_picture_phase1(picture, cabac_ebsp);
-        loop {
-            if let Some(snapshot) = self.poll_picture_phase1(pending) {
-                return snapshot;
-            }
-            spin_loop();
-        }
-    }
-
-    fn begin_picture_phase1(
-        &mut self,
-        picture: &FirstPictureSyntax,
-        cabac_ebsp: &[u8],
-    ) -> RpividPhase1Pending {
         let sps = picture.sps;
         let pps = picture.pps;
         let slice = picture.slice;
@@ -749,40 +665,26 @@ impl RpividDecodeWorkspace {
             self.command.hardware_addr().register_value(),
         );
 
-        RpividPhase1Pending {
-            irq_before,
-            started: crate::time::time_manager().uptime(),
+        let started = crate::time::time_manager().uptime();
+        let timeout = Duration::from_millis(250);
+        while super::hevc::HEVC_PLATFORM.irq_count() == irq_before
+            && crate::time::time_manager().uptime().saturating_sub(started) < timeout
+        {
+            spin_loop();
+        }
+
+        let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != irq_before;
+        RpividPhase1Snapshot {
             command_count: self.command.used_commands() as u32,
-            pu_stride: pu_stride as u32,
-            coeff_stride: coeff_stride as u32,
-        }
-    }
-
-    fn poll_picture_phase1(
-        &mut self,
-        pending: RpividPhase1Pending,
-    ) -> Option<RpividPhase1Snapshot> {
-        let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != pending.irq_before;
-        let timed_out = crate::time::time_manager()
-            .uptime()
-            .saturating_sub(pending.started)
-            >= Duration::from_millis(250);
-        if !irq_received && !timed_out {
-            return None;
-        }
-
-        let registers = RpividRegisters::from_resources(super::hevc::HEVC_PLATFORM.resources());
-        Some(RpividPhase1Snapshot {
-            command_count: pending.command_count,
             irq_received,
             cfstatus: registers.hevc.read32(RPI_CFSTATUS),
             cfnum: registers.hevc.read32(RPI_CFNUM),
             status: registers.hevc.read32(RPI_STATUS),
             bfstatus: registers.hevc.read32(RPI_BFSTATUS),
             interrupt_control: registers.intc.read32(ARG_IC_ICTRL),
-            pu_stride: pending.pu_stride,
-            coeff_stride: pending.coeff_stride,
-        })
+            pu_stride: pu_stride as u32,
+            coeff_stride: coeff_stride as u32,
+        }
     }
 
     fn submit_picture_phase2(
@@ -790,20 +692,6 @@ impl RpividDecodeWorkspace {
         picture: &FirstPictureSyntax,
         picture_index: usize,
     ) -> RpividPhase2Snapshot {
-        let pending = self.begin_picture_phase2(picture, picture_index);
-        loop {
-            if let Some(snapshot) = self.poll_picture_phase2(pending) {
-                return snapshot;
-            }
-            spin_loop();
-        }
-    }
-
-    fn begin_picture_phase2(
-        &mut self,
-        picture: &FirstPictureSyntax,
-        picture_index: usize,
-    ) -> RpividPhase2Pending {
         let sps = picture.sps;
         let slice = picture.slice;
         assert!(matches!(slice.slice_type, 1 | 2), "kwv1 phase 2 only supports I/P slices");
@@ -876,6 +764,9 @@ impl RpividDecodeWorkspace {
         registers.hevc.write32(RPI_OUTCBASE, RpividDmaAddress::from_phys(chroma_phys).register_value());
         registers.hevc.write32(RPI_OUTCSTRIDE, frame_stride);
 
+        // Seed every slot with a valid surface. P slices use DPB slot 0 for
+        // their sole L0 reference, which is always the immediately preceding
+        // picture in the constrained kwv1 encoder profile.
         for index in 0..16usize {
             let base = RPI_REF_BASE + index * RPI_REF_STRIDE;
             registers.hevc.write32(base, RpividDmaAddress::from_phys(frame_phys).register_value());
@@ -902,54 +793,40 @@ impl RpividDecodeWorkspace {
 
         registers.hevc.write32(RPI_NUMROWS, picture.ctb_height);
 
-        RpividPhase2Pending {
-            irq_before,
-            started: crate::time::time_manager().uptime(),
-            current_index,
-            config2,
-            layout,
-        }
-    }
-
-    fn poll_picture_phase2(
-        &mut self,
-        pending: RpividPhase2Pending,
-    ) -> Option<RpividPhase2Snapshot> {
-        let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != pending.irq_before;
-        let timed_out = crate::time::time_manager()
-            .uptime()
-            .saturating_sub(pending.started)
-            >= Duration::from_millis(250);
-        if !irq_received && !timed_out {
-            return None;
+        let started = crate::time::time_manager().uptime();
+        let timeout = Duration::from_millis(250);
+        while super::hevc::HEVC_PLATFORM.irq_count() == irq_before
+            && crate::time::time_manager().uptime().saturating_sub(started) < timeout
+        {
+            spin_loop();
         }
 
+        let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != irq_before;
         if irq_received {
-            self.frames[pending.current_index]
+            self.frames[current_index]
                 .as_mut()
                 .expect("RPIVID current frame buffer disappeared after phase 2")
                 .dma
                 .sync_for_cpu();
         }
 
-        let registers = RpividRegisters::from_resources(super::hevc::HEVC_PLATFORM.resources());
-        Some(RpividPhase2Snapshot {
+        RpividPhase2Snapshot {
             irq_received,
             status2: registers.hevc.read32(RPI_STATUS2),
             interrupt_control: registers.intc.read32(ARG_IC_ICTRL),
-            config2: pending.config2,
-            coded_width: pending.layout.coded_width as u32,
-            coded_height: pending.layout.coded_height as u32,
-            storage_width: pending.layout.storage_width as u32,
-            storage_height: pending.layout.storage_height as u32,
-            frame_stride: pending.layout.frame_stride as u32,
-            chroma_offset: pending.layout.chroma_offset as u32,
-            frame_bytes: pending.layout.frame_bytes as u32,
-            colmv_stride: pending.layout.colmv_stride as u32,
+            config2,
+            coded_width: layout.coded_width as u32,
+            coded_height: layout.coded_height as u32,
+            storage_width: layout.storage_width as u32,
+            storage_height: layout.storage_height as u32,
+            frame_stride: layout.frame_stride as u32,
+            chroma_offset: layout.chroma_offset as u32,
+            frame_bytes: layout.frame_bytes as u32,
+            colmv_stride: layout.colmv_stride as u32,
             colmv_bytes: 0,
             output_checksum: 0,
             nonzero_bytes: 0,
-        })
+        }
     }
 
     fn ensure_frame_buffers(&mut self, layout: RpividFrameLayout) {
