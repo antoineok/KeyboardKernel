@@ -40,24 +40,31 @@ SECTIONS
 
     __el2_stack_top = .;
 
-    /* Reserve a private 64 KiB EL1 runtime stack for every CPU. */
+    /* Reserve a larger EL1 runtime stack for every CPU.
+     *
+     * CPU0 performs the allocation-free FDT parse during early boot. That
+     * parser deliberately carries several fixed-capacity tables by value and
+     * can use substantially more stack than the long-lived worker loops.
+     * 256 KiB per core is still only 1 MiB total on a CM4 and gives early
+     * boot plus future graphics/video workers comfortable headroom.
+     */
     . = ALIGN(16);
     __el1_stack_start = .;
 
     __el1_stack_cpu0_start = .;
-    . += 64K;
+    . += 256K;
     __el1_stack_cpu0_top = .;
 
     __el1_stack_cpu1_start = .;
-    . += 64K;
+    . += 256K;
     __el1_stack_cpu1_top = .;
 
     __el1_stack_cpu2_start = .;
-    . += 64K;
+    . += 256K;
     __el1_stack_cpu2_top = .;
 
     __el1_stack_cpu3_start = .;
-    . += 64K;
+    . += 256K;
     __el1_stack_cpu3_top = .;
 
     __el1_stack_top = .;

@@ -36,6 +36,14 @@ pub const MAX_DEPTH: usize = 32;
 pub const MAX_PATH_LEN: usize = 256;
 pub const MAX_ALIASES: usize = 64;
 pub const MAX_ALIAS_NAME_LEN: usize = 31;
+// Requested-compatible discovery is part of the allocation-free early-boot
+// parser and therefore lives on CPU0's EL1 stack. Keep these capacities
+// deliberately small: DeviceEntry embeds its resource array and is carried by
+// both Parser and BootInfo. The CM4 boot path currently requests only the HEVC
+// decoder, which exposes two named register resources.
+pub const MAX_DEVICES: usize = 4;
+pub const MAX_DEVICE_RESOURCES: usize = 4;
+pub const MAX_DEVICE_PROPERTY_CELLS: usize = 8;
 pub const MAX_INDEXED_NODES: usize = 128;
 pub const MAX_RAM_REGIONS: usize = 16;
 pub const MAX_RESERVED_REGIONS: usize = 64;
@@ -72,6 +80,9 @@ pub enum Error {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Capacity {
     Aliases,
+    Devices,
+    DeviceResources,
+    DevicePropertyCells,
     IndexedNodes,
     RamRegions,
     ReservedRegions,
@@ -250,6 +261,202 @@ impl fmt::Debug for AliasTable {
             .debug_struct("AliasTable")
             .field("records", &self.records())
             .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeviceResource {
+    pub name: SmallName,
+    pub entry: AliasEntry,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceCells {
+    cells: [u32; MAX_DEVICE_PROPERTY_CELLS],
+    len: usize,
+}
+
+impl DeviceCells {
+    pub const fn new() -> Self {
+        Self {
+            cells: [0; MAX_DEVICE_PROPERTY_CELLS],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[u32] {
+        &self.cells[..self.len]
+    }
+
+    fn decode(value: Option<&[u8]>) -> Result<Self> {
+        let Some(value) = value else {
+            return Ok(Self::new());
+        };
+
+        if value.len() % 4 != 0 {
+            return Err(Error::InvalidProperty);
+        }
+
+        let cell_count = value.len() / 4;
+        if cell_count > MAX_DEVICE_PROPERTY_CELLS {
+            return Err(Error::CapacityExceeded(Capacity::DevicePropertyCells));
+        }
+
+        let mut decoded = Self::new();
+        for (index, cell) in value.chunks_exact(4).enumerate() {
+            decoded.cells[index] = u32::from_be_bytes([cell[0], cell[1], cell[2], cell[3]]);
+        }
+        decoded.len = cell_count;
+        Ok(decoded)
+    }
+}
+
+impl Default for DeviceCells {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceEntry {
+    resources: [DeviceResource; MAX_DEVICE_RESOURCES],
+    len: usize,
+    interrupts: DeviceCells,
+    clocks: DeviceCells,
+}
+
+impl DeviceEntry {
+    pub const fn new() -> Self {
+        Self {
+            resources: [DeviceResource {
+                name: SmallName::empty(),
+                entry: AliasEntry {
+                    vc_addr: 0,
+                    arm_phys: 0,
+                    size: 0,
+                },
+            }; MAX_DEVICE_RESOURCES],
+            len: 0,
+            interrupts: DeviceCells::new(),
+            clocks: DeviceCells::new(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn resources(&self) -> &[DeviceResource] {
+        &self.resources[..self.len]
+    }
+
+    #[inline]
+    pub fn resource(&self, name: &str) -> Option<AliasEntry> {
+        self.resources()
+            .iter()
+            .find(|resource| resource.name.equals(name))
+            .map(|resource| resource.entry)
+    }
+
+    #[inline(always)]
+    pub fn interrupts(&self) -> &[u32] {
+        self.interrupts.as_slice()
+    }
+
+    #[inline(always)]
+    pub fn clocks(&self) -> &[u32] {
+        self.clocks.as_slice()
+    }
+
+    fn push(&mut self, resource: DeviceResource) -> Result<()> {
+        if self.len == MAX_DEVICE_RESOURCES {
+            return Err(Error::CapacityExceeded(Capacity::DeviceResources));
+        }
+
+        self.resources[self.len] = resource;
+        self.len += 1;
+        Ok(())
+    }
+}
+
+impl Default for DeviceEntry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeviceRecord {
+    pub compatible: SmallName,
+    pub entry: Option<DeviceEntry>,
+}
+
+pub struct DeviceTable {
+    records: [DeviceRecord; MAX_DEVICES],
+    len: usize,
+}
+
+impl DeviceTable {
+    pub fn new() -> Self {
+        Self {
+            records: [DeviceRecord::default(); MAX_DEVICES],
+            len: 0,
+        }
+    }
+
+    pub fn with_requested(requested: &[&str]) -> Result<Self> {
+        let mut table = Self::new();
+
+        for compatible in requested {
+            table.insert_or_get(compatible)?;
+        }
+
+        Ok(table)
+    }
+
+    #[inline(always)]
+    pub fn records(&self) -> &[DeviceRecord] {
+        &self.records[..self.len]
+    }
+
+    #[inline]
+    pub fn get(&self, compatible: &str) -> Option<DeviceEntry> {
+        self.records()
+            .iter()
+            .find(|record| record.compatible.equals(compatible))
+            .and_then(|record| record.entry)
+    }
+
+    fn find_index(&self, compatible: &str) -> Option<usize> {
+        self.records()
+            .iter()
+            .position(|record| record.compatible.equals(compatible))
+    }
+
+    fn insert_or_get(&mut self, compatible: &str) -> Result<usize> {
+        if let Some(index) = self.find_index(compatible) {
+            return Ok(index);
+        }
+
+        if self.len == MAX_DEVICES {
+            return Err(Error::CapacityExceeded(Capacity::Devices));
+        }
+
+        let index = self.len;
+        self.records[index] = DeviceRecord {
+            compatible: SmallName::new(compatible)?,
+            entry: None,
+        };
+        self.len += 1;
+        Ok(index)
+    }
+
+    fn resolve(&mut self, index: usize, entry: DeviceEntry) {
+        self.records[index].entry = Some(entry);
+    }
+}
+
+impl Default for DeviceTable {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -495,6 +702,7 @@ impl fmt::Debug for MemoryLayout {
 
 pub struct BootInfo {
     pub aliases: AliasTable,
+    pub devices: DeviceTable,
     pub memory: MemoryLayout,
 }
 
@@ -507,11 +715,21 @@ impl BootInfo {
         self.aliases.get(name)
     }
 
+    /// Return a previously requested device matched by `compatible`.
+    #[inline(always)]
+    pub fn device(&self, compatible: &str) -> Option<DeviceEntry> {
+        self.devices.get(compatible)
+    }
+
     /// Parse an FDT from a complete byte slice, caching only the requested
     /// aliases while still collecting the complete boot memory layout.
-    pub fn from_bytes(bytes: &[u8], requested_aliases: &[&str]) -> Result<Self> {
+    pub fn from_bytes(
+        bytes: &[u8],
+        requested_aliases: &[&str],
+        requested_devices: &[&str],
+    ) -> Result<Self> {
         let dtb = Dtb::from_bytes(bytes)?;
-        Parser::new(dtb, requested_aliases)?.parse()
+        Parser::new(dtb, requested_aliases, requested_devices)?.parse()
     }
 
     /// Parse an FDT supplied by firmware in memory, caching only the requested
@@ -522,7 +740,11 @@ impl BootInfo {
     /// `pointer` must point to a readable FDT header and to at least the
     /// `totalsize` bytes declared by that header. The memory must remain
     /// readable for the duration of this call.
-    pub unsafe fn from_ptr(pointer: *const u8, requested_aliases: &[&str]) -> Result<Self> {
+    pub unsafe fn from_ptr(
+        pointer: *const u8,
+        requested_aliases: &[&str],
+        requested_devices: &[&str],
+    ) -> Result<Self> {
         if pointer.is_null() {
             return Err(Error::NullPointer);
         }
@@ -535,7 +757,7 @@ impl BootInfo {
         }
 
         let bytes = unsafe { slice::from_raw_parts(pointer, total_size) };
-        Self::from_bytes(bytes, requested_aliases)
+        Self::from_bytes(bytes, requested_aliases, requested_devices)
     }
 }
 
@@ -688,6 +910,9 @@ struct NodeFrame<'a> {
     child_size_cells: u32,
 
     reg: Option<&'a [u8]>,
+    reg_names: Option<&'a [u8]>,
+    interrupts: Option<&'a [u8]>,
+    clocks: Option<&'a [u8]>,
     ranges: Option<&'a [u8]>,
     ranges_present: bool,
 
@@ -714,6 +939,9 @@ impl<'a> NodeFrame<'a> {
             child_address_cells: 2,
             child_size_cells: 1,
             reg: None,
+            reg_names: None,
+            interrupts: None,
+            clocks: None,
             ranges: None,
             ranges_present: false,
             device_type: None,
@@ -755,6 +983,7 @@ struct Parser<'a> {
     dtb: Dtb<'a>,
 
     aliases: AliasTable,
+    devices: DeviceTable,
     pending_aliases: [PendingAlias<'a>; MAX_ALIASES],
 
     indexed_nodes: [IndexedNode; MAX_INDEXED_NODES],
@@ -773,12 +1002,14 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(dtb: Dtb<'a>, requested_aliases: &[&str]) -> Result<Self> {
+    fn new(dtb: Dtb<'a>, requested_aliases: &[&str], requested_devices: &[&str]) -> Result<Self> {
         let aliases = AliasTable::with_requested(requested_aliases)?;
+        let devices = DeviceTable::with_requested(requested_devices)?;
 
         let mut parser = Self {
             dtb,
             aliases,
+            devices,
             pending_aliases: [PendingAlias::default(); MAX_ALIASES],
             indexed_nodes: [IndexedNode::default(); MAX_INDEXED_NODES],
             indexed_node_len: 0,
@@ -856,6 +1087,7 @@ impl<'a> Parser<'a> {
 
         Ok(BootInfo {
             aliases: self.aliases,
+            devices: self.devices,
             memory: self.memory,
         })
     }
@@ -954,6 +1186,9 @@ impl<'a> Parser<'a> {
             }
 
             "reg" => frame.reg = Some(value),
+            "reg-names" => frame.reg_names = Some(value),
+            "interrupts" => frame.interrupts = Some(value),
+            "clocks" => frame.clocks = Some(value),
 
             "ranges" => {
                 frame.ranges_present = true;
@@ -1023,6 +1258,17 @@ impl<'a> Parser<'a> {
                 self.index_current_node(entry)?;
                 self.resolve_aliases_for_current_path(entry);
             }
+        }
+
+        if let (Some(compatible), Some(reg)) = (frame.compatible, frame.reg) {
+            self.resolve_requested_devices(
+                index,
+                compatible,
+                reg,
+                frame.reg_names,
+                frame.interrupts,
+                frame.clocks,
+            )?;
         }
 
         if frame.is_memory() {
@@ -1108,6 +1354,102 @@ impl<'a> Parser<'a> {
         }
 
         Ok(())
+    }
+
+    fn resolve_requested_devices(
+        &mut self,
+        node_index: usize,
+        compatible: &'a [u8],
+        reg: &'a [u8],
+        reg_names: Option<&'a [u8]>,
+        interrupts: Option<&'a [u8]>,
+        clocks: Option<&'a [u8]>,
+    ) -> Result<()> {
+        let mut matched = [false; MAX_DEVICES];
+        let mut any_match = false;
+
+        for (index, record) in self.devices.records().iter().enumerate() {
+            if record.entry.is_none()
+                && string_list_contains(compatible, record.compatible.as_str())
+            {
+                matched[index] = true;
+                any_match = true;
+            }
+        }
+
+        if !any_match {
+            return Ok(());
+        }
+
+        let entry = self.decode_device_entry(node_index, reg, reg_names, interrupts, clocks)?;
+
+        for (index, is_match) in matched[..self.devices.len].iter().copied().enumerate() {
+            if is_match {
+                self.devices.resolve(index, entry);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn decode_device_entry(
+        &self,
+        node_index: usize,
+        data: &'a [u8],
+        reg_names: Option<&'a [u8]>,
+        interrupts: Option<&'a [u8]>,
+        clocks: Option<&'a [u8]>,
+    ) -> Result<DeviceEntry> {
+        let parent = self.parent_frame(node_index)?;
+        let address_cells = parent.child_address_cells;
+        let size_cells = parent.child_size_cells;
+
+        ensure_address_cells(address_cells)?;
+        ensure_size_cells(size_cells)?;
+
+        let tuple_cells = address_cells
+            .checked_add(size_cells)
+            .ok_or(Error::InvalidRegLength)? as usize;
+        let tuple_bytes = tuple_cells.checked_mul(4).ok_or(Error::InvalidRegLength)?;
+
+        if tuple_bytes == 0 || data.len() % tuple_bytes != 0 {
+            return Err(Error::InvalidRegLength);
+        }
+
+        let mut entry = DeviceEntry::new();
+
+        for (index, tuple) in data.chunks_exact(tuple_bytes).enumerate() {
+            let bus_address = decode_cells(&tuple[..address_cells as usize * 4], address_cells)?;
+            let size_offset = address_cells as usize * 4;
+            let size = decode_cells(
+                &tuple[size_offset..size_offset + size_cells as usize * 4],
+                size_cells,
+            )?;
+
+            if size == 0 {
+                continue;
+            }
+
+            let physical = self.translate_address(node_index, bus_address, size)?;
+            let name = match reg_names {
+                Some(names) => string_list_get(names, index)?.ok_or(Error::InvalidProperty)?,
+                None => "",
+            };
+
+            entry.push(DeviceResource {
+                name: SmallName::new(name)?,
+                entry: AliasEntry {
+                    vc_addr: bus_address,
+                    arm_phys: physical,
+                    size,
+                },
+            })?;
+        }
+
+        entry.interrupts = DeviceCells::decode(interrupts)?;
+        entry.clocks = DeviceCells::decode(clocks)?;
+
+        Ok(entry)
     }
 
     fn resolve_aliases_for_current_path(&mut self, entry: AliasEntry) {
@@ -1494,6 +1836,29 @@ fn string_list_contains(value: &[u8], needle: &str) -> bool {
     value
         .split(|byte| *byte == 0)
         .any(|part| part == needle.as_bytes())
+}
+
+fn string_list_get(value: &[u8], requested_index: usize) -> Result<Option<&str>> {
+    let mut start = 0usize;
+    let mut index = 0usize;
+
+    while start < value.len() {
+        let relative_end = value[start..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(Error::Truncated)?;
+        let end = start + relative_end;
+        let item = str::from_utf8(&value[start..end]).map_err(|_| Error::InvalidUtf8)?;
+
+        if index == requested_index {
+            return Ok(Some(item));
+        }
+
+        index += 1;
+        start = end + 1;
+    }
+
+    Ok(None)
 }
 
 fn read_cstr(bytes: &[u8]) -> Result<&str> {

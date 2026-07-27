@@ -12,12 +12,13 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::memory::phys::PHYS_ALLOCATOR;
 use crate::memory::PhysSize;
 
 const PAGE_SIZE: PhysSize = 4096;
-const HEAP_PAGES: usize = 16 * 1024; // 64 MiB: 16,384 * 4 KiB
+const HEAP_PAGES: usize = 32 * 1024; // 128 MiB: room for resident compressed video + graphics queues
 
 #[repr(C)]
 struct FreeBlock {
@@ -59,8 +60,7 @@ impl KernelHeap {
 
         let pages = HEAP_PAGES;
         let pa = PHYS_ALLOCATOR
-            .get_mut()
-            .alloc_contiguous(pages)
+            .with_mut(|allocator| unsafe { allocator.alloc_contiguous(pages) })
             .expect("KernelHeap: failed to allocate heap region from PHYS_ALLOCATOR");
 
         let size_bytes = (pages as u64) * PAGE_SIZE;
@@ -270,19 +270,45 @@ fn align_up(addr: usize, align: usize) -> usize {
     let mask = align - 1;
     (addr + mask) & !mask
 }
-pub struct KernelHeapStatic(UnsafeCell<KernelHeap>);
+pub struct KernelHeapStatic {
+    heap: UnsafeCell<KernelHeap>,
+    locked: AtomicBool,
+}
 
 unsafe impl Sync for KernelHeapStatic {}
 
-pub static KERNEL_HEAP: KernelHeapStatic = KernelHeapStatic(UnsafeCell::new(KernelHeap::new()));
+pub static KERNEL_HEAP: KernelHeapStatic = KernelHeapStatic {
+    heap: UnsafeCell::new(KernelHeap::new()),
+    locked: AtomicBool::new(false),
+};
 
 impl KernelHeapStatic {
-    pub fn get_mut(&self) -> &mut KernelHeap {
-        unsafe { &mut *self.0.get() }
+    fn lock(&self) {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
     }
 
-    pub fn get(&self) -> &KernelHeap {
-        unsafe { &*self.0.get() }
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut KernelHeap) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &mut *self.heap.get() });
+        self.unlock();
+        result
+    }
+
+    pub fn with_ref<R>(&self, f: impl FnOnce(&KernelHeap) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &*self.heap.get() });
+        self.unlock();
+        result
     }
 }
 
@@ -290,11 +316,11 @@ pub struct KernelAllocator;
 
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        KERNEL_HEAP.get_mut().alloc(layout)
+        KERNEL_HEAP.with_mut(|heap| unsafe { heap.alloc(layout) })
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        KERNEL_HEAP.get_mut().dealloc(ptr, layout)
+        KERNEL_HEAP.with_mut(|heap| unsafe { heap.dealloc(ptr, layout) })
     }
 }
 
@@ -303,5 +329,5 @@ static GLOBAL_ALLOCATOR: KernelAllocator = KernelAllocator;
 
 /// Public init entry for the heap.
 pub unsafe fn init_heap() {
-    KERNEL_HEAP.get_mut().init();
+    KERNEL_HEAP.with_mut(|heap| unsafe { heap.init() });
 }

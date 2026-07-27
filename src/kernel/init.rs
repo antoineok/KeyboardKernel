@@ -1,5 +1,8 @@
 use crate::{
-    arch::mmu,
+    arch::{
+        gic::{GIC_COMPATIBLE, GIC_PLATFORM},
+        mmu,
+    },
     drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART},
     early_timeit,
     fdt::BootInfo,
@@ -10,6 +13,7 @@ use crate::{
         fs::vfs::{FsId, VFS},
         partition::mbr,
     },
+    video::hevc::{HEVC_COMPATIBLE, HEVC_PLATFORM},
 };
 
 extern "C" {
@@ -29,12 +33,17 @@ extern "C" {
 }
 
 const REQUIRED_ALIASES: &[&str] = &["gpio", "aux", "mailbox", "mmc0", "watchdog", "usb"];
+const REQUIRED_DEVICES: &[&str] = &[HEVC_COMPATIBLE, GIC_COMPATIBLE];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let boot_info = early_timeit!("Parse boot FDT", {
         unsafe {
-            BootInfo::from_ptr(device_tree_ptr as *const u8, REQUIRED_ALIASES)
-                .expect("Invalid boot FDT")
+            BootInfo::from_ptr(
+                device_tree_ptr as *const u8,
+                REQUIRED_ALIASES,
+                REQUIRED_DEVICES,
+            )
+            .expect("Invalid boot FDT")
         }
     });
 
@@ -73,6 +82,14 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     if !watchdog.is_initialized() {
         panic!("Watchdog FAILED TO INITIALIZE!");
     }
+
+    early_timeit!("HEVC decoder discovery", {
+        HEVC_PLATFORM.init(boot_info.device(HEVC_COMPATIBLE));
+    });
+
+    early_timeit!("GICv2 discovery", {
+        GIC_PLATFORM.init(boot_info.device(GIC_COMPATIBLE));
+    });
 
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
     //bt.init(mmio_table.entries.get("bluetooth"));
@@ -132,16 +149,40 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let mmu = early_timeit!("MMU page-table build", { mmu::map_kernel_and_mmio() });
 
     crate::info!(
-        "Enabling EL1 MMU with TTBR0={:#018x} (data cache remains disabled)",
+        "Enabling EL1 MMU with TTBR0={:#018x} and coherent data cache",
         mmu.l1_phys()
     );
     early_timeit!("MMU enable", {
         mmu.enable();
     });
     assert!(mmu::is_enabled(), "EL1 MMU failed to enable");
-    crate::info!("EL1 MMU enabled");
+    assert!(
+        mmu::is_data_cache_enabled(),
+        "EL1 data cache failed to enable"
+    );
+    crate::info!("EL1 MMU and data cache enabled");
+
+    early_timeit!("GICv2 register probe", {
+        GIC_PLATFORM.probe();
+    });
+
+    early_timeit!("HEVC clock enable", {
+        HEVC_PLATFORM.enable_clock(mailbox);
+    });
+
+    early_timeit!("HEVC register probe", {
+        HEVC_PLATFORM.probe_hardware();
+    });
+
+    early_timeit!("HEVC interrupt-controller init", {
+        HEVC_PLATFORM.initialize_interrupt_controller();
+    });
 
     init_phys_allocator();
+
+    early_timeit!("HEVC decode workspace", {
+        crate::video::rpivid::initialize_decode_workspace(1366, 768);
+    });
 
     early_timeit!("USB power domain", {
         if !mailbox.set_power_state(mailbox::POWER_DEVICE_USB_HCD, true, true) {
@@ -178,7 +219,7 @@ unsafe fn init_boot_allocator() {
 unsafe fn init_phys_allocator() {
     let mm = MEMORY_MANAGER.get().map();
     early_timeit!("Physical allocator init", {
-        PHYS_ALLOCATOR.get_mut().init_from_memory_map(mm);
+        PHYS_ALLOCATOR.with_mut(|allocator| allocator.init_from_memory_map(mm));
     });
 
     // 6) Kernel heap
@@ -209,7 +250,8 @@ pub fn init_vfs() {
     let boot = BOOT_SLICE.get().as_ref().unwrap();
     let rom = ROM_SLICE.get().as_ref().unwrap();
 
-    let vfs = VFS.get_mut();
-    vfs.mount_fat32(FsId::Boot, boot).unwrap();
-    vfs.mount_fat32(FsId::Rom, rom).unwrap();
+    VFS.with_mut(|vfs| {
+        vfs.mount_fat32(FsId::Boot, boot).unwrap();
+        vfs.mount_fat32(FsId::Rom, rom).unwrap();
+    });
 }

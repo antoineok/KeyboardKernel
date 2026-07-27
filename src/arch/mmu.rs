@@ -9,9 +9,9 @@
 //!
 //! Normal RAM is mapped cacheable, shared DMA memory is mapped as normal
 //! non-cacheable memory, and the BCM2711 peripheral window is mapped as
-//! Device-nGnRE. The first bring-up enables the MMU and instruction cache but
-//! intentionally leaves the data cache disabled until shared-memory cache
-//! maintenance is implemented for mailbox/DMA users.
+//! Device-nGnRE. EL1 enables both instruction and data caches; buffers shared
+//! with non-coherent devices are either mapped Normal-NC or synchronized with
+//! explicit cache maintenance.
 
 #![allow(dead_code)]
 
@@ -191,10 +191,9 @@ impl Mmu {
 
     /// Enable the EL1 MMU using this translation table.
     ///
-    /// The data cache intentionally remains disabled. This keeps the existing
-    /// mailbox, framebuffer and DMA behaviour coherent during the first MMU
-    /// bring-up. A later cache-specific change can enable SCTLR_EL1.C once all
-    /// shared-memory users have explicit cache maintenance or uncached aliases.
+    /// Normal RAM becomes write-back cacheable. Shared framebuffer/DMA ranges
+    /// remain Normal-NC, while cacheable buffers exchanged with non-coherent
+    /// devices use explicit cache maintenance in their drivers.
     pub unsafe fn enable(&self) {
         // Publish the root before CPU0 can later release any secondary CPU.
         KERNEL_L1_PHYS.store(self.l1_phys, Ordering::Release);
@@ -406,6 +405,12 @@ unsafe fn enable_translation_root(l1_phys: PhysAddr) {
         options(nostack, preserves_flags),
     );
 
+    // The armstub disables caching before entering the kernel but does not
+    // invalidate residual per-core L1 data-cache state. Discard it before this
+    // CPU starts allocating cacheable lines, otherwise a secondary CPU can
+    // resurrect stale data left by firmware when SCTLR_EL1.C becomes set.
+    crate::arch::cache::invalidate_l1_data_cache();
+
     let mut sctlr: u64;
     asm!(
         "mrs {value}, sctlr_el1",
@@ -413,10 +418,10 @@ unsafe fn enable_translation_root(l1_phys: PhysAddr) {
         options(nomem, nostack, preserves_flags),
     );
 
-    // Keep D-cache disabled until shared-memory/cache-coherency handling is
-    // explicitly completed for every DMA user.
-    sctlr |= SCTLR_M | SCTLR_I;
-    sctlr &= !SCTLR_C;
+    // Normal RAM is Inner Shareable WB, so the Cortex-A72 cores participate in
+    // hardware cache coherency once SCTLR_EL1.C is enabled. Non-coherent device
+    // buffers are either mapped Normal-NC or synchronized explicitly.
+    sctlr |= SCTLR_M | SCTLR_C | SCTLR_I;
 
     asm!(
         "msr sctlr_el1, {value}",
@@ -440,6 +445,12 @@ pub fn is_enabled() -> bool {
     }
 
     sctlr & SCTLR_M != 0
+}
+
+/// Return whether the EL1 data/unified cache is currently enabled.
+#[inline(always)]
+pub fn is_data_cache_enabled() -> bool {
+    crate::arch::cache::data_cache_enabled()
 }
 
 /// Build the initial identity-mapped EL1 address space.

@@ -62,8 +62,11 @@ pub enum EmmcCommand {
     SendOpCond = 1,        // CMD1 (eMMC/MMC)
     AllSendCid = 2,        // CMD2
     SendRelativeAddr = 3,  // CMD3 (MMC: host assigns RCA)
+    Switch = 6,            // CMD6 (MMC SWITCH)
     SelectCard = 7,        // CMD7
+    SendExtCsd = 8,        // CMD8 (MMC SEND_EXT_CSD)
     StopTransmission = 12, // CMD12
+    SendStatus = 13,       // CMD13
     SetBlockLen = 16,      // CMD16
     ReadSingleBlock = 17,  // CMD17
     WriteSingleBlock = 24, // CMD24
@@ -108,6 +111,21 @@ fn cmdtm_encode(cmd: EmmcCommand, resp: CmdRespType, flags: u32) -> u32 {
 const STATUS_CMD_INHIBIT: u32 = 1 << 0;
 const STATUS_DAT_INHIBIT: u32 = 1 << 1;
 
+// MMC R1 card-status bits.
+const R1_ERROR_MASK: u32 = 0xFFF9_A000 | (1 << 7);
+const R1_READY_FOR_DATA: u32 = 1 << 8;
+const R1_CURRENT_STATE_MASK: u32 = 0xF << 9;
+const R1_CURRENT_STATE_SHIFT: u32 = 9;
+const R1_STATE_TRAN: u32 = 4;
+
+// eMMC EXT_CSD fields used for durable write barriers.
+const EXT_CSD_FLUSH_CACHE: u8 = 32;
+const EXT_CSD_CACHE_CTRL: usize = 33;
+const EXT_CSD_REV: usize = 192;
+const EXT_CSD_CACHE_SIZE: usize = 249;
+const MMC_SWITCH_MODE_WRITE_BYTE: u32 = 0x03;
+const EXT_CSD_CMD_SET_NORMAL: u32 = 1;
+
 //--------------------------------------------------------------------------------------------------
 // INTERRUPT bits (W1C)
 //--------------------------------------------------------------------------------------------------
@@ -147,6 +165,7 @@ pub enum EmmcError {
     Timeout(&'static str),
     IrqError(u32),
     InhibitStuck(u32),
+    CardStatus(u32),
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -156,6 +175,9 @@ pub struct Emmc {
     initialized: bool,
     rca: u16,
     base: Address,
+    ext_csd_rev: u8,
+    cache_size_kib: u32,
+    cache_enabled: bool,
 }
 
 impl Emmc {
@@ -164,6 +186,9 @@ impl Emmc {
             initialized: false,
             rca: 0,
             base: Address(0),
+            ext_csd_rev: 0,
+            cache_size_kib: 0,
+            cache_enabled: false,
         }
     }
 
@@ -344,6 +369,135 @@ impl Emmc {
                 .map_err(|_| EmmcError::InhibitStuck(self.reg(EmmcReg::Status).read()))?;
         }
 
+        Ok(())
+    }
+
+    fn read_ext_csd(&self, out: &mut [u8; EMMC_BLOCK_SIZE]) -> Result<(), EmmcError> {
+        self.wait_cmd_inhibit_clear()
+            .map_err(|_| EmmcError::InhibitStuck(self.reg(EmmcReg::Status).read()))?;
+        self.wait_dat_inhibit_clear()
+            .map_err(|_| EmmcError::InhibitStuck(self.reg(EmmcReg::Status).read()))?;
+
+        self.reg(EmmcReg::BlkSizeCnt)
+            .write(((1u32) << 16) | (EMMC_BLOCK_SIZE as u32));
+        self.clear_all_interrupts();
+        self.reg(EmmcReg::Arg1).write(0);
+
+        let cmdtm = cmdtm_encode(
+            EmmcCommand::SendExtCsd,
+            CmdRespType::R48,
+            (CmdFlag::IsData as u32)
+                | (CmdFlag::CrcChkEn as u32)
+                | (CmdFlag::IxChkEn as u32)
+                | (XferFlag::BlkCntEn as u32)
+                | (XferFlag::DataDirRead as u32),
+        );
+        self.reg(EmmcReg::CmdTm).write(cmdtm);
+        Self::barrier_io();
+
+        let intr = self.reg(EmmcReg::Interrupt);
+        let intrc = intr;
+        Self::wait_while(
+            || (intrc.read() & (IRQ_READ_RDY | IRQ_ERR)) == 0,
+            4_000_000,
+            "EXT_CSD_READ_RDY",
+        )?;
+
+        let v = intr.read();
+        if (v & IRQ_ERR) != 0 || (v & 0xFFFF_0000) != 0 {
+            self.clear_interrupts(v);
+            return Err(EmmcError::IrqError(v));
+        }
+        self.clear_interrupts(v);
+
+        for i in 0..128 {
+            let word = self.reg(EmmcReg::Data).read();
+            out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+
+        let intrc2 = intr;
+        Self::wait_while(
+            || (intrc2.read() & (IRQ_DATA_DONE | IRQ_ERR)) == 0,
+            4_000_000,
+            "EXT_CSD_DATA_DONE",
+        )?;
+
+        let v2 = intr.read();
+        if (v2 & IRQ_ERR) != 0 || (v2 & 0xFFFF_0000) != 0 {
+            self.clear_interrupts(v2);
+            return Err(EmmcError::IrqError(v2));
+        }
+        self.clear_interrupts(v2);
+        Ok(())
+    }
+
+    fn card_status(&self) -> Result<u32, EmmcError> {
+        self.send_cmd(
+            EmmcCommand::SendStatus,
+            (self.rca as u32) << 16,
+            CmdRespType::R48,
+            (CmdFlag::CrcChkEn as u32) | (CmdFlag::IxChkEn as u32),
+        )?;
+        Ok(self.reg(EmmcReg::Resp0).read())
+    }
+
+    fn wait_ready_for_data(&self) -> Result<u32, EmmcError> {
+        for _ in 0..10_000 {
+            let status = self.card_status()?;
+            if (status & R1_ERROR_MASK) != 0 {
+                return Err(EmmcError::CardStatus(status));
+            }
+
+            let state = (status & R1_CURRENT_STATE_MASK) >> R1_CURRENT_STATE_SHIFT;
+            if (status & R1_READY_FOR_DATA) != 0 && state == R1_STATE_TRAN {
+                return Ok(status);
+            }
+
+            crate::time::time_manager().spin_for(Duration::from_millis(1));
+        }
+
+        Err(EmmcError::Timeout("READY_FOR_DATA"))
+    }
+
+    fn switch_ext_csd_byte(&self, index: u8, value: u8) -> Result<(), EmmcError> {
+        let arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24)
+            | ((index as u32) << 16)
+            | ((value as u32) << 8)
+            | EXT_CSD_CMD_SET_NORMAL;
+
+        self.send_cmd(
+            EmmcCommand::Switch,
+            arg,
+            CmdRespType::R48Busy,
+            (CmdFlag::CrcChkEn as u32) | (CmdFlag::IxChkEn as u32),
+        )?;
+
+        let status = self.reg(EmmcReg::Resp0).read();
+        if (status & R1_ERROR_MASK) != 0 {
+            return Err(EmmcError::CardStatus(status));
+        }
+        Ok(())
+    }
+
+    /// Make all completed writes durable before a filesystem integrity boundary.
+    pub fn flush(&self) -> Result<(), EmmcError> {
+        if !self.initialized {
+            return Err(EmmcError::NotInitialized);
+        }
+
+        // First ensure any outstanding programming operation has completed.
+        self.wait_ready_for_data()?;
+
+        // eMMC devices with CACHE_CTRL enabled require FLUSH_CACHE to push the
+        // volatile device cache to non-volatile storage.
+        if self.cache_enabled && self.cache_size_kib != 0 {
+            self.switch_ext_csd_byte(EXT_CSD_FLUSH_CACHE, 1)?;
+        }
+
+        // CMD6 uses R1b, but finish with an explicit card-state check as the
+        // durability boundary consumed by the block/filesystem layers.
+        self.wait_ready_for_data()?;
+        Self::barrier_io();
         Ok(())
     }
 
@@ -566,6 +720,32 @@ impl Emmc {
             dump_regs("CMD16_FAIL", self);
             return;
         }
+
+        // Read EXT_CSD while the card is selected so write-cache durability
+        // can be handled correctly by BlockDevice::flush().
+        let mut ext_csd = [0u8; EMMC_BLOCK_SIZE];
+        if let Err(e) = self.read_ext_csd(&mut ext_csd) {
+            warn!("CMD8 SEND_EXT_CSD failed: {:?}", e);
+            dump_regs("EXT_CSD_FAIL", self);
+            return;
+        }
+
+        self.ext_csd_rev = ext_csd[EXT_CSD_REV];
+        self.cache_size_kib = if self.ext_csd_rev >= 6 {
+            u32::from_le_bytes([
+                ext_csd[EXT_CSD_CACHE_SIZE],
+                ext_csd[EXT_CSD_CACHE_SIZE + 1],
+                ext_csd[EXT_CSD_CACHE_SIZE + 2],
+                ext_csd[EXT_CSD_CACHE_SIZE + 3],
+            ])
+        } else {
+            0
+        };
+        self.cache_enabled = self.cache_size_kib != 0 && (ext_csd[EXT_CSD_CACHE_CTRL] & 1) != 0;
+        info!(
+            "eMMC EXT_CSD: rev={}, cache={} KiB, cache_enabled={}",
+            self.ext_csd_rev, self.cache_size_kib, self.cache_enabled
+        );
 
         // 11) Data clock
         if let Err(e) = self.set_clock_divided(4) {

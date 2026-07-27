@@ -129,7 +129,7 @@ impl Fat32Volume {
         entry[12] = 0;
 
         dev.write_sector(old_entry.dirent_lba, &sector)?;
-        dev.flush().ok();
+        dev.flush()?;
 
         Ok(())
     }

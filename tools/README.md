@@ -52,3 +52,27 @@ python tools/keywork.py firmware-status
 
 This is a staged file swap (`kernel8.img` / `kernel8.new` / `kernel8.old`), not
 yet a true power-loss-safe A/B boot scheme. Do not remove power during commit.
+
+## Video conversion
+
+Keywork Video v1 (`kwv1`) is a constrained ISO-BMFF/MP4 profile rather than a
+custom container. `tools/kwvideo.py` transcodes an input video to HEVC Main,
+removes non-video tracks, writes a fragmented MP4, and sets the `ftyp` major
+brand to `kwv1`.
+
+```bash
+python tools/kwvideo.py input.mp4 background.kwv
+```
+
+The default output is 1366x768 at 30 fps. The `.kwv` extension is only a
+Keywork asset convention; the file contents remain standard MP4/ISO-BMFF.
+
+Useful options:
+
+```bash
+python tools/kwvideo.py input.mp4 background.kwv \
+    --size 1366x768 \
+    --fit cover \
+    --fps 30 \
+    --crf 24
+```

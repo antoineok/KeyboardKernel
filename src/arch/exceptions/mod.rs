@@ -35,6 +35,39 @@ pub struct Registers {
 // Public Code
 //--------------------------------------------------------------------------------------------------
 
+#[inline(always)]
+pub fn unmask_irq() {
+    unsafe {
+        core::arch::asm!("msr daifclr, #2", "isb", options(nostack, preserves_flags),);
+    }
+}
+
+#[inline(always)]
+pub fn mask_irq() {
+    unsafe {
+        core::arch::asm!("msr daifset, #2", "isb", options(nostack, preserves_flags),);
+    }
+}
+
+fn handle_irq() -> bool {
+    let Some(ack) = crate::arch::gic::GIC_PLATFORM.acknowledge() else {
+        // GICv2 returns a spurious INTID when the vector was taken without a
+        // deliverable interrupt. There is nothing to EOI in that case.
+        return true;
+    };
+
+    let handled = if ack.intid == crate::video::hevc::HEVC_PLATFORM.gic_intid() {
+        crate::video::hevc::HEVC_PLATFORM.handle_irq();
+        true
+    } else {
+        false
+    };
+
+    // Clear the peripheral source before dropping the GIC active state.
+    crate::arch::gic::GIC_PLATFORM.end_interrupt(ack);
+    handled
+}
+
 impl PrivilegeLevel {
     pub fn is_kernel(&self) -> bool {
         *self == PrivilegeLevel::Kernel
@@ -77,6 +110,10 @@ impl PrivilegeLevel {
 
 #[no_mangle]
 pub extern "C" fn el1_handler(exception_number: u64, sp: u64, regs: *const Registers) {
+    if matches!(exception_number, 1 | 5) && handle_irq() {
+        return;
+    }
+
     use crate::{error, info, warn};
     let regs = unsafe { &*regs };
 

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, mem::size_of};
+
+use crate::arch::cache::{clean_data_range_to_poc, invalidate_data_range_to_poc};
 
 use crate::{drivers::address::Address, fdt::AliasEntry};
 
@@ -20,12 +22,15 @@ pub const MBOX_CH_COUNT: u8 = 7;
 pub const MBOX_CH_PROP: u8 = 8; // Request from ARM for response by VideoCore
 pub const MBOX_TAG_SETPOWER: u32 = 0x28001;
 pub const POWER_DEVICE_USB_HCD: u32 = 3;
-pub const MBOX_TAG_SETCLKRATE: u32 = 0x38002;
+pub const MBOX_TAG_GETCLKMAXRATE: u32 = 0x0003_0004;
+pub const MBOX_TAG_SETCLKSTATE: u32 = 0x0003_8001;
+pub const MBOX_TAG_SETCLKRATE: u32 = 0x0003_8002;
 
 pub const MBOX_TAG_SETALPHAMODE: u32 = 0x0004_8007;
 pub const MBOX_TAG_SETPHYWH: u32 = 0x48003;
 pub const MBOX_TAG_SETVIRTWH: u32 = 0x48004;
 pub const MBOX_TAG_SETVIRTOFF: u32 = 0x48009;
+pub const MBOX_TAG_SETVSYNC: u32 = 0x0004_800e;
 pub const MBOX_TAG_SETDEPTH: u32 = 0x48005;
 pub const MBOX_TAG_SETPXLORDR: u32 = 0x48006;
 pub const MBOX_TAG_GETFB: u32 = 0x40001;
@@ -33,7 +38,7 @@ pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 
 pub const MBOX_TAG_LAST: u32 = 0;
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 pub struct MailboxBuffer {
     pub(crate) buffer: [u32; 39],
     mbox_read: Address,
@@ -93,9 +98,17 @@ impl MailboxBuffer {
     }
 
     pub fn call(&mut self, channel: u8) -> bool {
-        // Only upper 28 bits of the buffer address are sent; lower 4 bits are the channel
+        // Only upper 28 bits of the buffer address are sent; lower 4 bits are the channel.
         let mbox_ptr = self.as_ptr() as usize as u32;
         let addr = (mbox_ptr & !0xF) | (channel as u32 & 0xF);
+
+        // The property mailbox is not coherent with the Cortex-A72 caches. The
+        // whole object is cache-line aligned so cache maintenance cannot discard
+        // unrelated dirty data from a neighbouring static. Before D-cache is
+        // enabled these helpers deliberately reduce to no-ops.
+        unsafe {
+            clean_data_range_to_poc(self as *const Self as *const u8, size_of::<Self>());
+        }
 
         // Wait until we can write
         while self.mbox_status.read() & MBOX_FULL != 0 {}
@@ -109,11 +122,133 @@ impl MailboxBuffer {
 
             // Is it a reply to our message?
             if self.mbox_read.read() == addr {
+                // VideoCore has finished writing the response. Discard the ARM's
+                // stale cached copy before inspecting the response words.
+                unsafe {
+                    invalidate_data_range_to_poc(
+                        self as *const Self as *const u8,
+                        size_of::<Self>(),
+                    );
+                }
+
                 // Is it successful?
                 return unsafe { core::ptr::read_volatile(&self.buffer[1]) } == MBOX_RESPONSE;
             }
         }
     }
+
+    pub fn get_clock_max_rate(&mut self, clock_id: u32) -> Option<u32> {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 8 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_GETCLKMAXRATE;
+        self.buffer[3] = 8;
+        self.buffer[4] = 0;
+        self.buffer[5] = clock_id;
+        self.buffer[6] = 0;
+
+        self.buffer[7] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return None;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let rate = self.buffer[6];
+
+        if tag_response & 0x8000_0000 == 0 || returned_id != clock_id || rate == 0 {
+            return None;
+        }
+
+        Some(rate)
+    }
+
+    pub fn set_clock_rate(&mut self, clock_id: u32, rate_hz: u32) -> Option<u32> {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 9 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETCLKRATE;
+        self.buffer[3] = 12;
+        self.buffer[4] = 0;
+        self.buffer[5] = clock_id;
+        self.buffer[6] = rate_hz;
+        self.buffer[7] = 1; // Skip enabling global turbo settings.
+
+        self.buffer[8] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return None;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let actual_rate = self.buffer[6];
+
+        if tag_response & 0x8000_0000 == 0 || returned_id != clock_id || actual_rate == 0 {
+            return None;
+        }
+
+        Some(actual_rate)
+    }
+
+    pub fn set_clock_state(&mut self, clock_id: u32, on: bool) -> bool {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 8 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETCLKSTATE;
+        self.buffer[3] = 8;
+        self.buffer[4] = 0;
+        self.buffer[5] = clock_id;
+        self.buffer[6] = u32::from(on);
+
+        self.buffer[7] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return false;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let returned_state = self.buffer[6];
+
+        let tag_succeeded = tag_response & 0x8000_0000 != 0;
+        let clock_exists = returned_state & 0b10 == 0;
+        let actual_on = returned_state & 1 != 0;
+
+        tag_succeeded && returned_id == clock_id && clock_exists && actual_on == on
+    }
+
+    /// Block until the next display vertical synchronization event.
+    ///
+    /// Raspberry Pi's legacy framebuffer driver implements FBIO_WAITFORVSYNC
+    /// using the firmware FRAMEBUFFER_SET_VSYNC property with one dummy u32.
+    pub fn wait_for_vsync(&mut self) -> bool {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 7 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETVSYNC;
+        self.buffer[3] = 4;
+        self.buffer[4] = 0;
+        self.buffer[5] = 0;
+
+        self.buffer[6] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return false;
+        }
+
+        self.buffer[4] & 0x8000_0000 != 0
+    }
+
     pub fn set_power_state(&mut self, device_id: u32, on: bool, wait: bool) -> bool {
         self.buffer.fill(0);
 

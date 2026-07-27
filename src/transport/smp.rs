@@ -1,16 +1,15 @@
 use core::{
-    convert::Infallible,
     hint::spin_loop,
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use crate::{
-    arch::cpu::{current_id, SpscQueue},
-    hid::{ConsumerReport, HostLedState, KeyboardReport, SystemReport},
+    arch::cpu::{current_id, send_event, SpscQueue},
+    hid::{ConsumerReport, KeyboardReport, SystemReport},
     usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
 };
 
-use super::{KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportState};
+use super::{KeyworkTransport, ReceiveStatus, SendStatus, TransportState};
 
 const HID_QUEUE_SLOTS: usize = 33;
 const MANAGEMENT_QUEUE_SLOTS: usize = 3;
@@ -51,7 +50,7 @@ impl ManagementFrame {
     }
 }
 
-static CPU0_TO_CPU2_HID: SpscQueue<HidCommand, HID_QUEUE_SLOTS> = SpscQueue::new();
+static INPUT_TO_CPU2_HID: SpscQueue<HidCommand, HID_QUEUE_SLOTS> = SpscQueue::new();
 static CPU0_TO_CPU2_MANAGEMENT: SpscQueue<ManagementFrame, MANAGEMENT_QUEUE_SLOTS> =
     SpscQueue::new();
 static CPU2_TO_CPU0_MANAGEMENT: SpscQueue<ManagementFrame, MANAGEMENT_QUEUE_SLOTS> =
@@ -61,95 +60,48 @@ static USB_CORE_READY: AtomicBool = AtomicBool::new(false);
 static USB_STATE: AtomicU8 = AtomicU8::new(STATE_DISCONNECTED);
 static USB_HOST_LEDS: AtomicU8 = AtomicU8::new(0);
 
-/// CPU0-side proxy for the USB transport physically owned by CPU2.
+/// CPU0 control-plane bridge for a transport-neutral KWMP response.
 ///
-/// `KeyworkServices` and the management backend remain on CPU0. The proxy
-/// converts their transport operations into fixed-capacity inter-core queues,
-/// while CPU2 continuously polls the real DWC2-backed `USB_TRANSPORT`.
-pub struct UsbCoreProxy;
+/// This does not poll or touch DWC2. CPU2 is the sole USB owner; this function
+/// only publishes a completed management frame to CPU2's outbound mailbox.
+pub(crate) fn try_send_management_to_usb(frame: &[u8]) -> SendStatus {
+    if !decode_state(USB_STATE.load(Ordering::Acquire)).claims_usb_priority() {
+        return SendStatus::Disconnected;
+    }
 
-impl UsbCoreProxy {
-    pub const fn new() -> Self {
-        Self
+    let Some(frame) = ManagementFrame::from_slice(frame) else {
+        return SendStatus::Busy;
+    };
+
+    match CPU0_TO_CPU2_MANAGEMENT.try_push(frame) {
+        Ok(()) => {
+            send_event();
+            SendStatus::Sent
+        }
+        Err(_) => SendStatus::Busy,
     }
 }
 
-impl Default for UsbCoreProxy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeyworkTransport for UsbCoreProxy {
-    type Error = Infallible;
-
-    fn kind(&self) -> TransportKind {
-        TransportKind::Usb
-    }
-
-    fn state(&self) -> TransportState {
-        decode_state(USB_STATE.load(Ordering::Acquire))
-    }
-
-    fn maximum_management_payload(&self) -> usize {
-        MANAGEMENT_FRAME_CAPACITY.saturating_sub(16)
-    }
-
-    fn poll(&mut self) -> Result<(), Self::Error> {
-        // CPU2 polls the actual USB controller continuously.
-        Ok(())
-    }
-
-    fn send_keyboard(&mut self, report: KeyboardReport) -> Result<SendStatus, Self::Error> {
-        Ok(queue_hid(HidCommand::Keyboard(report)))
-    }
-
-    fn send_consumer(&mut self, report: ConsumerReport) -> Result<SendStatus, Self::Error> {
-        Ok(queue_hid(HidCommand::Consumer(report)))
-    }
-
-    fn send_system(&mut self, report: SystemReport) -> Result<SendStatus, Self::Error> {
-        Ok(queue_hid(HidCommand::System(report)))
-    }
-
-    fn host_led_state(&self) -> HostLedState {
-        HostLedState::from_bitmap(USB_HOST_LEDS.load(Ordering::Acquire))
-    }
-
-    fn send_management(&mut self, frame: &[u8]) -> Result<SendStatus, Self::Error> {
-        if !self.state().claims_usb_priority() {
-            return Ok(SendStatus::Disconnected);
-        }
-
-        let Some(frame) = ManagementFrame::from_slice(frame) else {
-            return Ok(SendStatus::Busy);
+/// CPU0 control-plane bridge for a transport-neutral KWMP request received by
+/// CPU2. No USB controller work is performed here.
+pub(crate) fn try_receive_management_from_usb(output: &mut [u8]) -> ReceiveStatus {
+    let Some(required) = CPU2_TO_CPU0_MANAGEMENT.with_front(|frame| frame.length) else {
+        return if decode_state(USB_STATE.load(Ordering::Acquire)).claims_usb_priority() {
+            ReceiveStatus::Empty
+        } else {
+            ReceiveStatus::Disconnected
         };
+    };
 
-        Ok(match CPU0_TO_CPU2_MANAGEMENT.try_push(frame) {
-            Ok(()) => SendStatus::Sent,
-            Err(_) => SendStatus::Busy,
-        })
+    if output.len() < required {
+        return ReceiveStatus::BufferTooSmall { required };
     }
 
-    fn receive_management(&mut self, output: &mut [u8]) -> Result<ReceiveStatus, Self::Error> {
-        let Some(required) = CPU2_TO_CPU0_MANAGEMENT.with_front(|frame| frame.length) else {
-            return Ok(if self.state().claims_usb_priority() {
-                ReceiveStatus::Empty
-            } else {
-                ReceiveStatus::Disconnected
-            });
-        };
-
-        if output.len() < required {
-            return Ok(ReceiveStatus::BufferTooSmall { required });
-        }
-
-        let frame = CPU2_TO_CPU0_MANAGEMENT
-            .try_pop()
-            .expect("management queue front disappeared on its sole consumer");
-        output[..frame.length].copy_from_slice(frame.as_slice());
-        Ok(ReceiveStatus::Received(frame.length))
-    }
+    let frame = CPU2_TO_CPU0_MANAGEMENT
+        .try_pop()
+        .expect("management queue front disappeared on its sole consumer");
+    output[..frame.length].copy_from_slice(frame.as_slice());
+    ReceiveStatus::Received(frame.length)
 }
 
 fn queue_hid(command: HidCommand) -> SendStatus {
@@ -157,10 +109,27 @@ fn queue_hid(command: HidCommand) -> SendStatus {
         return SendStatus::Disconnected;
     }
 
-    match CPU0_TO_CPU2_HID.try_push(command) {
-        Ok(()) => SendStatus::Sent,
+    match INPUT_TO_CPU2_HID.try_push(command) {
+        Ok(()) => {
+            send_event();
+            SendStatus::Sent
+        }
         Err(_) => SendStatus::Busy,
     }
+}
+
+/// Queue transport-neutral HID reports for CPU2. These are intentionally not
+/// tied to CPU0; the future CPU3 key scanner can publish directly here.
+pub(crate) fn queue_keyboard_report(report: KeyboardReport) -> SendStatus {
+    queue_hid(HidCommand::Keyboard(report))
+}
+
+pub(crate) fn queue_consumer_report(report: ConsumerReport) -> SendStatus {
+    queue_hid(HidCommand::Consumer(report))
+}
+
+pub(crate) fn queue_system_report(report: SystemReport) -> SendStatus {
+    queue_hid(HidCommand::System(report))
 }
 
 pub fn usb_core_ready() -> bool {
@@ -182,9 +151,7 @@ pub fn run_usb_transport_core() -> ! {
 
     publish_usb_snapshot(usb);
     USB_CORE_READY.store(true, Ordering::Release);
-    unsafe {
-        core::arch::asm!("sev", options(nomem, nostack, preserves_flags));
-    }
+    send_event();
     crate::info!("{} USB transport worker ready", cpu);
 
     let mut pending_hid: Option<HidCommand> = None;
@@ -206,7 +173,7 @@ pub fn run_usb_transport_core() -> ! {
 
 fn service_hid_queue(usb: &mut crate::usb::UsbTransport, pending: &mut Option<HidCommand>) {
     if pending.is_none() {
-        *pending = CPU0_TO_CPU2_HID.try_pop();
+        *pending = INPUT_TO_CPU2_HID.try_pop();
     }
 
     let Some(command) = *pending else {
@@ -273,11 +240,21 @@ fn service_management_rx(
     if CPU2_TO_CPU0_MANAGEMENT.try_push(frame).is_err() {
         panic!("CPU2 management RX queue became full despite single-producer reservation");
     }
+    send_event();
 }
 
 fn publish_usb_snapshot(usb: &crate::usb::UsbTransport) {
     USB_HOST_LEDS.store(usb.host_led_state().bitmap(), Ordering::Release);
-    USB_STATE.store(encode_state(usb.state()), Ordering::Release);
+
+    let current = encode_state(usb.state());
+    let previous = USB_STATE.swap(current, Ordering::AcqRel);
+    if previous != current {
+        crate::info!(
+            "CPU2 USB transport state changed: {:?} -> {:?}",
+            decode_state(previous),
+            decode_state(current),
+        );
+    }
 }
 
 const fn encode_state(state: TransportState) -> u8 {

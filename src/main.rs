@@ -22,3 +22,4 @@ mod transport;
 mod update;
 mod usb;
 mod util;
+mod video;

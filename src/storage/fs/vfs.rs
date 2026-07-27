@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::string::String;
 use alloc::vec;
@@ -278,6 +279,19 @@ impl<'a> Vfs<'a> {
         Ok(())
     }
 
+    /// Seek a streaming file to an absolute byte offset.
+    ///
+    /// This walks FAT metadata to the target cluster instead of replaying all
+    /// intervening payload sectors, which keeps large video loops and profile
+    /// switches independent of the file's current cursor position.
+    pub fn seek_stream(&self, stream: &mut FileStream, position: usize) -> Result<(), VfsError> {
+        let mount = self.get_mount(stream.fs)?;
+        mount
+            .vol
+            .seek_file(mount.dev, &mut stream.reader, position)?;
+        Ok(())
+    }
+
     /// Advance a streaming file without allocating a temporary buffer.
     pub fn skip_stream(&self, stream: &mut FileStream, mut amount: usize) -> Result<(), VfsError> {
         let expected = stream.position().checked_add(amount).unwrap_or(usize::MAX);
@@ -317,6 +331,13 @@ impl<'a> Vfs<'a> {
     pub fn write_uri(&mut self, uri: &str, data: &[u8]) -> Result<(), VfsError> {
         let (fs, path) = parse_uri(uri)?;
         self.write_fs(fs, path, data)
+    }
+
+    /// Force all completed writes for a mounted filesystem to non-volatile storage.
+    pub fn flush_fs(&self, fs: FsId) -> Result<(), VfsError> {
+        let m = self.get_mount(fs)?;
+        m.dev.flush()?;
+        Ok(())
     }
 
     pub fn rename_fs(&self, fs: FsId, old_path: &str, new_path: &str) -> Result<(), VfsError> {
@@ -422,18 +443,44 @@ fn normalize_path(path: &str) -> Result<String, VfsError> {
 
 //--------------------------------------------------------------------------------------------------
 
-pub struct VfsStatic(UnsafeCell<Vfs<'static>>);
+pub struct VfsStatic {
+    vfs: UnsafeCell<Vfs<'static>>,
+    locked: AtomicBool,
+}
 
 unsafe impl Sync for VfsStatic {}
 
-pub static VFS: VfsStatic = VfsStatic(UnsafeCell::new(Vfs::new()));
+pub static VFS: VfsStatic = VfsStatic {
+    vfs: UnsafeCell::new(Vfs::new()),
+    locked: AtomicBool::new(false),
+};
 
 impl VfsStatic {
-    pub fn get(&self) -> &Vfs<'static> {
-        unsafe { &*self.0.get() }
+    fn lock(&self) {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
     }
 
-    pub fn get_mut(&self) -> &mut Vfs<'static> {
-        unsafe { &mut *self.0.get() }
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+
+    pub fn with_ref<R>(&self, f: impl FnOnce(&Vfs<'static>) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &*self.vfs.get() });
+        self.unlock();
+        result
+    }
+
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut Vfs<'static>) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &mut *self.vfs.get() });
+        self.unlock();
+        result
     }
 }

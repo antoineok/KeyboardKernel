@@ -89,8 +89,13 @@ impl BlockDevice for EmmcBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        // Implementation for flushing eMMC writes
-        Ok(())
+        EMMC.get().flush().map_err(|error| match error {
+            crate::drivers::emmc::EmmcError::Timeout(_) => BlockError::Timeout,
+            crate::drivers::emmc::EmmcError::NotInitialized => {
+                BlockError::Corrupt("emmc not initialized")
+            }
+            _ => BlockError::Io,
+        })
     }
 
     fn sector_count(&self) -> Option<u64> {
