@@ -24,6 +24,9 @@ const STATS_INTERVAL_FRAMES: u64 = 90;
 /// read does not immediately turn into a visible presentation stall.
 const PREPARED_QUEUE_FRAMES: usize = 6;
 const MIN_SAFE_QUEUED_FRAMES: usize = 2;
+/// Bound each background storage transaction so CPU1 never spends a whole
+/// frame period filling the resident compressed-video copy.
+const RESIDENT_PREFETCH_BYTES_PER_PASS: usize = 4 * 1024;
 
 struct PreparedFrame {
     frame: RpividDecodedFrame,
@@ -232,6 +235,23 @@ impl VideoPlayer {
         now: Duration,
         presentation_guard: Duration,
     ) -> Result<(), KwVideoError> {
+        let presentation_imminent = self.pending_present_duration_ticks.is_some()
+            && now
+                .checked_add(presentation_guard)
+                .map(|guard_end| guard_end >= self.next_present_at)
+                .unwrap_or(true);
+
+        // Fill the active video's RAM copy progressively while the display has
+        // comfortable slack. This starts playback from the cached first
+        // fragment immediately instead of blocking profile activation while
+        // the complete .kwv file is copied from eMMC.
+        if !presentation_imminent && !self.asset.resident_complete() {
+            VFS.with_ref(|vfs| {
+                self.asset
+                    .prefetch_resident(vfs, RESIDENT_PREFETCH_BYTES_PER_PASS)
+            })?;
+        }
+
         if self.prepared.len() >= PREPARED_QUEUE_FRAMES {
             return Ok(());
         }
@@ -242,13 +262,7 @@ impl VideoPlayer {
         // here would prevent CPU1 from flipping a frame that is already ready.
         // Keep at least two queued pictures before deferring, so very high-FPS
         // streams degrade by missing a deadline rather than starving forever.
-        if self.prepared.len() >= MIN_SAFE_QUEUED_FRAMES
-            && self.pending_present_duration_ticks.is_some()
-            && now
-                .checked_add(presentation_guard)
-                .map(|guard_end| guard_end >= self.next_present_at)
-                .unwrap_or(true)
-        {
+        if self.prepared.len() >= MIN_SAFE_QUEUED_FRAMES && presentation_imminent {
             self.prepare_deferrals = self.prepare_deferrals.saturating_add(1);
             return Ok(());
         }

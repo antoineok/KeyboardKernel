@@ -1028,17 +1028,17 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, KwVideoError> {
 
 /// A `kwv1` asset prepared for instant profile transitions.
 ///
-/// The complete video stays on FAT/eMMC. Only the ISO-BMFF initialization
-/// segment and first media fragment are pinned in RAM. Because the host muxer
-/// starts every fragment with a keyframe, that cached fragment is sufficient to
-/// begin decoding immediately while the file stream is already positioned at
-/// the next fragment.
+/// The ISO-BMFF initialization segment and first media fragment are pinned in
+/// RAM immediately. The remaining compressed bytes are progressively copied
+/// into a preallocated resident buffer while playback runs, so profile switches
+/// start quickly and steady-state playback becomes entirely storage-free.
 pub struct VideoAsset {
     file_type: FileType,
     metadata: VideoMetadata,
     stream: FileStream,
     bootstrap: Box<[u8]>,
     resident: Box<[u8]>,
+    resident_loaded: usize,
     resident_position: usize,
     first_fragment_offset: usize,
     resume_offset: usize,
@@ -1131,13 +1131,13 @@ impl VideoAsset {
             });
         }
 
-        // Keep the active compressed MP4 resident. FAT/eMMC currently reads one
-        // 512-byte sector per transaction; doing that at each one-second fragment
-        // boundary blocks CPU1 long enough to miss a vblank even with a full
-        // decoded-frame queue. Pay the storage cost once before playback starts.
+        // Reserve the final RAM-backed copy immediately, but only seed it with
+        // the transition bootstrap. CPU1 can start decoding the cached first
+        // fragment now and progressively fill the rest during safe gaps between
+        // presentation deadlines. This preserves stutter-free resident playback
+        // without making a profile switch wait for the complete file to load.
         let mut resident = vec![0u8; file_len];
         resident[..resume_offset].copy_from_slice(&bootstrap);
-        vfs.read_exact_stream(&mut stream, &mut resident[resume_offset..])?;
 
         Ok(Self {
             file_type,
@@ -1145,6 +1145,7 @@ impl VideoAsset {
             stream,
             bootstrap: bootstrap.into_boxed_slice(),
             resident: resident.into_boxed_slice(),
+            resident_loaded: resume_offset,
             resident_position: resume_offset,
             first_fragment_offset,
             resume_offset,
@@ -1174,6 +1175,105 @@ impl VideoAsset {
     #[inline(always)]
     pub fn resident_len(&self) -> usize {
         self.resident.len()
+    }
+
+    #[inline(always)]
+    pub const fn resident_loaded_len(&self) -> usize {
+        self.resident_loaded
+    }
+
+    #[inline(always)]
+    pub fn resident_complete(&self) -> bool {
+        self.resident_loaded == self.resident.len()
+    }
+
+    /// Progressively fill the RAM-backed compressed-video copy.
+    ///
+    /// The FAT reader currently performs one 512-byte eMMC transaction per
+    /// sector, so callers intentionally use a small budget and invoke this only
+    /// outside the presentation guard window. Once complete, fragment playback
+    /// and looping are entirely storage-free.
+    pub fn prefetch_resident(
+        &mut self,
+        vfs: &Vfs<'_>,
+        max_bytes: usize,
+    ) -> Result<usize, KwVideoError> {
+        if max_bytes == 0 || self.resident_complete() {
+            return Ok(0);
+        }
+
+        let end = self
+            .resident_loaded
+            .checked_add(max_bytes)
+            .map(|end| core::cmp::min(end, self.resident.len()))
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let start = self.resident_loaded;
+        let read = vfs.read_stream(&mut self.stream, &mut self.resident[start..end])?;
+        if read == 0 {
+            return Err(KwVideoError::InvalidStructure(
+                "resident KWVIDEO prefetch reached EOF early",
+            ));
+        }
+        self.resident_loaded = self
+            .resident_loaded
+            .checked_add(read)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        Ok(read)
+    }
+
+    fn ensure_resident_through(
+        &mut self,
+        vfs: &Vfs<'_>,
+        end: usize,
+    ) -> Result<(), KwVideoError> {
+        if end > self.resident.len() {
+            return Err(KwVideoError::InvalidStructure(
+                "resident KWVIDEO request escapes file",
+            ));
+        }
+        while self.resident_loaded < end {
+            let remaining = end - self.resident_loaded;
+            self.prefetch_resident(vfs, remaining)?;
+        }
+        Ok(())
+    }
+
+    fn resident_box_header_at(
+        &mut self,
+        vfs: &Vfs<'_>,
+        offset: usize,
+    ) -> Result<super::isobmff::BoxHeader, KwVideoError> {
+        use super::isobmff::{BASIC_BOX_HEADER_SIZE, EXTENDED_BOX_HEADER_SIZE};
+
+        let basic_end = offset
+            .checked_add(BASIC_BOX_HEADER_SIZE)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        self.ensure_resident_through(vfs, basic_end)?;
+
+        let size32 = u32::from_be_bytes([
+            self.resident[offset],
+            self.resident[offset + 1],
+            self.resident[offset + 2],
+            self.resident[offset + 3],
+        ]);
+        let header_end = offset
+            .checked_add(if size32 == 1 {
+                EXTENDED_BOX_HEADER_SIZE
+            } else {
+                BASIC_BOX_HEADER_SIZE
+            })
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        self.ensure_resident_through(vfs, header_end)?;
+
+        let remaining = self
+            .resident
+            .len()
+            .checked_sub(offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        Ok(super::isobmff::BoxHeader::parse(
+            &self.resident[offset..self.resident_loaded],
+            remaining,
+        )?)
     }
 
     /// Cached bytes from file offset zero through the first `mdat`.
@@ -1442,31 +1542,29 @@ impl VideoAsset {
         parse_media_fragment(bytes, self.first_fragment_offset, self.metadata.track_id)
     }
 
-    /// Read the next `moof`/`mdat` pair from eMMC.
+    /// Read the next `moof`/`mdat` pair from the progressively resident copy.
     ///
-    /// Unknown top-level boxes before the next fragment are skipped. The
-    /// returned compressed fragment is owned so decoding can proceed without
-    /// keeping a mutable borrow of the VFS stream.
+    /// Unknown top-level boxes before the next fragment are skipped. If the
+    /// background prefetch has not reached the requested fragment yet, only the
+    /// missing tail is synchronously filled from eMMC as a safety net.
     pub fn read_next_fragment(
         &mut self,
-        _vfs: &Vfs<'_>,
+        vfs: &Vfs<'_>,
     ) -> Result<Option<MediaFragment>, KwVideoError> {
-        let bytes = &self.resident;
         let mut cursor = self.resident_position;
 
         loop {
-            if cursor == bytes.len() {
+            if cursor == self.resident.len() {
                 self.resident_position = cursor;
                 return Ok(None);
             }
-            if cursor > bytes.len() {
+            if cursor > self.resident.len() {
                 return Err(KwVideoError::InvalidStructure(
                     "resident KWVIDEO cursor escaped file",
                 ));
             }
 
-            let remaining = &bytes[cursor..];
-            let header = super::isobmff::BoxHeader::parse(remaining, remaining.len())?;
+            let header = self.resident_box_header_at(vfs, cursor)?;
             let box_start = cursor;
             let box_end = box_start
                 .checked_add(header.box_size())
@@ -1477,12 +1575,16 @@ impl VideoAsset {
                 continue;
             }
 
-            if box_end >= bytes.len() {
+            // The fragment parser needs the complete moof and mdat bytes. In
+            // normal playback progressive prefetch has already brought these
+            // into RAM; this synchronous fill is only a safety net if storage
+            // fell behind the compressed media rate.
+            self.ensure_resident_through(vfs, box_end)?;
+            if box_end >= self.resident.len() {
                 return Err(KwVideoError::MissingFirstMediaFragment);
             }
 
-            let mdat_remaining = &bytes[box_end..];
-            let mdat = super::isobmff::BoxHeader::parse(mdat_remaining, mdat_remaining.len())?;
+            let mdat = self.resident_box_header_at(vfs, box_end)?;
             if mdat.box_type() != MDAT_BOX {
                 return Err(KwVideoError::InvalidStructure(
                     "kwv1 moof is not immediately followed by mdat",
@@ -1491,11 +1593,9 @@ impl VideoAsset {
             let fragment_end = box_end
                 .checked_add(mdat.box_size())
                 .ok_or(KwVideoError::OffsetOverflow)?;
-            let fragment_bytes = bytes
-                .get(box_start..fragment_end)
-                .ok_or(KwVideoError::InvalidStructure(
-                    "resident KWVIDEO fragment escapes file",
-                ))?
+            self.ensure_resident_through(vfs, fragment_end)?;
+
+            let fragment_bytes = self.resident[box_start..fragment_end]
                 .to_vec()
                 .into_boxed_slice();
 
