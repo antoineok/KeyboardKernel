@@ -300,7 +300,17 @@ impl VideoPlayer {
         }
 
         let phase2 = RPIVID_WORKSPACE.submit_picture_phase2(&picture, self.picture_index);
-        assert!(phase2.complete(), "CPU1 RPIVID phase 2 failed");
+        if !phase2.complete() {
+            crate::error!(
+                "CPU1 RPIVID phase2 failure: fragment={}, picture={}, POC={}, STATUS2={:#010x}, intc={:#010x}",
+                self.fragment_index + 1,
+                self.picture_index,
+                slice.pic_order_cnt_lsb,
+                phase2.status2,
+                phase2.interrupt_control,
+            );
+            panic!("CPU1 RPIVID phase 2 failed");
+        }
 
         let pixels = self.spare_pixels.pop().unwrap_or_default();
         let frame = RPIVID_WORKSPACE.copy_frame_rgbx_reuse(

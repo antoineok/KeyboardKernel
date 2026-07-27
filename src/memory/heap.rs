@@ -18,7 +18,7 @@ use crate::memory::phys::PHYS_ALLOCATOR;
 use crate::memory::PhysSize;
 
 const PAGE_SIZE: PhysSize = 4096;
-const HEAP_PAGES: usize = 16 * 1024; // 64 MiB: 16,384 * 4 KiB
+const HEAP_PAGES: usize = 32 * 1024; // 128 MiB: room for resident compressed video + graphics queues
 
 #[repr(C)]
 struct FreeBlock {

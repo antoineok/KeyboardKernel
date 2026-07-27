@@ -27,6 +27,10 @@ pub const KWVIDEO_BRAND: FourCc = FourCc::new(*b"kwv1");
 /// HEVC. Even with nine profile/fallback videos, the hard ceiling remains
 /// bounded instead of letting media assets consume the complete kernel heap.
 pub const MAX_TRANSITION_BOOTSTRAP_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum compressed KWVIDEO file kept resident for stutter-free playback.
+/// The active video is read from eMMC once when playback starts; fragment
+/// iteration thereafter is memory-only.
+pub const MAX_RESIDENT_KWVIDEO_BYTES: usize = 64 * 1024 * 1024;
 
 /// Eight configurable profiles plus the optional fallback visual profile.
 pub const VIDEO_PROFILE_SLOT_COUNT: usize = 9;
@@ -1034,6 +1038,8 @@ pub struct VideoAsset {
     metadata: VideoMetadata,
     stream: FileStream,
     bootstrap: Box<[u8]>,
+    resident: Box<[u8]>,
+    resident_position: usize,
     first_fragment_offset: usize,
     resume_offset: usize,
 }
@@ -1117,11 +1123,29 @@ impl VideoAsset {
 
         let metadata = parse_video_metadata(&bootstrap, first_fragment_offset)?;
 
+        let file_len = stream.len();
+        if file_len > MAX_RESIDENT_KWVIDEO_BYTES {
+            return Err(KwVideoError::ResidentVideoTooLarge {
+                required: file_len,
+                maximum: MAX_RESIDENT_KWVIDEO_BYTES,
+            });
+        }
+
+        // Keep the active compressed MP4 resident. FAT/eMMC currently reads one
+        // 512-byte sector per transaction; doing that at each one-second fragment
+        // boundary blocks CPU1 long enough to miss a vblank even with a full
+        // decoded-frame queue. Pay the storage cost once before playback starts.
+        let mut resident = vec![0u8; file_len];
+        resident[..resume_offset].copy_from_slice(&bootstrap);
+        vfs.read_exact_stream(&mut stream, &mut resident[resume_offset..])?;
+
         Ok(Self {
             file_type,
             metadata,
             stream,
             bootstrap: bootstrap.into_boxed_slice(),
+            resident: resident.into_boxed_slice(),
+            resident_position: resume_offset,
             first_fragment_offset,
             resume_offset,
         })
@@ -1145,6 +1169,11 @@ impl VideoAsset {
     #[inline(always)]
     pub fn file_len(&self) -> usize {
         self.stream.len()
+    }
+
+    #[inline(always)]
+    pub fn resident_len(&self) -> usize {
+        self.resident.len()
     }
 
     /// Cached bytes from file offset zero through the first `mdat`.
@@ -1420,49 +1449,59 @@ impl VideoAsset {
     /// keeping a mutable borrow of the VFS stream.
     pub fn read_next_fragment(
         &mut self,
-        vfs: &Vfs<'_>,
+        _vfs: &Vfs<'_>,
     ) -> Result<Option<MediaFragment>, KwVideoError> {
+        let bytes = &self.resident;
+        let mut cursor = self.resident_position;
+
         loop {
-            let box_start = self.stream.position();
-            let mut boxes = StreamBoxReader::new(vfs, &mut self.stream);
-            let Some(header) = boxes.next_header()? else {
+            if cursor == bytes.len() {
+                self.resident_position = cursor;
                 return Ok(None);
-            };
-            drop(boxes);
+            }
+            if cursor > bytes.len() {
+                return Err(KwVideoError::InvalidStructure(
+                    "resident KWVIDEO cursor escaped file",
+                ));
+            }
+
+            let remaining = &bytes[cursor..];
+            let header = super::isobmff::BoxHeader::parse(remaining, remaining.len())?;
+            let box_start = cursor;
+            let box_end = box_start
+                .checked_add(header.box_size())
+                .ok_or(KwVideoError::OffsetOverflow)?;
 
             if header.box_type() != MOOF_BOX {
-                vfs.skip_stream(&mut self.stream, header.payload_size())?;
+                cursor = box_end;
                 continue;
             }
 
-            vfs.seek_stream(&mut self.stream, box_start)?;
-            let mut bytes = vec![0u8; header.box_size()];
-            vfs.read_exact_stream(&mut self.stream, &mut bytes)?;
+            if box_end >= bytes.len() {
+                return Err(KwVideoError::MissingFirstMediaFragment);
+            }
 
-            let mdat_start = self.stream.position();
-            let mut boxes = StreamBoxReader::new(vfs, &mut self.stream);
-            let mdat = boxes
-                .next_header()?
-                .ok_or(KwVideoError::MissingFirstMediaFragment)?;
-            drop(boxes);
+            let mdat_remaining = &bytes[box_end..];
+            let mdat = super::isobmff::BoxHeader::parse(mdat_remaining, mdat_remaining.len())?;
             if mdat.box_type() != MDAT_BOX {
                 return Err(KwVideoError::InvalidStructure(
                     "kwv1 moof is not immediately followed by mdat",
                 ));
             }
+            let fragment_end = box_end
+                .checked_add(mdat.box_size())
+                .ok_or(KwVideoError::OffsetOverflow)?;
+            let fragment_bytes = bytes
+                .get(box_start..fragment_end)
+                .ok_or(KwVideoError::InvalidStructure(
+                    "resident KWVIDEO fragment escapes file",
+                ))?
+                .to_vec()
+                .into_boxed_slice();
 
-            vfs.seek_stream(&mut self.stream, mdat_start)?;
-            let old_len = bytes.len();
-            bytes.resize(
-                old_len
-                    .checked_add(mdat.box_size())
-                    .ok_or(KwVideoError::OffsetOverflow)?,
-                0,
-            );
-            vfs.read_exact_stream(&mut self.stream, &mut bytes[old_len..])?;
-
+            self.resident_position = fragment_end;
             return Ok(Some(parse_media_fragment(
-                bytes.into_boxed_slice(),
+                fragment_bytes,
                 box_start,
                 self.metadata.track_id,
             )?));
@@ -1491,8 +1530,8 @@ impl VideoAsset {
     ///
     /// Profile re-activation and video looping can replay `bootstrap()` from
     /// RAM and reset this stream without rereading the cached bytes from disk.
-    pub fn rewind_stream(&mut self, vfs: &Vfs<'_>) -> Result<(), KwVideoError> {
-        vfs.seek_stream(&mut self.stream, self.resume_offset)?;
+    pub fn rewind_stream(&mut self, _vfs: &Vfs<'_>) -> Result<(), KwVideoError> {
+        self.resident_position = self.resume_offset;
         Ok(())
     }
 }
@@ -1580,6 +1619,10 @@ pub enum KwVideoError {
         required: usize,
         maximum: usize,
     },
+    ResidentVideoTooLarge {
+        required: usize,
+        maximum: usize,
+    },
     OffsetOverflow,
     InvalidStructure(&'static str),
     UnsupportedProfile(&'static str),
@@ -1632,6 +1675,12 @@ impl fmt::Display for KwVideoError {
                 write!(
                     f,
                     "Keywork Video transition bootstrap requires {required} bytes, maximum is {maximum}"
+                )
+            }
+            Self::ResidentVideoTooLarge { required, maximum } => {
+                write!(
+                    f,
+                    "Keywork Video resident playback requires {required} bytes, maximum is {maximum}"
                 )
             }
             Self::OffsetOverflow => write!(f, "Keywork Video box offset overflow"),
