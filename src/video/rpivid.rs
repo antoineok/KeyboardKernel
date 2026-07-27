@@ -41,6 +41,7 @@ const RPIVID_DMA_GRANULE: usize = 64;
 const RPIVID_COMMAND_CAPACITY: usize = 8192;
 const RPIVID_COMMAND_BYTES: usize = RPIVID_COMMAND_CAPACITY * core::mem::size_of::<u64>();
 const RPIVID_PHASE_BUFFER_COUNT: usize = 3;
+const RPIVID_BITSTREAM_STAGING_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RpividDmaAddress(u32);
@@ -128,6 +129,88 @@ impl RpividCommandBuffer {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpividBitstreamWindow {
+    base: u32,
+    byte_offset: u8,
+    byte_len: u32,
+}
+
+impl RpividBitstreamWindow {
+    fn from_phys_range(phys_addr: u64, byte_len: usize) -> Self {
+        assert!(byte_len != 0, "RPIVID bitstream window must not be empty");
+        assert!(byte_len <= u32::MAX as usize, "RPIVID bitstream window is too large");
+
+        let base = phys_addr >> 6;
+        assert!(base <= u32::MAX as u64, "RPIVID bitstream address exceeds hardware register width");
+
+        Self {
+            base: base as u32,
+            byte_offset: (phys_addr & 63) as u8,
+            byte_len: byte_len as u32,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn base_register_value(self) -> u32 {
+        self.base
+    }
+
+    #[inline(always)]
+    pub const fn byte_offset(self) -> u8 {
+        self.byte_offset
+    }
+
+    #[inline(always)]
+    pub const fn byte_len(self) -> u32 {
+        self.byte_len
+    }
+}
+
+pub struct RpividBitstreamBuffer {
+    dma: DmaBuffer,
+    used: usize,
+}
+
+impl RpividBitstreamBuffer {
+    pub fn allocate() -> Self {
+        let dma = DmaBuffer::allocate(RPIVID_BITSTREAM_STAGING_BYTES, RPIVID_DMA_GRANULE)
+            .expect("failed to allocate RPIVID bitstream DMA buffer");
+
+        Self { dma, used: 0 }
+    }
+
+    pub fn load(&mut self, data: &[u8]) {
+        assert!(data.len() <= self.dma.len(), "RPIVID bitstream exceeds staging capacity");
+
+        self.dma.as_mut_slice()[..data.len()].copy_from_slice(data);
+        self.used = data.len();
+        self.dma.sync_range_for_device(0, self.used);
+    }
+
+    pub fn window(&self, offset: usize, byte_len: usize) -> RpividBitstreamWindow {
+        let end = offset.checked_add(byte_len).expect("RPIVID bitstream range overflow");
+        assert!(end <= self.used, "RPIVID bitstream range exceeds loaded data");
+
+        RpividBitstreamWindow::from_phys_range(self.dma.phys_addr() + offset as u64, byte_len)
+    }
+
+    #[inline(always)]
+    pub fn phys_addr(&self) -> u64 {
+        self.dma.phys_addr()
+    }
+
+    #[inline(always)]
+    pub const fn capacity(&self) -> usize {
+        RPIVID_BITSTREAM_STAGING_BYTES
+    }
+
+    #[inline(always)]
+    pub const fn used(&self) -> usize {
+        self.used
+    }
+}
+
 fn round_up_workspace_size(bytes: usize) -> usize {
     // Match hevc_d_round_up_size() from Raspberry Pi's RPIVID driver. The
     // decoder grows these buffers in a 3x/4x power-of-two progression.
@@ -149,6 +232,7 @@ fn round_up_workspace_size(bytes: usize) -> usize {
 
 pub struct RpividDecodeWorkspace {
     command: RpividCommandBuffer,
+    bitstream: RpividBitstreamBuffer,
     pu: [DmaBuffer; RPIVID_PHASE_BUFFER_COUNT],
     coeff: [DmaBuffer; RPIVID_PHASE_BUFFER_COUNT],
     pu_size: usize,
@@ -167,6 +251,7 @@ impl RpividDecodeWorkspace {
         let pu_size = round_up_workspace_size(pixels / 4);
 
         let command = RpividCommandBuffer::allocate();
+        let bitstream = RpividBitstreamBuffer::allocate();
         let pu = core::array::from_fn(|_| {
             DmaBuffer::allocate(pu_size, RPIVID_DMA_GRANULE)
                 .expect("failed to allocate RPIVID PU DMA buffer")
@@ -178,6 +263,7 @@ impl RpividDecodeWorkspace {
 
         Self {
             command,
+            bitstream,
             pu,
             coeff,
             pu_size,
@@ -187,6 +273,7 @@ impl RpividDecodeWorkspace {
 
     pub fn total_bytes(&self) -> usize {
         RPIVID_COMMAND_BYTES
+            + RPIVID_BITSTREAM_STAGING_BYTES
             + self.pu_size * RPIVID_PHASE_BUFFER_COUNT
             + self.coeff_size * RPIVID_PHASE_BUFFER_COUNT
     }
@@ -202,6 +289,12 @@ impl RpividDecodeWorkspace {
             self.command.hardware_len().register_value(),
             (RPIVID_COMMAND_BYTES / RPIVID_DMA_GRANULE) as u32
         );
+        assert_eq!(
+            self.bitstream.phys_addr() as usize % RPIVID_DMA_GRANULE,
+            0,
+            "RPIVID bitstream buffer is not 64-byte aligned"
+        );
+        assert_eq!(self.bitstream.capacity(), RPIVID_BITSTREAM_STAGING_BYTES);
 
         for buffer in self.pu.iter().chain(self.coeff.iter()) {
             assert_eq!(
@@ -216,23 +309,46 @@ impl RpividDecodeWorkspace {
 }
 
 pub fn validate_decode_workspace(width: usize, height: usize) {
-    let workspace = RpividDecodeWorkspace::allocate(width, height);
+    let mut workspace = RpividDecodeWorkspace::allocate(width, height);
     workspace.validate_dma_encoding();
 
-    // The command FIFO is the only CPU-populated buffer at this stage. PU and
-    // coefficient memory are device-write targets once a decode is submitted.
+    // The command FIFO and bitstream staging area are CPU-populated inputs.
+    // PU and coefficient memory become device-write targets during decode.
     workspace.command.sync_for_device();
 
+    let mut probe = [0u8; 256];
+    for (index, byte) in probe.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(29).wrapping_add(0x31);
+    }
+    workspace.bitstream.load(&probe);
+
+    // Real HEVC slice data need not begin on a 64-byte boundary. RPIVID
+    // truncates BFBASE to 64-byte units and receives the low address bits in
+    // BFCONTROL, so validate that representation with an intentionally
+    // unaligned window.
+    let probe_offset = 37usize;
+    let probe_len = 173usize;
+    let window = workspace.bitstream.window(probe_offset, probe_len);
+    let reconstructed = ((window.base_register_value() as u64) << 6)
+        + window.byte_offset() as u64;
+    assert_eq!(reconstructed, workspace.bitstream.phys_addr() + probe_offset as u64);
+    assert_eq!(window.byte_len(), probe_len as u32);
+
     info!(
-        "RPIVID decode workspace ready: {}x{}, command={} KiB, PU={}x{} KiB, coeff={}x{} KiB, total={} KiB, pu0={:#018x}, coeff0={:#018x}",
+        "RPIVID decode workspace ready: {}x{}, command={} KiB, bitstream={} KiB, PU={}x{} KiB, coeff={}x{} KiB, total={} KiB, bitstream_phys={:#018x}, probe_base={:#010x}, probe_offset={}, probe_len={}, pu0={:#018x}, coeff0={:#018x}",
         width,
         height,
         RPIVID_COMMAND_BYTES / 1024,
+        RPIVID_BITSTREAM_STAGING_BYTES / 1024,
         RPIVID_PHASE_BUFFER_COUNT,
         workspace.pu_size / 1024,
         RPIVID_PHASE_BUFFER_COUNT,
         workspace.coeff_size / 1024,
         workspace.total_bytes() / 1024,
+        workspace.bitstream.phys_addr(),
+        window.base_register_value(),
+        window.byte_offset(),
+        window.byte_len(),
         workspace.pu[0].phys_addr(),
         workspace.coeff[0].phys_addr(),
     );
