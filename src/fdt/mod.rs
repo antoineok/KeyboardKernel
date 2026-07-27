@@ -43,6 +43,7 @@ pub const MAX_ALIAS_NAME_LEN: usize = 31;
 // decoder, which exposes two named register resources.
 pub const MAX_DEVICES: usize = 4;
 pub const MAX_DEVICE_RESOURCES: usize = 4;
+pub const MAX_DEVICE_PROPERTY_CELLS: usize = 8;
 pub const MAX_INDEXED_NODES: usize = 128;
 pub const MAX_RAM_REGIONS: usize = 16;
 pub const MAX_RESERVED_REGIONS: usize = 64;
@@ -81,6 +82,7 @@ pub enum Capacity {
     Aliases,
     Devices,
     DeviceResources,
+    DevicePropertyCells,
     IndexedNodes,
     RamRegions,
     ReservedRegions,
@@ -269,9 +271,59 @@ pub struct DeviceResource {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceCells {
+    cells: [u32; MAX_DEVICE_PROPERTY_CELLS],
+    len: usize,
+}
+
+impl DeviceCells {
+    pub const fn new() -> Self {
+        Self {
+            cells: [0; MAX_DEVICE_PROPERTY_CELLS],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[u32] {
+        &self.cells[..self.len]
+    }
+
+    fn decode(value: Option<&[u8]>) -> Result<Self> {
+        let Some(value) = value else {
+            return Ok(Self::new());
+        };
+
+        if value.len() % 4 != 0 {
+            return Err(Error::InvalidProperty);
+        }
+
+        let cell_count = value.len() / 4;
+        if cell_count > MAX_DEVICE_PROPERTY_CELLS {
+            return Err(Error::CapacityExceeded(Capacity::DevicePropertyCells));
+        }
+
+        let mut decoded = Self::new();
+        for (index, cell) in value.chunks_exact(4).enumerate() {
+            decoded.cells[index] = u32::from_be_bytes([cell[0], cell[1], cell[2], cell[3]]);
+        }
+        decoded.len = cell_count;
+        Ok(decoded)
+    }
+}
+
+impl Default for DeviceCells {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceEntry {
     resources: [DeviceResource; MAX_DEVICE_RESOURCES],
     len: usize,
+    interrupts: DeviceCells,
+    clocks: DeviceCells,
 }
 
 impl DeviceEntry {
@@ -286,6 +338,8 @@ impl DeviceEntry {
                 },
             }; MAX_DEVICE_RESOURCES],
             len: 0,
+            interrupts: DeviceCells::new(),
+            clocks: DeviceCells::new(),
         }
     }
 
@@ -300,6 +354,16 @@ impl DeviceEntry {
             .iter()
             .find(|resource| resource.name.equals(name))
             .map(|resource| resource.entry)
+    }
+
+    #[inline(always)]
+    pub fn interrupts(&self) -> &[u32] {
+        self.interrupts.as_slice()
+    }
+
+    #[inline(always)]
+    pub fn clocks(&self) -> &[u32] {
+        self.clocks.as_slice()
     }
 
     fn push(&mut self, resource: DeviceResource) -> Result<()> {
@@ -847,6 +911,8 @@ struct NodeFrame<'a> {
 
     reg: Option<&'a [u8]>,
     reg_names: Option<&'a [u8]>,
+    interrupts: Option<&'a [u8]>,
+    clocks: Option<&'a [u8]>,
     ranges: Option<&'a [u8]>,
     ranges_present: bool,
 
@@ -874,6 +940,8 @@ impl<'a> NodeFrame<'a> {
             child_size_cells: 1,
             reg: None,
             reg_names: None,
+            interrupts: None,
+            clocks: None,
             ranges: None,
             ranges_present: false,
             device_type: None,
@@ -1123,6 +1191,8 @@ impl<'a> Parser<'a> {
 
             "reg" => frame.reg = Some(value),
             "reg-names" => frame.reg_names = Some(value),
+            "interrupts" => frame.interrupts = Some(value),
+            "clocks" => frame.clocks = Some(value),
 
             "ranges" => {
                 frame.ranges_present = true;
@@ -1195,7 +1265,14 @@ impl<'a> Parser<'a> {
         }
 
         if let (Some(compatible), Some(reg)) = (frame.compatible, frame.reg) {
-            self.resolve_requested_devices(index, compatible, reg, frame.reg_names)?;
+            self.resolve_requested_devices(
+                index,
+                compatible,
+                reg,
+                frame.reg_names,
+                frame.interrupts,
+                frame.clocks,
+            )?;
         }
 
         if frame.is_memory() {
@@ -1289,6 +1366,8 @@ impl<'a> Parser<'a> {
         compatible: &'a [u8],
         reg: &'a [u8],
         reg_names: Option<&'a [u8]>,
+        interrupts: Option<&'a [u8]>,
+        clocks: Option<&'a [u8]>,
     ) -> Result<()> {
         let mut matched = [false; MAX_DEVICES];
         let mut any_match = false;
@@ -1306,7 +1385,13 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        let entry = self.decode_device_entry(node_index, reg, reg_names)?;
+        let entry = self.decode_device_entry(
+            node_index,
+            reg,
+            reg_names,
+            interrupts,
+            clocks,
+        )?;
 
         for (index, is_match) in matched[..self.devices.len].iter().copied().enumerate() {
             if is_match {
@@ -1322,6 +1407,8 @@ impl<'a> Parser<'a> {
         node_index: usize,
         data: &'a [u8],
         reg_names: Option<&'a [u8]>,
+        interrupts: Option<&'a [u8]>,
+        clocks: Option<&'a [u8]>,
     ) -> Result<DeviceEntry> {
         let parent = self.parent_frame(node_index)?;
         let address_cells = parent.child_address_cells;
@@ -1368,6 +1455,9 @@ impl<'a> Parser<'a> {
                 },
             })?;
         }
+
+        entry.interrupts = DeviceCells::decode(interrupts)?;
+        entry.clocks = DeviceCells::decode(clocks)?;
 
         Ok(entry)
     }
