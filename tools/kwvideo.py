@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 
 
 BRAND = b"kwv1"
 DEFAULT_SIZE = (1366, 768)
-DEFAULT_FPS = 30
 DEFAULT_CRF = 24
 KEYFRAME_INTERVAL_SECONDS = 1
 DEFAULT_PRESET = "veryfast"
@@ -42,7 +42,7 @@ def parse_size(value: str) -> tuple[int, int]:
 def build_video_filter(
     size: tuple[int, int],
     fit: str,
-    fps: int,
+    fps: Fraction,
 ) -> str:
     width, height = size
 
@@ -61,7 +61,74 @@ def build_video_filter(
     else:
         raise ValueError(f"unsupported fit mode: {fit}")
 
-    return f"{resize},fps={fps},format=yuv420p"
+    return f"{resize},fps={format_frame_rate(fps)},format=yuv420p"
+
+
+def parse_frame_rate(value: str) -> Fraction:
+    try:
+        frame_rate = Fraction(value)
+    except (ValueError, ZeroDivisionError) as error:
+        raise argparse.ArgumentTypeError(
+            "frame rate must be a positive number or rational, "
+            "for example 60 or 24000/1001"
+        ) from error
+
+    if frame_rate <= 0:
+        raise argparse.ArgumentTypeError("frame rate must be greater than zero")
+
+    return frame_rate
+
+
+def format_frame_rate(frame_rate: Fraction) -> str:
+    if frame_rate.denominator == 1:
+        return str(frame_rate.numerator)
+    return f"{frame_rate.numerator}/{frame_rate.denominator}"
+
+
+def probe_frame_rate(input_path: Path) -> Fraction:
+    ffprobe = shutil.which("ffprobe")
+
+    if ffprobe is None:
+        raise RuntimeError("ffprobe was not found in PATH")
+
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate,r_frame_rate",
+        "-of",
+        "default=noprint_wrappers=1",
+        str(input_path),
+    ]
+
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    rates: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            rates[key.strip()] = value.strip()
+
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        rate_text = rates.get(key)
+        if not rate_text or rate_text == "0/0":
+            continue
+        try:
+            frame_rate = Fraction(rate_text)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if frame_rate > 0:
+            return frame_rate
+
+    raise RuntimeError("could not determine the source video frame rate")
 
 
 def validate_ftyp(output_path: Path) -> tuple[int, list[bytes]]:
@@ -104,7 +171,7 @@ def convert_video(
     output_path: Path,
     size: tuple[int, int],
     fit: str,
-    fps: int,
+    fps: Fraction | None,
     crf: int,
     preset: str,
 ) -> None:
@@ -113,15 +180,22 @@ def convert_video(
     if ffmpeg is None:
         raise RuntimeError("ffmpeg was not found in PATH")
 
-    if fps <= 0:
-        raise ValueError("fps must be greater than zero")
+    if fps is None:
+        fps = probe_frame_rate(input_path)
 
     if not 0 <= crf <= 51:
         raise ValueError("CRF must be between 0 and 51")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    keyint = fps * KEYFRAME_INTERVAL_SECONDS
+    keyint = max(
+        1,
+        (
+            fps.numerator * KEYFRAME_INTERVAL_SECONDS
+            + fps.denominator // 2
+        )
+        // fps.denominator,
+    )
     video_filter = build_video_filter(size, fit, fps)
     x265_params = ":".join(
         (
@@ -178,7 +252,7 @@ def convert_video(
     print(f"Input:        {input_path}")
     print(f"Output:       {output_path}")
     print(f"Dimensions:   {size[0]}x{size[1]}")
-    print(f"Frame rate:   {fps} fps CFR")
+    print(f"Frame rate:   {format_frame_rate(fps)} fps CFR")
     print("Codec:        HEVC Main / hvc1 / yuv420p")
     print("B-frames:     disabled")
     print(f"Encoder:      libx265 / {preset}")
@@ -226,9 +300,12 @@ def main() -> None:
 
     parser.add_argument(
         "--fps",
-        type=int,
-        default=DEFAULT_FPS,
-        help="constant output frame rate (default: 30)",
+        type=parse_frame_rate,
+        default=None,
+        help=(
+            "constant output frame rate; accepts integers or rationals such as "
+            "60 or 60000/1001 (default: preserve source frame rate)"
+        ),
     )
 
     parser.add_argument(
