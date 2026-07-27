@@ -138,6 +138,47 @@ pub struct FragmentSample {
     pub sync: bool,
 }
 
+#[derive(Debug)]
+pub struct MediaFragment {
+    file_offset: usize,
+    bytes: Box<[u8]>,
+    base_decode_time: u64,
+    duration_ticks: u64,
+    samples: Vec<FragmentSample>,
+}
+
+impl MediaFragment {
+    #[inline(always)]
+    pub const fn base_decode_time(&self) -> u64 {
+        self.base_decode_time
+    }
+
+    #[inline(always)]
+    pub const fn duration_ticks(&self) -> u64 {
+        self.duration_ticks
+    }
+
+    #[inline(always)]
+    pub fn samples(&self) -> &[FragmentSample] {
+        &self.samples
+    }
+
+    pub fn sample_bytes(&self, sample: FragmentSample) -> Result<&[u8], KwVideoError> {
+        let start = sample
+            .offset
+            .checked_sub(self.file_offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let end = start
+            .checked_add(sample.size as usize)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        self.bytes
+            .get(start..end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "HEVC sample escapes media fragment",
+            ))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VideoMetadata {
     pub track_id: u32,
@@ -781,6 +822,50 @@ fn parse_trun_samples(
     Ok(samples)
 }
 
+fn parse_media_fragment(
+    bytes: Box<[u8]>,
+    file_offset: usize,
+    track_id: u32,
+) -> Result<MediaFragment, KwVideoError> {
+    let moof = find_box(&bytes, file_offset, MOOF_BOX)?;
+    if moof.start != file_offset {
+        return Err(KwVideoError::InvalidStructure(
+            "media fragment does not begin with moof",
+        ));
+    }
+    let moof_end = moof
+        .payload_start
+        .checked_add(moof.payload.len())
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    let local_moof_end = moof_end
+        .checked_sub(file_offset)
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    let mdat = find_box(&bytes[local_moof_end..], moof_end, MDAT_BOX)?;
+
+    let summary = parse_first_fragment(moof, mdat, track_id)?;
+    let samples = {
+        let traf = find_box(moof.payload, moof.payload_start, FourCc::new(*b"traf"))?;
+        let tfhd = find_box(traf.payload, traf.payload_start, FourCc::new(*b"tfhd"))?;
+        let defaults = parse_tfhd(tfhd.payload, track_id)?;
+        let trun = find_box(traf.payload, traf.payload_start, FourCc::new(*b"trun"))?;
+        parse_trun_samples(
+            trun.payload,
+            defaults,
+            moof.start,
+            mdat.payload_start,
+            mdat.payload.len(),
+        )?
+    };
+
+    Ok(MediaFragment {
+        file_offset,
+        bytes,
+        base_decode_time: summary.base_decode_time,
+        duration_ticks: summary.duration_ticks,
+        samples,
+    })
+}
+
 fn find_hvcc_in_bootstrap(bootstrap: &[u8]) -> Result<MemoryBox<'_>, KwVideoError> {
     let moov = find_box(bootstrap, 0, FourCc::new(*b"moov"))?;
     let trak = find_box(moov.payload, moov.payload_start, FourCc::new(*b"trak"))?;
@@ -1092,10 +1177,17 @@ impl VideoAsset {
         &self,
         sample: FragmentSample,
     ) -> Result<super::hevc_syntax::FirstPictureSyntax, KwVideoError> {
+        self.picture_syntax_bytes(self.sample_bytes(sample)?)
+    }
+
+    pub fn picture_syntax_bytes(
+        &self,
+        sample: &[u8],
+    ) -> Result<super::hevc_syntax::FirstPictureSyntax, KwVideoError> {
         let hvcc = find_hvcc_in_bootstrap(&self.bootstrap)?;
         super::hevc_syntax::FirstPictureSyntax::parse(
             hvcc.payload,
-            self.sample_bytes(sample)?,
+            sample,
             self.metadata.hevc.nal_length_size as usize,
         )
         .map_err(KwVideoError::HevcSyntax)
@@ -1106,10 +1198,15 @@ impl VideoAsset {
         sample: FragmentSample,
         picture: &super::hevc_syntax::FirstPictureSyntax,
     ) -> Result<&'a [u8], KwVideoError> {
-        let nal_start = sample
-            .offset
-            .checked_add(picture.slice_nal_sample_offset)
-            .ok_or(KwVideoError::OffsetOverflow)?;
+        self.picture_cabac_payload_bytes(self.sample_bytes(sample)?, picture)
+    }
+
+    pub fn picture_cabac_payload_bytes<'a>(
+        &self,
+        sample: &'a [u8],
+        picture: &super::hevc_syntax::FirstPictureSyntax,
+    ) -> Result<&'a [u8], KwVideoError> {
+        let nal_start = picture.slice_nal_sample_offset;
         let nal_end = nal_start
             .checked_add(picture.slice_nal_len)
             .ok_or(KwVideoError::OffsetOverflow)?;
@@ -1121,10 +1218,10 @@ impl VideoAsset {
                 "HEVC slice has no CABAC payload",
             ));
         }
-        self.bootstrap
+        sample
             .get(payload_start..nal_end)
             .ok_or(KwVideoError::InvalidStructure(
-                "HEVC CABAC payload escapes transition bootstrap",
+                "HEVC CABAC payload escapes sample",
             ))
     }
 
@@ -1222,6 +1319,79 @@ impl VideoAsset {
             vcl_nal_count,
             first_vcl_type,
         })
+    }
+
+    /// Copy the cached transition fragment into an owned fragment buffer.
+    ///
+    /// This is used by the bring-up playback loop so cached and streamed
+    /// fragments share the same parsing path. The permanently resident copy
+    /// remains in `bootstrap`; only the compressed media bytes are duplicated.
+    pub fn cached_first_fragment(&self) -> Result<MediaFragment, KwVideoError> {
+        let bytes = self
+            .bootstrap
+            .get(self.first_fragment_offset..self.resume_offset)
+            .ok_or(KwVideoError::InvalidStructure(
+                "cached first fragment escapes transition bootstrap",
+            ))?
+            .to_vec()
+            .into_boxed_slice();
+        parse_media_fragment(bytes, self.first_fragment_offset, self.metadata.track_id)
+    }
+
+    /// Read the next `moof`/`mdat` pair from eMMC.
+    ///
+    /// Unknown top-level boxes before the next fragment are skipped. The
+    /// returned compressed fragment is owned so decoding can proceed without
+    /// keeping a mutable borrow of the VFS stream.
+    pub fn read_next_fragment(
+        &mut self,
+        vfs: &Vfs<'_>,
+    ) -> Result<Option<MediaFragment>, KwVideoError> {
+        loop {
+            let box_start = self.stream.position();
+            let mut boxes = StreamBoxReader::new(vfs, &mut self.stream);
+            let Some(header) = boxes.next_header()? else {
+                return Ok(None);
+            };
+            drop(boxes);
+
+            if header.box_type() != MOOF_BOX {
+                vfs.skip_stream(&mut self.stream, header.payload_size())?;
+                continue;
+            }
+
+            vfs.seek_stream(&mut self.stream, box_start)?;
+            let mut bytes = vec![0u8; header.box_size()];
+            vfs.read_exact_stream(&mut self.stream, &mut bytes)?;
+
+            let mdat_start = self.stream.position();
+            let mut boxes = StreamBoxReader::new(vfs, &mut self.stream);
+            let mdat = boxes
+                .next_header()?
+                .ok_or(KwVideoError::MissingFirstMediaFragment)?;
+            drop(boxes);
+            if mdat.box_type() != MDAT_BOX {
+                return Err(KwVideoError::InvalidStructure(
+                    "kwv1 moof is not immediately followed by mdat",
+                ));
+            }
+
+            vfs.seek_stream(&mut self.stream, mdat_start)?;
+            let old_len = bytes.len();
+            bytes.resize(
+                old_len
+                    .checked_add(mdat.box_size())
+                    .ok_or(KwVideoError::OffsetOverflow)?,
+                0,
+            );
+            vfs.read_exact_stream(&mut self.stream, &mut bytes[old_len..])?;
+
+            return Ok(Some(parse_media_fragment(
+                bytes.into_boxed_slice(),
+                box_start,
+                self.metadata.track_id,
+            )?));
+        }
     }
 
     /// Offset of the first cached `moof` within `bootstrap()`.

@@ -1,5 +1,6 @@
 pub mod init;
 
+use alloc::vec::Vec;
 use core::{hint::spin_loop, time::Duration};
 
 use crate::arch::{
@@ -72,7 +73,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         .expect("failed to load output.kwv KWVIDEO test asset");
 
     let video = video_cache
-        .get(0)
+        .get_mut(0)
         .expect("KWVIDEO test asset disappeared from transition cache");
     let metadata = video.metadata();
     let hevc = metadata.hevc;
@@ -117,145 +118,183 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         fragment.first_sample_sync,
     );
 
-    let samples = video
-        .first_fragment_samples()
-        .expect("failed to enumerate first KWVIDEO fragment samples");
-    assert_eq!(
-        samples.len(),
-        fragment.sample_count as usize,
-        "KWVIDEO fragment sample table changed after validation",
+    const TEST_FRAGMENT_COUNT: usize = 3;
+    let mut fragments = Vec::with_capacity(TEST_FRAGMENT_COUNT);
+    fragments.push(
+        video
+            .cached_first_fragment()
+            .expect("failed to materialize cached KWVIDEO fragment"),
     );
-    assert!(!samples.is_empty(), "KWVIDEO first fragment is empty");
+    for fragment_index in 1..TEST_FRAGMENT_COUNT {
+        let next = video
+            .read_next_fragment(vfs)
+            .unwrap_or_else(|error| panic!("failed to stream KWVIDEO fragment {fragment_index}: {error}"))
+            .unwrap_or_else(|| panic!("KWVIDEO ended before fragment {fragment_index}"));
+        fragments.push(next);
+    }
+
+    let total_frames: usize = fragments.iter().map(|fragment| fragment.samples().len()).sum();
+    let prefetched_bytes: usize = fragments
+        .iter()
+        .skip(1)
+        .flat_map(|fragment| fragment.samples())
+        .map(|sample| sample.size as usize)
+        .sum();
+    info!(
+        "KWVIDEO 3-second test ready: fragments={}, frames={}, streamed_sample_bytes={} KiB",
+        fragments.len(),
+        total_frames,
+        prefetched_bytes / 1024,
+    );
 
     let mut graphics = GraphicsCoreProxy::new();
     let playback_started = time_manager().uptime();
     let mut presentation_ticks = 0u64;
     let mut late_frames = 0usize;
+    let mut global_picture_index = 0usize;
 
-    for (picture_index, sample) in samples.iter().copied().enumerate() {
-        let picture = video
-            .picture_syntax(sample)
-            .unwrap_or_else(|error| panic!("failed to parse KWVIDEO picture {picture_index}: {error}"));
-        let slice = picture.slice;
-        if picture_index == 0 {
+    for (fragment_index, media_fragment) in fragments.iter().enumerate() {
+        info!(
+            "KWVIDEO fragment {}/{}: decode_time={}, samples={}, duration={} ticks (~{} ms)",
+            fragment_index + 1,
+            fragments.len(),
+            media_fragment.base_decode_time(),
+            media_fragment.samples().len(),
+            media_fragment.duration_ticks(),
+            media_fragment.duration_ticks().saturating_mul(1000) / metadata.timescale as u64,
+        );
+
+        for (picture_index, sample) in media_fragment.samples().iter().copied().enumerate() {
+            let sample_bytes = media_fragment
+                .sample_bytes(sample)
+                .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {global_picture_index}: {error}"));
+            let picture = video
+                .picture_syntax_bytes(sample_bytes)
+                .unwrap_or_else(|error| panic!("failed to parse KWVIDEO picture {global_picture_index}: {error}"));
+            let slice = picture.slice;
+            if picture_index == 0 {
+                assert!(
+                    matches!(slice.nal_unit_type, 19 | 20) && slice.slice_type == 2,
+                    "each kwv1 fragment must begin with an IDR I-slice",
+                );
+            } else {
+                assert_eq!(slice.slice_type, 1, "kwv1 inter pictures must be P slices");
+            }
+
+            let cabac_payload = video
+                .picture_cabac_payload_bytes(sample_bytes, &picture)
+                .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {global_picture_index} CABAC payload: {error}"));
+            let phase1 = crate::video::rpivid::RPIVID_WORKSPACE
+                .submit_picture_phase1(&picture, cabac_payload);
+            if !phase1.complete() {
+                info!(
+                    "RPIVID phase1 failure: picture={}, fragment={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
+                    global_picture_index,
+                    fragment_index,
+                    slice.nal_unit_type,
+                    slice.slice_type,
+                    slice.pic_order_cnt_lsb,
+                    slice.num_ref_idx_l0_active,
+                    slice.num_ref_idx_l1_active,
+                    slice.max_num_merge_cand,
+                    cabac_payload.len(),
+                    phase1.command_count,
+                    phase1.irq_received,
+                    phase1.cfstatus,
+                    phase1.cfnum,
+                    phase1.status,
+                    phase1.bfstatus,
+                    phase1.interrupt_control,
+                );
+            }
             assert!(
-                matches!(slice.nal_unit_type, 19 | 20) && slice.slice_type == 2,
-                "first KWVIDEO fragment picture must be an IDR I-slice",
+                phase1.complete(),
+                "RPIVID phase 1 failed for KWVIDEO picture {global_picture_index}",
             );
-        } else {
-            assert_eq!(slice.slice_type, 1, "kwv1 inter pictures must be P slices");
-        }
 
-        let cabac_payload = video
-            .picture_cabac_payload(sample, &picture)
-            .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {picture_index} CABAC payload: {error}"));
-        let phase1 = crate::video::rpivid::RPIVID_WORKSPACE
-            .submit_picture_phase1(&picture, cabac_payload);
-        if !phase1.complete() {
+            let phase2 = crate::video::rpivid::RPIVID_WORKSPACE
+                .submit_picture_phase2(&picture, picture_index);
+            assert!(
+                phase2.complete(),
+                "RPIVID phase 2 failed for KWVIDEO picture {global_picture_index}",
+            );
+
+            let decoded = crate::video::rpivid::RPIVID_WORKSPACE
+                .copy_frame_rgbx(&picture, picture_index);
+            assert_eq!(
+                decoded.width(),
+                metadata.width.into(),
+                "SPS crop width disagrees with MP4 metadata",
+            );
+            assert_eq!(
+                decoded.height(),
+                metadata.height.into(),
+                "SPS crop height disagrees with MP4 metadata",
+            );
+            let decoded_info = SurfaceInfo::new(
+                decoded.width(),
+                decoded.height(),
+                decoded.pitch(),
+                PixelFormat::Rgbx8888,
+            )
+            .expect("failed to describe decoded RPIVID frame");
+            let decoded_surface = Surface::new(decoded.pixels(), decoded_info)
+                .expect("failed to expose decoded RPIVID frame as a surface");
+
+            // Decode ahead, then present against one continuous media clock
+            // spanning all three test fragments.
+            let target_ns = ((u128::from(presentation_ticks) * 1_000_000_000u128)
+                / u128::from(metadata.timescale)) as u64;
+            let target = Duration::from_nanos(target_ns);
+            loop {
+                let elapsed = time_manager().uptime().saturating_sub(playback_started);
+                if elapsed >= target {
+                    if elapsed > target + Duration::from_millis(2) {
+                        late_frames += 1;
+                    }
+                    break;
+                }
+                spin_loop();
+            }
+
+            let request_id = graphics
+                .submit_image(
+                    &decoded_surface,
+                    SourceRect::whole(&decoded_surface),
+                    Point::new(0, 0),
+                    BlendMode::Opaque,
+                    0x000000ff,
+                )
+                .expect("failed to submit decoded KWVIDEO frame to CPU1");
+            wait_for_graphics_request(&mut graphics, request_id);
+
             info!(
-                "RPIVID phase1 failure: picture={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
-                picture_index,
-                slice.nal_unit_type,
+                "KWVIDEO frame {}/{}: fragment={}, type={}, POC={}, sample={} bytes, CABAC={} bytes, P1={}/{}, P2={}, checksum={:#018x}",
+                global_picture_index + 1,
+                total_frames,
+                fragment_index + 1,
                 slice.slice_type,
                 slice.pic_order_cnt_lsb,
-                slice.num_ref_idx_l0_active,
-                slice.num_ref_idx_l1_active,
-                slice.max_num_merge_cand,
+                sample.size,
                 cabac_payload.len(),
-                phase1.command_count,
-                phase1.irq_received,
                 phase1.cfstatus,
                 phase1.cfnum,
-                phase1.status,
-                phase1.bfstatus,
-                phase1.interrupt_control,
+                phase2.status2,
+                phase2.output_checksum,
             );
+
+            presentation_ticks = presentation_ticks
+                .checked_add(sample.duration_ticks as u64)
+                .expect("KWVIDEO presentation clock overflow");
+            global_picture_index += 1;
         }
-        assert!(
-            phase1.complete(),
-            "RPIVID phase 1 failed for KWVIDEO picture {picture_index}",
-        );
-
-        let phase2 = crate::video::rpivid::RPIVID_WORKSPACE
-            .submit_picture_phase2(&picture, picture_index);
-        assert!(
-            phase2.complete(),
-            "RPIVID phase 2 failed for KWVIDEO picture {picture_index}",
-        );
-
-        let decoded = crate::video::rpivid::RPIVID_WORKSPACE
-            .copy_frame_rgbx(&picture, picture_index);
-        assert_eq!(
-            decoded.width(),
-            metadata.width.into(),
-            "SPS crop width disagrees with MP4 metadata",
-        );
-        assert_eq!(
-            decoded.height(),
-            metadata.height.into(),
-            "SPS crop height disagrees with MP4 metadata",
-        );
-        let decoded_info = SurfaceInfo::new(
-            decoded.width(),
-            decoded.height(),
-            decoded.pitch(),
-            PixelFormat::Rgbx8888,
-        )
-        .expect("failed to describe decoded RPIVID frame");
-        let decoded_surface = Surface::new(decoded.pixels(), decoded_info)
-            .expect("failed to expose decoded RPIVID frame as a surface");
-
-        // Decode ahead, then present against the fragment's media clock. The
-        // first picture is due immediately; each following picture is due at
-        // the accumulated duration of the samples before it.
-        let target_ns = ((u128::from(presentation_ticks) * 1_000_000_000u128)
-            / u128::from(metadata.timescale)) as u64;
-        let target = Duration::from_nanos(target_ns);
-        loop {
-            let elapsed = time_manager().uptime().saturating_sub(playback_started);
-            if elapsed >= target {
-                if elapsed > target + Duration::from_millis(2) {
-                    late_frames += 1;
-                }
-                break;
-            }
-            spin_loop();
-        }
-
-        let request_id = graphics
-            .submit_image(
-                &decoded_surface,
-                SourceRect::whole(&decoded_surface),
-                Point::new(0, 0),
-                BlendMode::Opaque,
-                0x000000ff,
-            )
-            .expect("failed to submit decoded KWVIDEO frame to CPU1");
-        wait_for_graphics_request(&mut graphics, request_id);
-
-        info!(
-            "KWVIDEO frame {}/{}: type={}, POC={}, sample={} bytes, CABAC={} bytes, P1={}/{}, P2={}, checksum={:#018x}",
-            picture_index + 1,
-            samples.len(),
-            slice.slice_type,
-            slice.pic_order_cnt_lsb,
-            sample.size,
-            cabac_payload.len(),
-            phase1.cfstatus,
-            phase1.cfnum,
-            phase2.status2,
-            phase2.output_checksum,
-        );
-
-        presentation_ticks = presentation_ticks
-            .checked_add(sample.duration_ticks as u64)
-            .expect("KWVIDEO presentation clock overflow");
     }
 
     let playback_elapsed = time_manager().uptime().saturating_sub(playback_started);
     info!(
-        "KWVIDEO first fragment played: frames={}, media={} ticks (~{} ms), elapsed={} ms, late_frames={}",
-        samples.len(),
+        "KWVIDEO 3-second test played: fragments={}, frames={}, media={} ticks (~{} ms), elapsed={} ms, late_frames={}",
+        fragments.len(),
+        global_picture_index,
         presentation_ticks,
         presentation_ticks.saturating_mul(1000) / metadata.timescale as u64,
         playback_elapsed.as_millis(),
