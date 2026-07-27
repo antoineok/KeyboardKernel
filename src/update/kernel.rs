@@ -40,11 +40,10 @@ impl KernelUpdater {
         expected_size: usize,
         expected_sha256: &[u8; 32],
     ) -> Result<(), UpdateError> {
-        Self::verify_file(KERNEL_NEW, expected_size, expected_sha256)
-            .map_err(|error| match error {
-                UpdateError::Vfs(_) => UpdateError::MissingStagedImage,
-                other => other,
-            })
+        Self::verify_file(KERNEL_NEW, expected_size, expected_sha256).map_err(|error| match error {
+            UpdateError::Vfs(_) => UpdateError::MissingStagedImage,
+            other => other,
+        })
     }
 
     pub fn discard_staged() -> Result<(), UpdateError> {

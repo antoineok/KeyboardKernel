@@ -218,7 +218,10 @@ impl PhysAllocator {
     pub unsafe fn free_contiguous(&mut self, pa: PhysAddr, count: usize) {
         assert!(self.initialized, "PhysAllocator used before init");
         assert!(count != 0, "cannot free zero physical pages");
-        assert!(pa >= self.arena_start && pa < self.arena_end, "physical free outside arena");
+        assert!(
+            pa >= self.arena_start && pa < self.arena_end,
+            "physical free outside arena"
+        );
         assert_eq!(
             (pa - self.arena_start) % self.page_size,
             0,
@@ -306,7 +309,10 @@ impl PhysAllocator {
 
     #[inline(always)]
     unsafe fn set_page_allocated(&mut self, page_index: usize, allocated: bool) {
-        assert!(page_index < self.total_pages, "physical page index out of bounds");
+        assert!(
+            page_index < self.total_pages,
+            "physical page index out of bounds"
+        );
 
         let word_index = page_index / 64;
         let bit_pos = page_index % 64;

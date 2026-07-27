@@ -1002,11 +1002,7 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(
-        dtb: Dtb<'a>,
-        requested_aliases: &[&str],
-        requested_devices: &[&str],
-    ) -> Result<Self> {
+    fn new(dtb: Dtb<'a>, requested_aliases: &[&str], requested_devices: &[&str]) -> Result<Self> {
         let aliases = AliasTable::with_requested(requested_aliases)?;
         let devices = DeviceTable::with_requested(requested_devices)?;
 
@@ -1385,13 +1381,7 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        let entry = self.decode_device_entry(
-            node_index,
-            reg,
-            reg_names,
-            interrupts,
-            clocks,
-        )?;
+        let entry = self.decode_device_entry(node_index, reg, reg_names, interrupts, clocks)?;
 
         for (index, is_match) in matched[..self.devices.len].iter().copied().enumerate() {
             if is_match {

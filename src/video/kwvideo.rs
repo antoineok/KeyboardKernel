@@ -64,10 +64,7 @@ impl FileType {
 /// The major brand carries the Keywork profile generation (`kwv1`). The MP4
 /// minor-version field is retained as metadata but deliberately not used for
 /// Keywork compatibility decisions; regular MP4 muxers choose that value.
-pub fn parse_file_type(
-    vfs: &Vfs<'_>,
-    stream: &mut FileStream,
-) -> Result<FileType, KwVideoError> {
+pub fn parse_file_type(vfs: &Vfs<'_>, stream: &mut FileStream) -> Result<FileType, KwVideoError> {
     let mut boxes = StreamBoxReader::new(vfs, stream);
     let header = boxes.next_header()?.ok_or(KwVideoError::EmptyFile)?;
     drop(boxes);
@@ -246,7 +243,9 @@ fn next_memory_box<'a>(
         return Ok(None);
     }
     if *cursor > bytes.len() {
-        return Err(KwVideoError::InvalidStructure("box cursor escaped container"));
+        return Err(KwVideoError::InvalidStructure(
+            "box cursor escaped container",
+        ));
     }
 
     let remaining = &bytes[*cursor..];
@@ -262,7 +261,9 @@ fn next_memory_box<'a>(
 
     Ok(Some(MemoryBox {
         box_type: header.box_type(),
-        start: base.checked_add(start).ok_or(KwVideoError::OffsetOverflow)?,
+        start: base
+            .checked_add(start)
+            .ok_or(KwVideoError::OffsetOverflow)?,
         payload_start: base
             .checked_add(payload_start)
             .ok_or(KwVideoError::OffsetOverflow)?,
@@ -383,10 +384,7 @@ fn parse_mdhd_timescale(bytes: &[u8]) -> Result<u32, KwVideoError> {
     Ok(timescale)
 }
 
-fn parse_stsd(
-    bytes: &[u8],
-    base: usize,
-) -> Result<(u16, u16, HevcConfiguration), KwVideoError> {
+fn parse_stsd(bytes: &[u8], base: usize) -> Result<(u16, u16, HevcConfiguration), KwVideoError> {
     if bytes.len() < 8 || read_u32(bytes, 4)? != 1 {
         return Err(KwVideoError::UnsupportedProfile(
             "kwv1 requires one sample description",
@@ -396,7 +394,9 @@ fn parse_stsd(
     let entries = &bytes[8..];
     let entry = find_box(entries, base + 8, FourCc::new(*b"hvc1"))?;
     if entry.payload.len() < 78 {
-        return Err(KwVideoError::InvalidStructure("truncated hvc1 sample entry"));
+        return Err(KwVideoError::InvalidStructure(
+            "truncated hvc1 sample entry",
+        ));
     }
 
     let width = read_u16(entry.payload, 24)?;
@@ -463,7 +463,9 @@ fn parse_hvcc(bytes: &[u8]) -> Result<HevcConfiguration, KwVideoError> {
         }
     }
     if vps_count == 0 || sps_count == 0 || pps_count == 0 {
-        return Err(KwVideoError::InvalidStructure("hvcC is missing VPS/SPS/PPS"));
+        return Err(KwVideoError::InvalidStructure(
+            "hvcC is missing VPS/SPS/PPS",
+        ));
     }
 
     Ok(HevcConfiguration {
@@ -778,13 +780,7 @@ fn parse_trun_samples(
                 .ok_or(KwVideoError::InvalidStructure("sample size missing"))?
         };
         let flags = if index == 0 {
-            first_sample_flags.or_else(|| {
-                if has_flags {
-                    None
-                } else {
-                    defaults.flags
-                }
-            })
+            first_sample_flags.or_else(|| if has_flags { None } else { defaults.flags })
         } else if has_flags {
             None
         } else {
@@ -886,7 +882,9 @@ fn find_hvcc_in_bootstrap(bootstrap: &[u8]) -> Result<MemoryBox<'_>, KwVideoErro
         FourCc::new(*b"hvc1"),
     )?;
     if entry.payload.len() < 78 {
-        return Err(KwVideoError::InvalidStructure("truncated hvc1 sample entry"));
+        return Err(KwVideoError::InvalidStructure(
+            "truncated hvc1 sample entry",
+        ));
     }
     find_box(
         &entry.payload[78..],
@@ -904,10 +902,7 @@ fn append_annex_b_nal(destination: &mut Vec<u8>, nal: &[u8]) -> Result<(), KwVid
     Ok(())
 }
 
-fn append_parameter_sets(
-    hvcc: &[u8],
-    destination: &mut Vec<u8>,
-) -> Result<u16, KwVideoError> {
+fn append_parameter_sets(hvcc: &[u8], destination: &mut Vec<u8>) -> Result<u16, KwVideoError> {
     if hvcc.len() < 23 {
         return Err(KwVideoError::InvalidStructure("truncated hvcC"));
     }
@@ -1025,7 +1020,6 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, KwVideoError> {
     ]))
 }
 
-
 /// A `kwv1` asset prepared for instant profile transitions.
 ///
 /// The ISO-BMFF initialization segment and first media fragment are pinned in
@@ -1046,20 +1040,13 @@ pub struct VideoAsset {
 
 impl VideoAsset {
     /// Open and prepare one video asset from a mounted filesystem.
-    pub fn open(
-        vfs: &Vfs<'_>,
-        fs: FsId,
-        path: &str,
-    ) -> Result<Self, KwVideoError> {
+    pub fn open(vfs: &Vfs<'_>, fs: FsId, path: &str) -> Result<Self, KwVideoError> {
         let stream = vfs.open_stream_fs(fs, path)?;
         Self::from_stream(vfs, stream)
     }
 
     /// Prepare an already-open stream and pin its transition bootstrap in RAM.
-    pub fn from_stream(
-        vfs: &Vfs<'_>,
-        mut stream: FileStream,
-    ) -> Result<Self, KwVideoError> {
+    pub fn from_stream(vfs: &Vfs<'_>, mut stream: FileStream) -> Result<Self, KwVideoError> {
         let file_type = parse_file_type(vfs, &mut stream)?;
         let mut boxes = StreamBoxReader::new(vfs, &mut stream);
         let mut saw_movie = false;
@@ -1221,11 +1208,7 @@ impl VideoAsset {
         Ok(read)
     }
 
-    fn ensure_resident_through(
-        &mut self,
-        vfs: &Vfs<'_>,
-        end: usize,
-    ) -> Result<(), KwVideoError> {
+    fn ensure_resident_through(&mut self, vfs: &Vfs<'_>, end: usize) -> Result<(), KwVideoError> {
         if end > self.resident.len() {
             return Err(KwVideoError::InvalidStructure(
                 "resident KWVIDEO request escapes file",
@@ -1444,12 +1427,12 @@ impl VideoAsset {
         let sample_end = sample_start
             .checked_add(fragment.first_sample_size as usize)
             .ok_or(KwVideoError::OffsetOverflow)?;
-        let sample = self
-            .bootstrap
-            .get(sample_start..sample_end)
-            .ok_or(KwVideoError::InvalidStructure(
-                "first HEVC sample escapes transition bootstrap",
-            ))?;
+        let sample =
+            self.bootstrap
+                .get(sample_start..sample_end)
+                .ok_or(KwVideoError::InvalidStructure(
+                    "first HEVC sample escapes transition bootstrap",
+                ))?;
         let hvcc = find_hvcc_in_bootstrap(&self.bootstrap)?;
 
         super::hevc_syntax::FirstPictureSyntax::parse(
@@ -1495,12 +1478,12 @@ impl VideoAsset {
         let sample_end = sample_start
             .checked_add(fragment.first_sample_size as usize)
             .ok_or(KwVideoError::OffsetOverflow)?;
-        let sample = self
-            .bootstrap
-            .get(sample_start..sample_end)
-            .ok_or(KwVideoError::InvalidStructure(
-                "first HEVC sample escapes transition bootstrap",
-            ))?;
+        let sample =
+            self.bootstrap
+                .get(sample_start..sample_end)
+                .ok_or(KwVideoError::InvalidStructure(
+                    "first HEVC sample escapes transition bootstrap",
+                ))?;
 
         let hvcc = find_hvcc_in_bootstrap(&self.bootstrap)?;
         let mut bytes = Vec::with_capacity(
@@ -1715,14 +1698,8 @@ pub enum KwVideoError {
     MovieBoxAfterFragment,
     MediaDataBeforeFragment,
     MissingFirstMediaFragment,
-    TransitionBootstrapTooLarge {
-        required: usize,
-        maximum: usize,
-    },
-    ResidentVideoTooLarge {
-        required: usize,
-        maximum: usize,
-    },
+    TransitionBootstrapTooLarge { required: usize, maximum: usize },
+    ResidentVideoTooLarge { required: usize, maximum: usize },
     OffsetOverflow,
     InvalidStructure(&'static str),
     UnsupportedProfile(&'static str),
@@ -1754,16 +1731,25 @@ impl fmt::Display for KwVideoError {
                 write!(f, "Keywork Video ftyp payload is too small: {size} bytes")
             }
             Self::MisalignedFileTypeSize(size) => {
-                write!(f, "Keywork Video ftyp payload is not a multiple of four: {size} bytes")
+                write!(
+                    f,
+                    "Keywork Video ftyp payload is not a multiple of four: {size} bytes"
+                )
             }
             Self::UnsupportedMajorBrand(brand) => {
-                write!(f, "unsupported video major brand {brand}; expected {KWVIDEO_BRAND}")
+                write!(
+                    f,
+                    "unsupported video major brand {brand}; expected {KWVIDEO_BRAND}"
+                )
             }
             Self::FragmentBeforeMovieBox => {
                 write!(f, "Keywork Video media fragment appears before moov")
             }
             Self::MovieBoxAfterFragment => {
-                write!(f, "Keywork Video moov appears after the first media fragment")
+                write!(
+                    f,
+                    "Keywork Video moov appears after the first media fragment"
+                )
             }
             Self::MediaDataBeforeFragment => {
                 write!(f, "Keywork Video mdat appears before the first moof")
@@ -1784,7 +1770,9 @@ impl fmt::Display for KwVideoError {
                 )
             }
             Self::OffsetOverflow => write!(f, "Keywork Video box offset overflow"),
-            Self::InvalidStructure(reason) => write!(f, "invalid Keywork Video structure: {reason}"),
+            Self::InvalidStructure(reason) => {
+                write!(f, "invalid Keywork Video structure: {reason}")
+            }
             Self::UnsupportedProfile(reason) => write!(f, "unsupported kwv1 profile: {reason}"),
             Self::VideoProfileSlotOutOfRange(slot) => write!(
                 f,

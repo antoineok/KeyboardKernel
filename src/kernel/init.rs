@@ -1,5 +1,8 @@
 use crate::{
-    arch::{gic::{GIC_COMPATIBLE, GIC_PLATFORM}, mmu},
+    arch::{
+        gic::{GIC_COMPATIBLE, GIC_PLATFORM},
+        mmu,
+    },
     drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART},
     early_timeit,
     fdt::BootInfo,
@@ -40,7 +43,7 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
                 REQUIRED_ALIASES,
                 REQUIRED_DEVICES,
             )
-                .expect("Invalid boot FDT")
+            .expect("Invalid boot FDT")
         }
     });
 

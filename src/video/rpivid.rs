@@ -75,8 +75,7 @@ const ARG_IC_ICTRL_ACTIVE2_EN: u32 = 1 << 6;
 const ARG_IC_ICTRL_H264_INTERRUPT_INT: u32 = 1 << 25;
 const ARG_IC_ICTRL_VP9_INTERRUPT_INT: u32 = 1 << 29;
 
-const ARG_IC_ICTRL_HEVC_ENABLE_MASK: u32 =
-    ARG_IC_ICTRL_ACTIVE1_EN | ARG_IC_ICTRL_ACTIVE2_EN;
+const ARG_IC_ICTRL_HEVC_ENABLE_MASK: u32 = ARG_IC_ICTRL_ACTIVE1_EN | ARG_IC_ICTRL_ACTIVE2_EN;
 const ARG_IC_ICTRL_ALL_IRQ_MASK: u32 = ARG_IC_ICTRL_ACTIVE1_INT
     | ARG_IC_ICTRL_ACTIVE2_INT
     | ARG_IC_ICTRL_H264_INTERRUPT_INT
@@ -95,30 +94,28 @@ const PAUSE_MODE_TILE: u32 = 0xffff;
 
 // HEVC Main I-slice CABAC initialisation values (H.265 section 9.3.2.2).
 const PROB_INIT_I: [u8; 156] = [
-    153, 200, 139, 141, 157, 154, 154, 154, 154, 154, 184, 154, 154, 154, 184, 63,
-    154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 153, 138, 138,
-    111, 141, 94, 138, 182, 154, 154, 154, 140, 92, 137, 138, 140, 152, 138, 139,
-    153, 74, 149, 92, 139, 107, 122, 152, 140, 179, 166, 182, 140, 227, 122, 197,
-    110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111, 79, 108,
-    123, 63, 110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111,
-    79, 108, 123, 63, 91, 171, 134, 141, 138, 153, 136, 167, 152, 152, 139, 139,
-    111, 111, 125, 110, 110, 94, 124, 108, 124, 107, 125, 141, 179, 153, 125, 107,
-    125, 141, 179, 153, 125, 107, 125, 141, 179, 153, 125, 140, 139, 182, 182, 152,
-    136, 152, 136, 153, 136, 139, 111, 136, 139, 111, 0, 0,
+    153, 200, 139, 141, 157, 154, 154, 154, 154, 154, 184, 154, 154, 154, 184, 63, 154, 154, 154,
+    154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 153, 138, 138, 111, 141, 94, 138, 182, 154,
+    154, 154, 140, 92, 137, 138, 140, 152, 138, 139, 153, 74, 149, 92, 139, 107, 122, 152, 140,
+    179, 166, 182, 140, 227, 122, 197, 110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143,
+    127, 111, 79, 108, 123, 63, 110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127,
+    111, 79, 108, 123, 63, 91, 171, 134, 141, 138, 153, 136, 167, 152, 152, 139, 139, 111, 111,
+    125, 110, 110, 94, 124, 108, 124, 107, 125, 141, 179, 153, 125, 107, 125, 141, 179, 153, 125,
+    107, 125, 141, 179, 153, 125, 140, 139, 182, 182, 152, 136, 152, 136, 153, 136, 139, 111, 136,
+    139, 111, 0, 0,
 ];
 
 // HEVC Main P-slice CABAC initialisation values (H.265 section 9.3.2.2).
 // This is prob_init[1] from Raspberry Pi's RPIVID driver.
 const PROB_INIT_P: [u8; 156] = [
-    153, 185, 107, 139, 126, 197, 185, 201, 154, 149, 154, 139, 154, 154, 154, 152,
-    110, 122, 95, 79, 63, 31, 31, 153, 153, 168, 140, 198, 79, 124, 138, 94, 153, 111,
-    149, 107, 167, 154, 154, 154, 154, 196, 196, 167, 154, 152, 167, 182, 182, 134, 149,
-    136, 153, 121, 136, 137, 169, 194, 166, 167, 154, 167, 137, 182, 125, 110, 94, 110,
-    95, 79, 125, 111, 110, 78, 110, 111, 111, 95, 94, 108, 123, 108, 125, 110, 94, 110,
-    95, 79, 125, 111, 110, 78, 110, 111, 111, 95, 94, 108, 123, 108, 121, 140, 61, 154,
-    107, 167, 91, 122, 107, 167, 139, 139, 155, 154, 139, 153, 139, 123, 123, 63, 153,
-    166, 183, 140, 136, 153, 154, 166, 183, 140, 136, 153, 154, 166, 183, 140, 136, 153,
-    154, 170, 153, 123, 123, 107, 121, 107, 121, 167, 151, 183, 140, 151, 183, 140, 0, 0,
+    153, 185, 107, 139, 126, 197, 185, 201, 154, 149, 154, 139, 154, 154, 154, 152, 110, 122, 95,
+    79, 63, 31, 31, 153, 153, 168, 140, 198, 79, 124, 138, 94, 153, 111, 149, 107, 167, 154, 154,
+    154, 154, 196, 196, 167, 154, 152, 167, 182, 182, 134, 149, 136, 153, 121, 136, 137, 169, 194,
+    166, 167, 154, 167, 137, 182, 125, 110, 94, 110, 95, 79, 125, 111, 110, 78, 110, 111, 111, 95,
+    94, 108, 123, 108, 125, 110, 94, 110, 95, 79, 125, 111, 110, 78, 110, 111, 111, 95, 94, 108,
+    123, 108, 121, 140, 61, 154, 107, 167, 91, 122, 107, 167, 139, 139, 155, 154, 139, 153, 139,
+    123, 123, 63, 153, 166, 183, 140, 136, 153, 154, 166, 183, 140, 136, 153, 154, 166, 183, 140,
+    136, 153, 154, 170, 153, 123, 123, 107, 121, 107, 121, 167, 151, 183, 140, 151, 183, 140, 0, 0,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,8 +188,15 @@ impl RpividCommandBuffer {
     }
 
     pub fn push(&mut self, register: usize, data: u32) {
-        assert_eq!(register & 3, 0, "RPIVID command register is not 32-bit aligned");
-        assert!(register <= u32::MAX as usize, "RPIVID command register exceeds u32");
+        assert_eq!(
+            register & 3,
+            0,
+            "RPIVID command register is not 32-bit aligned"
+        );
+        assert!(
+            register <= u32::MAX as usize,
+            "RPIVID command register exceeds u32"
+        );
         assert!(
             self.used_commands < RPIVID_COMMAND_CAPACITY,
             "RPIVID command FIFO overflow",
@@ -211,10 +215,8 @@ impl RpividCommandBuffer {
     }
 
     pub fn sync_used_for_device(&self) {
-        self.dma.sync_range_for_device(
-            0,
-            self.used_commands * core::mem::size_of::<u64>(),
-        );
+        self.dma
+            .sync_range_for_device(0, self.used_commands * core::mem::size_of::<u64>());
     }
 
     #[inline(always)]
@@ -252,10 +254,16 @@ pub struct RpividBitstreamWindow {
 impl RpividBitstreamWindow {
     fn from_phys_range(phys_addr: u64, byte_len: usize) -> Self {
         assert!(byte_len != 0, "RPIVID bitstream window must not be empty");
-        assert!(byte_len <= u32::MAX as usize, "RPIVID bitstream window is too large");
+        assert!(
+            byte_len <= u32::MAX as usize,
+            "RPIVID bitstream window is too large"
+        );
 
         let base = phys_addr >> 6;
-        assert!(base <= u32::MAX as u64, "RPIVID bitstream address exceeds hardware register width");
+        assert!(
+            base <= u32::MAX as u64,
+            "RPIVID bitstream address exceeds hardware register width"
+        );
 
         Self {
             base: base as u32,
@@ -294,7 +302,10 @@ impl RpividBitstreamBuffer {
     }
 
     pub fn load(&mut self, data: &[u8]) {
-        assert!(data.len() <= self.dma.len(), "RPIVID bitstream exceeds staging capacity");
+        assert!(
+            data.len() <= self.dma.len(),
+            "RPIVID bitstream exceeds staging capacity"
+        );
 
         self.dma.as_mut_slice()[..data.len()].copy_from_slice(data);
         self.used = data.len();
@@ -302,8 +313,13 @@ impl RpividBitstreamBuffer {
     }
 
     pub fn window(&self, offset: usize, byte_len: usize) -> RpividBitstreamWindow {
-        let end = offset.checked_add(byte_len).expect("RPIVID bitstream range overflow");
-        assert!(end <= self.used, "RPIVID bitstream range exceeds loaded data");
+        let end = offset
+            .checked_add(byte_len)
+            .expect("RPIVID bitstream range overflow");
+        assert!(
+            end <= self.used,
+            "RPIVID bitstream range exceeds loaded data"
+        );
 
         RpividBitstreamWindow::from_phys_range(self.dma.phys_addr() + offset as u64, byte_len)
     }
@@ -500,7 +516,11 @@ fn round_up_workspace_size(bytes: usize) -> usize {
         .checked_shl(n as u32)
         .expect("RPIVID workspace size overflow");
 
-    if bytes >= three { four } else { three }
+    if bytes >= three {
+        four
+    } else {
+        three
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -572,8 +592,14 @@ pub struct RpividDecodeWorkspace {
 
 impl RpividDecodeWorkspace {
     pub fn allocate(width: usize, height: usize) -> Self {
-        assert!(width != 0 && height != 0, "RPIVID dimensions must be non-zero");
-        assert!(width <= 4096 && height <= 4096, "RPIVID dimensions exceed hardware limit");
+        assert!(
+            width != 0 && height != 0,
+            "RPIVID dimensions must be non-zero"
+        );
+        assert!(
+            width <= 4096 && height <= 4096,
+            "RPIVID dimensions exceed hardware limit"
+        );
 
         let pixels = width
             .checked_mul(height)
@@ -612,18 +638,48 @@ impl RpividDecodeWorkspace {
         let pps = picture.pps;
         let slice = picture.slice;
 
-        assert!(slice.first_slice_segment_in_pic, "kwv1 requires one slice per picture");
-        assert!(matches!(slice.slice_type, 1 | 2), "kwv1 RPIVID path only supports I/P slices");
-        assert!(!pps.tiles_enabled, "kwv1 RPIVID path does not support tiles");
-        assert!(!pps.entropy_coding_sync_enabled, "kwv1 RPIVID path requires WPP disabled");
-        assert!(!sps.scaling_list_enabled, "kwv1 RPIVID path does not support scaling lists");
-        assert!(!sps.temporal_mvp_enabled, "kwv1 RPIVID path requires temporal MVP disabled");
-        assert_eq!(slice.entry_point_count, 0, "kwv1 non-WPP slice must not contain entry points");
+        assert!(
+            slice.first_slice_segment_in_pic,
+            "kwv1 requires one slice per picture"
+        );
+        assert!(
+            matches!(slice.slice_type, 1 | 2),
+            "kwv1 RPIVID path only supports I/P slices"
+        );
+        assert!(
+            !pps.tiles_enabled,
+            "kwv1 RPIVID path does not support tiles"
+        );
+        assert!(
+            !pps.entropy_coding_sync_enabled,
+            "kwv1 RPIVID path requires WPP disabled"
+        );
+        assert!(
+            !sps.scaling_list_enabled,
+            "kwv1 RPIVID path does not support scaling lists"
+        );
+        assert!(
+            !sps.temporal_mvp_enabled,
+            "kwv1 RPIVID path requires temporal MVP disabled"
+        );
+        assert_eq!(
+            slice.entry_point_count, 0,
+            "kwv1 non-WPP slice must not contain entry points"
+        );
         assert!(!cabac_ebsp.is_empty(), "RPIVID CABAC payload is empty");
         if slice.slice_type == 1 {
-            assert_eq!(slice.num_ref_idx_l0_active, 1, "kwv1 P slice must use one L0 reference");
-            assert_eq!(slice.num_ref_idx_l1_active, 0, "kwv1 P slice must not use L1 references");
-            assert_eq!(slice.closest_negative_delta_poc, -1, "kwv1 P slice must reference the preceding picture");
+            assert_eq!(
+                slice.num_ref_idx_l0_active, 1,
+                "kwv1 P slice must use one L0 reference"
+            );
+            assert_eq!(
+                slice.num_ref_idx_l1_active, 0,
+                "kwv1 P slice must not use L1 references"
+            );
+            assert_eq!(
+                slice.closest_negative_delta_poc, -1,
+                "kwv1 P slice must reference the preceding picture"
+            );
         }
 
         self.bitstream.load(cabac_ebsp);
@@ -659,11 +715,12 @@ impl RpividDecodeWorkspace {
             RPI_COEFFWSTRIDE,
             RpividDmaLength::from_bytes(coeff_stride).register_value(),
         );
-        registers.hevc.write32(RPI_CFNUM, self.command.used_commands() as u32);
-        registers.hevc.write32(
-            RPI_CFBASE,
-            self.command.hardware_addr().register_value(),
-        );
+        registers
+            .hevc
+            .write32(RPI_CFNUM, self.command.used_commands() as u32);
+        registers
+            .hevc
+            .write32(RPI_CFBASE, self.command.hardware_addr().register_value());
 
         let started = crate::time::time_manager().uptime();
         let timeout = Duration::from_millis(250);
@@ -694,11 +751,26 @@ impl RpividDecodeWorkspace {
     ) -> RpividPhase2Snapshot {
         let sps = picture.sps;
         let slice = picture.slice;
-        assert!(matches!(slice.slice_type, 1 | 2), "kwv1 phase 2 only supports I/P slices");
-        assert_eq!(sps.bit_depth_luma_minus8, 0, "kwv1 phase 2 supports 8-bit luma only");
-        assert_eq!(sps.bit_depth_chroma_minus8, 0, "kwv1 phase 2 supports 8-bit chroma only");
-        assert_eq!(sps.chroma_format_idc, 1, "kwv1 phase 2 requires 4:2:0 chroma");
-        assert!(!sps.temporal_mvp_enabled, "kwv1 phase 2 requires temporal MVP disabled");
+        assert!(
+            matches!(slice.slice_type, 1 | 2),
+            "kwv1 phase 2 only supports I/P slices"
+        );
+        assert_eq!(
+            sps.bit_depth_luma_minus8, 0,
+            "kwv1 phase 2 supports 8-bit luma only"
+        );
+        assert_eq!(
+            sps.bit_depth_chroma_minus8, 0,
+            "kwv1 phase 2 supports 8-bit chroma only"
+        );
+        assert_eq!(
+            sps.chroma_format_idc, 1,
+            "kwv1 phase 2 requires 4:2:0 chroma"
+        );
+        assert!(
+            !sps.temporal_mvp_enabled,
+            "kwv1 phase 2 requires temporal MVP disabled"
+        );
 
         let layout = RpividFrameLayout::from_picture(picture);
         self.ensure_frame_buffers(layout);
@@ -759,9 +831,15 @@ impl RpividDecodeWorkspace {
         );
 
         let frame_stride = RpividDmaLength::from_bytes(layout.frame_stride).register_value();
-        registers.hevc.write32(RPI_OUTYBASE, RpividDmaAddress::from_phys(frame_phys).register_value());
+        registers.hevc.write32(
+            RPI_OUTYBASE,
+            RpividDmaAddress::from_phys(frame_phys).register_value(),
+        );
         registers.hevc.write32(RPI_OUTYSTRIDE, frame_stride);
-        registers.hevc.write32(RPI_OUTCBASE, RpividDmaAddress::from_phys(chroma_phys).register_value());
+        registers.hevc.write32(
+            RPI_OUTCBASE,
+            RpividDmaAddress::from_phys(chroma_phys).register_value(),
+        );
         registers.hevc.write32(RPI_OUTCSTRIDE, frame_stride);
 
         // Seed every slot with a valid surface. P slices use DPB slot 0 for
@@ -769,15 +847,27 @@ impl RpividDecodeWorkspace {
         // picture in the constrained kwv1 encoder profile.
         for index in 0..16usize {
             let base = RPI_REF_BASE + index * RPI_REF_STRIDE;
-            registers.hevc.write32(base, RpividDmaAddress::from_phys(frame_phys).register_value());
+            registers.hevc.write32(
+                base,
+                RpividDmaAddress::from_phys(frame_phys).register_value(),
+            );
             registers.hevc.write32(base + 4, frame_stride);
-            registers.hevc.write32(base + 8, RpividDmaAddress::from_phys(chroma_phys).register_value());
+            registers.hevc.write32(
+                base + 8,
+                RpividDmaAddress::from_phys(chroma_phys).register_value(),
+            );
             registers.hevc.write32(base + 12, frame_stride);
         }
         if is_p {
-            registers.hevc.write32(RPI_REF_BASE, RpividDmaAddress::from_phys(previous_phys).register_value());
+            registers.hevc.write32(
+                RPI_REF_BASE,
+                RpividDmaAddress::from_phys(previous_phys).register_value(),
+            );
             registers.hevc.write32(RPI_REF_BASE + 4, frame_stride);
-            registers.hevc.write32(RPI_REF_BASE + 8, RpividDmaAddress::from_phys(previous_chroma_phys).register_value());
+            registers.hevc.write32(
+                RPI_REF_BASE + 8,
+                RpividDmaAddress::from_phys(previous_chroma_phys).register_value(),
+            );
             registers.hevc.write32(RPI_REF_BASE + 12, frame_stride);
         }
 
@@ -869,8 +959,16 @@ impl RpividDecodeWorkspace {
         pixels.resize(len, 0);
         let source = frame.dma.as_slice();
 
-        assert_eq!(visible_width & 1, 0, "kwv1 4:2:0 visible width must be even");
-        assert_eq!((sps.crop_left as usize) & 1, 0, "kwv1 4:2:0 left crop must be even");
+        assert_eq!(
+            visible_width & 1,
+            0,
+            "kwv1 4:2:0 visible width must be even"
+        );
+        assert_eq!(
+            (sps.crop_left as usize) & 1,
+            0,
+            "kwv1 4:2:0 left crop must be even"
+        );
 
         for y in 0..visible_height {
             let source_y = y + sps.crop_top as usize;
@@ -881,10 +979,8 @@ impl RpividDecodeWorkspace {
                 let in_column = source_x & 127;
                 let column_base = column * layout.frame_stride;
                 let y_offset = column_base + source_y * 128 + in_column;
-                let uv_offset = column_base
-                    + layout.chroma_offset
-                    + (source_y / 2) * 128
-                    + in_column;
+                let uv_offset =
+                    column_base + layout.chroma_offset + (source_y / 2) * 128 + in_column;
                 let cb = source[uv_offset];
                 let cr = source[uv_offset + 1];
                 let dest = y * pitch + x * 4;
@@ -945,7 +1041,10 @@ impl RpividDecodeWorkspace {
 }
 
 fn align_up(value: usize, alignment: usize) -> usize {
-    assert!(alignment.is_power_of_two(), "RPIVID alignment must be a power of two");
+    assert!(
+        alignment.is_power_of_two(),
+        "RPIVID alignment must be a power of two"
+    );
     value
         .checked_add(alignment - 1)
         .expect("RPIVID alignment overflow")
@@ -1019,7 +1118,10 @@ fn build_picture_single_tile_commands(
     let pps = picture.pps;
     let slice = picture.slice;
     let slice_qp = 26 + pps.init_qp_minus26 + slice.slice_qp_delta;
-    assert!((0..=51).contains(&slice_qp), "RPIVID slice QP is outside 0..=51");
+    assert!(
+        (0..=51).contains(&slice_qp),
+        "RPIVID slice QP is outside 0..=51"
+    );
 
     commands.push(RPI_BFBASE, bitstream.base_register_value());
     commands.push(RPI_BFNUM, bitstream.byte_len());
@@ -1055,11 +1157,7 @@ fn build_picture_single_tile_commands(
     commands.push(RPI_STATUS, 1 | (last_x << 5) | (last_y << 18));
 }
 
-fn write_slice_probabilities(
-    commands: &mut RpividCommandBuffer,
-    slice_qp: i32,
-    slice_type: u32,
-) {
+fn write_slice_probabilities(commands: &mut RpividCommandBuffer, slice_qp: i32, slice_type: u32) {
     let init = match slice_type {
         2 => &PROB_INIT_I,
         1 => &PROB_INIT_P,
@@ -1124,8 +1222,8 @@ fn write_slice_messages(commands: &mut RpividCommandBuffer, picture: &FirstPictu
         | ((slice.loop_filter_across_slices_enabled as u32) << 9)
         | ((pps.loop_filter_across_tiles_enabled as u32) << 10);
     count += 1;
-    messages[count] = (((slice.slice_cr_qp_offset as u32) & 31) << 5)
-        | ((slice.slice_cb_qp_offset as u32) & 31);
+    messages[count] =
+        (((slice.slice_cr_qp_offset as u32) & 31) << 5) | ((slice.slice_cb_qp_offset as u32) & 31);
     count += 1;
 
     commands.push(
@@ -1151,11 +1249,31 @@ fn write_slice_segment_registers(commands: &mut RpividCommandBuffer, picture: &F
         | (sps.max_transform_hierarchy_depth_intra << 24)
         | (sps.max_transform_hierarchy_depth_inter << 28);
 
-    let pcm_luma = if sps.pcm_enabled { sps.pcm_sample_bit_depth_luma } else { 1 };
-    let pcm_chroma = if sps.pcm_enabled { sps.pcm_sample_bit_depth_chroma } else { 1 };
-    let pcm_min = if sps.pcm_enabled { sps.log2_min_pcm_luma_coding_block_size } else { 3 };
-    let pcm_max = if sps.pcm_enabled { sps.log2_max_pcm_luma_coding_block_size } else { 3 };
-    let chroma = if sps.separate_colour_plane { 0 } else { sps.chroma_format_idc };
+    let pcm_luma = if sps.pcm_enabled {
+        sps.pcm_sample_bit_depth_luma
+    } else {
+        1
+    };
+    let pcm_chroma = if sps.pcm_enabled {
+        sps.pcm_sample_bit_depth_chroma
+    } else {
+        1
+    };
+    let pcm_min = if sps.pcm_enabled {
+        sps.log2_min_pcm_luma_coding_block_size
+    } else {
+        3
+    };
+    let pcm_max = if sps.pcm_enabled {
+        sps.log2_max_pcm_luma_coding_block_size
+    } else {
+        3
+    };
+    let chroma = if sps.separate_colour_plane {
+        0
+    } else {
+        sps.chroma_format_idc
+    };
     let sps1 = (pcm_luma << 0)
         | (pcm_chroma << 4)
         | (pcm_min << 8)
@@ -1190,7 +1308,11 @@ fn slice_register(picture: &FirstPictureSyntax, row: u32, slice_const: u32) -> u
     let ctb_size = 1u32 << sps.log2_ctb_size;
     let width_last = sps.width & (ctb_size - 1);
     let height_last = sps.height & (ctb_size - 1);
-    let width = if width_last == 0 { ctb_size } else { width_last };
+    let width = if width_last == 0 {
+        ctb_size
+    } else {
+        width_last
+    };
     let height = if row + 1 < picture.ctb_height || height_last == 0 {
         ctb_size
     } else {
@@ -1231,8 +1353,7 @@ pub fn initialize_decode_workspace(width: usize, height: usize) {
     let probe_offset = 37usize;
     let probe_len = 173usize;
     let window = workspace.bitstream.window(probe_offset, probe_len);
-    let reconstructed = ((window.base_register_value() as u64) << 6)
-        + window.byte_offset() as u64;
+    let reconstructed = ((window.base_register_value() as u64) << 6) + window.byte_offset() as u64;
     assert_eq!(
         reconstructed,
         workspace.bitstream.phys_addr() + probe_offset as u64,
@@ -1273,7 +1394,10 @@ impl MmioRegion {
             physical_base <= usize::MAX as u64,
             "HEVC MMIO base does not fit in usize"
         );
-        assert!(size <= usize::MAX as u64, "HEVC MMIO size does not fit in usize");
+        assert!(
+            size <= usize::MAX as u64,
+            "HEVC MMIO size does not fit in usize"
+        );
 
         Self {
             base: physical_base as usize,
@@ -1282,7 +1406,11 @@ impl MmioRegion {
     }
 
     fn read32(self, offset: usize) -> u32 {
-        assert_eq!(offset & 0x3, 0, "HEVC register offset is not 32-bit aligned");
+        assert_eq!(
+            offset & 0x3,
+            0,
+            "HEVC register offset is not 32-bit aligned"
+        );
         let end = offset
             .checked_add(core::mem::size_of::<u32>())
             .expect("HEVC register offset overflow");
@@ -1292,11 +1420,18 @@ impl MmioRegion {
     }
 
     fn write32(self, offset: usize, value: u32) {
-        assert_eq!(offset & 0x3, 0, "HEVC register offset is not 32-bit aligned");
+        assert_eq!(
+            offset & 0x3,
+            0,
+            "HEVC register offset is not 32-bit aligned"
+        );
         let end = offset
             .checked_add(core::mem::size_of::<u32>())
             .expect("HEVC register offset overflow");
-        assert!(end <= self.size, "HEVC register write exceeds MMIO resource");
+        assert!(
+            end <= self.size,
+            "HEVC register write exceeds MMIO resource"
+        );
 
         unsafe {
             write_volatile((self.base + offset) as *mut u32, value);
@@ -1346,7 +1481,6 @@ impl RpividRegisters {
             interrupt_control: self.intc.read32(ARG_IC_ICTRL),
         }
     }
-
 
     /// Acknowledge any decoder-local interrupt latches.
     ///

@@ -5,9 +5,15 @@
 //! so after the identity MMU is enabled their ARM physical addresses can be
 //! used directly as Device-nGnRE virtual addresses.
 
-use core::{cell::UnsafeCell, ptr::{read_volatile, write_volatile}};
+use core::{
+    cell::UnsafeCell,
+    ptr::{read_volatile, write_volatile},
+};
 
-use crate::{fdt::{AliasEntry, DeviceEntry}, info};
+use crate::{
+    fdt::{AliasEntry, DeviceEntry},
+    info,
+};
 
 pub const GIC_COMPATIBLE: &str = "arm,gic-400";
 
@@ -108,8 +114,11 @@ impl GicPlatform {
     /// Configure one level-sensitive SPI and route it to a single GIC CPU
     /// interface target mask.
     pub fn configure_level_spi(&self, intid: u32, target_mask: u8, priority: u8) {
-        GicRegisters::from_resources(self.resources())
-            .configure_level_spi(intid, target_mask, priority);
+        GicRegisters::from_resources(self.resources()).configure_level_spi(
+            intid,
+            target_mask,
+            priority,
+        );
     }
 
     /// Software-pend an interrupt. Used only for bring-up/self-test before the
@@ -145,7 +154,10 @@ impl MmioRegion {
             physical_base <= usize::MAX as u64,
             "GIC MMIO base does not fit in usize"
         );
-        assert!(size <= usize::MAX as u64, "GIC MMIO size does not fit in usize");
+        assert!(
+            size <= usize::MAX as u64,
+            "GIC MMIO size does not fit in usize"
+        );
 
         Self {
             base: physical_base as usize,
@@ -260,7 +272,10 @@ impl GicRegisters {
     }
 
     fn validate_intid(self, intid: u32) {
-        assert!(intid < self.interrupt_lines(), "GIC INTID {intid} is not implemented");
+        assert!(
+            intid < self.interrupt_lines(),
+            "GIC INTID {intid} is not implemented"
+        );
     }
 
     fn current_cpu_target_mask(self) -> u8 {
@@ -273,7 +288,11 @@ impl GicRegisters {
             mask |= mask >> 8;
             let mask = (mask & 0xff) as u8;
             if mask != 0 {
-                assert_eq!(mask.count_ones(), 1, "GIC current CPU target mask is not one-hot");
+                assert_eq!(
+                    mask.count_ones(),
+                    1,
+                    "GIC current CPU target mask is not one-hot"
+                );
                 return mask;
             }
         }
@@ -291,7 +310,9 @@ impl GicRegisters {
         let control = self.cpu_interface.read32(GICC_CTLR) | 1;
         self.cpu_interface.write32(GICC_CTLR, control);
 
-        unsafe { core::arch::asm!("isb", options(nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
 
         target_mask
     }
@@ -345,6 +366,8 @@ impl GicRegisters {
 
     fn end_interrupt(self, ack: GicIrqAck) {
         self.cpu_interface.write32(GICC_EOIR, ack.raw);
-        unsafe { core::arch::asm!("isb", options(nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
     }
 }

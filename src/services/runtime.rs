@@ -1,9 +1,9 @@
 use crate::{
     hid::{DirtyReports, HidState},
     transport::{
-        smp::{try_receive_management_from_usb, try_send_management_to_usb}, ActiveTransport,
-        KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportRouter,
-        TransportState, TransportTransition,
+        smp::{try_receive_management_from_usb, try_send_management_to_usb},
+        ActiveTransport, KeyworkTransport, ReceiveStatus, SendStatus, TransportKind,
+        TransportRouter, TransportState, TransportTransition,
     },
 };
 
@@ -187,7 +187,9 @@ impl<const CAPACITY: usize> Cpu0ControlPlane<CAPACITY> {
             ReceiveStatus::Received(length) => length,
             ReceiveStatus::Empty | ReceiveStatus::Disconnected => return,
             ReceiveStatus::BufferTooSmall { required } => {
-                panic!("CPU2 supplied oversized KWMP frame: required={required}, capacity={CAPACITY}")
+                panic!(
+                    "CPU2 supplied oversized KWMP frame: required={required}, capacity={CAPACITY}"
+                )
             }
         };
 

@@ -38,22 +38,14 @@ pub struct Registers {
 #[inline(always)]
 pub fn unmask_irq() {
     unsafe {
-        core::arch::asm!(
-            "msr daifclr, #2",
-            "isb",
-            options(nostack, preserves_flags),
-        );
+        core::arch::asm!("msr daifclr, #2", "isb", options(nostack, preserves_flags),);
     }
 }
 
 #[inline(always)]
 pub fn mask_irq() {
     unsafe {
-        core::arch::asm!(
-            "msr daifset, #2",
-            "isb",
-            options(nostack, preserves_flags),
-        );
+        core::arch::asm!("msr daifset, #2", "isb", options(nostack, preserves_flags),);
     }
 }
 

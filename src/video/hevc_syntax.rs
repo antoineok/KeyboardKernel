@@ -136,9 +136,15 @@ pub struct FirstPictureSyntax {
 }
 
 impl FirstPictureSyntax {
-    pub fn parse(hvcc: &[u8], sample: &[u8], nal_length_size: usize) -> Result<Self, HevcSyntaxError> {
+    pub fn parse(
+        hvcc: &[u8],
+        sample: &[u8],
+        nal_length_size: usize,
+    ) -> Result<Self, HevcSyntaxError> {
         if nal_length_size != 4 {
-            return Err(HevcSyntaxError::Unsupported("only four-byte hvc1 NAL lengths are supported"));
+            return Err(HevcSyntaxError::Unsupported(
+                "only four-byte hvc1 NAL lengths are supported",
+            ));
         }
 
         let sps_nal = find_hvcc_nal(hvcc, 33)?;
@@ -180,7 +186,9 @@ fn find_hvcc_nal(hvcc: &[u8], wanted_type: u8) -> Result<&[u8], HevcSyntaxError>
 
     let mut cursor = 23usize;
     for _ in 0..hvcc[22] {
-        let array_header = *hvcc.get(cursor).ok_or(HevcSyntaxError::Truncated("hvcC array"))?;
+        let array_header = *hvcc
+            .get(cursor)
+            .ok_or(HevcSyntaxError::Truncated("hvcC array"))?;
         let nal_type = array_header & 0x3f;
         cursor += 1;
         let count = read_u16(hvcc, cursor)? as usize;
@@ -189,7 +197,9 @@ fn find_hvcc_nal(hvcc: &[u8], wanted_type: u8) -> Result<&[u8], HevcSyntaxError>
             let len = read_u16(hvcc, cursor)? as usize;
             cursor += 2;
             let end = cursor.checked_add(len).ok_or(HevcSyntaxError::Overflow)?;
-            let nal = hvcc.get(cursor..end).ok_or(HevcSyntaxError::Truncated("hvcC NAL"))?;
+            let nal = hvcc
+                .get(cursor..end)
+                .ok_or(HevcSyntaxError::Truncated("hvcC NAL"))?;
             if nal_type == wanted_type {
                 validate_nal_type(nal, wanted_type)?;
                 return Ok(nal);
@@ -250,7 +260,11 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
     if chroma_format_idc > 3 {
         return Err(HevcSyntaxError::Unsupported("invalid chroma_format_idc"));
     }
-    let separate_colour_plane = if chroma_format_idc == 3 { bits.read_bit()? } else { false };
+    let separate_colour_plane = if chroma_format_idc == 3 {
+        bits.read_bit()?
+    } else {
+        false
+    };
     let width = bits.read_ue()?;
     let height = bits.read_ue()?;
     if width == 0 || height == 0 {
@@ -268,37 +282,70 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
     };
     let (crop_left, crop_right, crop_top, crop_bottom) = if bits.read_bit()? {
         // Conformance-window offsets are expressed in chroma sample units.
-        let left = bits.read_ue()?.checked_mul(sub_width_c).ok_or(HevcSyntaxError::Overflow)?;
-        let right = bits.read_ue()?.checked_mul(sub_width_c).ok_or(HevcSyntaxError::Overflow)?;
-        let top = bits.read_ue()?.checked_mul(sub_height_c).ok_or(HevcSyntaxError::Overflow)?;
-        let bottom = bits.read_ue()?.checked_mul(sub_height_c).ok_or(HevcSyntaxError::Overflow)?;
+        let left = bits
+            .read_ue()?
+            .checked_mul(sub_width_c)
+            .ok_or(HevcSyntaxError::Overflow)?;
+        let right = bits
+            .read_ue()?
+            .checked_mul(sub_width_c)
+            .ok_or(HevcSyntaxError::Overflow)?;
+        let top = bits
+            .read_ue()?
+            .checked_mul(sub_height_c)
+            .ok_or(HevcSyntaxError::Overflow)?;
+        let bottom = bits
+            .read_ue()?
+            .checked_mul(sub_height_c)
+            .ok_or(HevcSyntaxError::Overflow)?;
         (left, right, top, bottom)
     } else {
         (0, 0, 0, 0)
     };
-    if crop_left.checked_add(crop_right).ok_or(HevcSyntaxError::Overflow)? >= width
-        || crop_top.checked_add(crop_bottom).ok_or(HevcSyntaxError::Overflow)? >= height
+    if crop_left
+        .checked_add(crop_right)
+        .ok_or(HevcSyntaxError::Overflow)?
+        >= width
+        || crop_top
+            .checked_add(crop_bottom)
+            .ok_or(HevcSyntaxError::Overflow)?
+            >= height
     {
-        return Err(HevcSyntaxError::Invalid("HEVC conformance crop removes the whole picture"));
+        return Err(HevcSyntaxError::Invalid(
+            "HEVC conformance crop removes the whole picture",
+        ));
     }
 
     let bit_depth_luma_minus8 = bits.read_ue()?;
     let bit_depth_chroma_minus8 = bits.read_ue()?;
-    let log2_max_pic_order_cnt_lsb = bits.read_ue()?.checked_add(4).ok_or(HevcSyntaxError::Overflow)?;
+    let log2_max_pic_order_cnt_lsb = bits
+        .read_ue()?
+        .checked_add(4)
+        .ok_or(HevcSyntaxError::Overflow)?;
 
     let sub_layer_ordering_info_present = bits.read_bit()?;
-    let first_layer = if sub_layer_ordering_info_present { 0 } else { max_sub_layers_minus1 as usize };
+    let first_layer = if sub_layer_ordering_info_present {
+        0
+    } else {
+        max_sub_layers_minus1 as usize
+    };
     for _ in first_layer..=max_sub_layers_minus1 as usize {
         bits.read_ue()?; // sps_max_dec_pic_buffering_minus1
         bits.read_ue()?; // sps_max_num_reorder_pics
         bits.read_ue()?; // sps_max_latency_increase_plus1
     }
 
-    let log2_min_luma_coding_block_size = bits.read_ue()?.checked_add(3).ok_or(HevcSyntaxError::Overflow)?;
+    let log2_min_luma_coding_block_size = bits
+        .read_ue()?
+        .checked_add(3)
+        .ok_or(HevcSyntaxError::Overflow)?;
     let log2_ctb_size = log2_min_luma_coding_block_size
         .checked_add(bits.read_ue()?)
         .ok_or(HevcSyntaxError::Overflow)?;
-    let log2_min_luma_transform_block_size = bits.read_ue()?.checked_add(2).ok_or(HevcSyntaxError::Overflow)?;
+    let log2_min_luma_transform_block_size = bits
+        .read_ue()?
+        .checked_add(2)
+        .ok_or(HevcSyntaxError::Overflow)?;
     let log2_max_luma_transform_block_size = log2_min_luma_transform_block_size
         .checked_add(bits.read_ue()?)
         .ok_or(HevcSyntaxError::Overflow)?;
@@ -321,7 +368,10 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
     if pcm_enabled {
         pcm_sample_bit_depth_luma = bits.read_bits(4)? + 1;
         pcm_sample_bit_depth_chroma = bits.read_bits(4)? + 1;
-        log2_min_pcm_luma_coding_block_size = bits.read_ue()?.checked_add(3).ok_or(HevcSyntaxError::Overflow)?;
+        log2_min_pcm_luma_coding_block_size = bits
+            .read_ue()?
+            .checked_add(3)
+            .ok_or(HevcSyntaxError::Overflow)?;
         log2_max_pcm_luma_coding_block_size = log2_min_pcm_luma_coding_block_size
             .checked_add(bits.read_ue()?)
             .ok_or(HevcSyntaxError::Overflow)?;
@@ -399,7 +449,11 @@ fn parse_pps(nal: &[u8]) -> Result<PpsSummary, HevcSyntaxError> {
     let constrained_intra_pred = bits.read_bit()?;
     let transform_skip_enabled = bits.read_bit()?;
     let cu_qp_delta_enabled = bits.read_bit()?;
-    let diff_cu_qp_delta_depth = if cu_qp_delta_enabled { bits.read_ue()? } else { 0 };
+    let diff_cu_qp_delta_depth = if cu_qp_delta_enabled {
+        bits.read_ue()?
+    } else {
+        0
+    };
     let pps_cb_qp_offset = bits.read_se()?;
     let pps_cr_qp_offset = bits.read_se()?;
     let slice_chroma_qp_offsets_present = bits.read_bit()?;
@@ -415,8 +469,12 @@ fn parse_pps(nal: &[u8]) -> Result<PpsSummary, HevcSyntaxError> {
     if tiles_enabled {
         let num_tile_columns_minus1 = bits.read_ue()?;
         let num_tile_rows_minus1 = bits.read_ue()?;
-        tile_columns = num_tile_columns_minus1.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
-        tile_rows = num_tile_rows_minus1.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+        tile_columns = num_tile_columns_minus1
+            .checked_add(1)
+            .ok_or(HevcSyntaxError::Overflow)?;
+        tile_rows = num_tile_rows_minus1
+            .checked_add(1)
+            .ok_or(HevcSyntaxError::Overflow)?;
         let uniform_spacing = bits.read_bit()?;
         if !uniform_spacing {
             for _ in 0..num_tile_columns_minus1 {
@@ -453,7 +511,9 @@ fn parse_pps(nal: &[u8]) -> Result<PpsSummary, HevcSyntaxError> {
     let slice_segment_header_extension_present = bits.read_bit()?;
     let pps_extension_present = bits.read_bit()?;
     if pps_extension_present {
-        return Err(HevcSyntaxError::Unsupported("PPS extensions are not supported by kwv1 bring-up"));
+        return Err(HevcSyntaxError::Unsupported(
+            "PPS extensions are not supported by kwv1 bring-up",
+        ));
     }
 
     Ok(PpsSummary {
@@ -494,7 +554,11 @@ fn parse_pps(nal: &[u8]) -> Result<PpsSummary, HevcSyntaxError> {
     })
 }
 
-fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSummary, HevcSyntaxError> {
+fn parse_slice(
+    nal: &[u8],
+    sps: &SpsSummary,
+    pps: &PpsSummary,
+) -> Result<SliceSummary, HevcSyntaxError> {
     let nal_unit_type = nal_unit_type(nal)?;
     if nal_unit_type > 31 {
         return Err(HevcSyntaxError::Invalid("slice NAL is not VCL"));
@@ -611,7 +675,11 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
         ));
     }
 
-    let sao_luma = if sps.sao_enabled { bits.read_bit()? } else { false };
+    let sao_luma = if sps.sao_enabled {
+        bits.read_bit()?
+    } else {
+        false
+    };
     let sao_chroma = if sps.sao_enabled && sps.chroma_format_idc != 0 {
         bits.read_bit()?
     } else {
@@ -635,9 +703,15 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
                 .ok_or(HevcSyntaxError::Overflow)?;
         }
         if override_active {
-            num_ref_idx_l0_active = bits.read_ue()?.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+            num_ref_idx_l0_active = bits
+                .read_ue()?
+                .checked_add(1)
+                .ok_or(HevcSyntaxError::Overflow)?;
             if slice_type == 0 {
-                num_ref_idx_l1_active = bits.read_ue()?.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+                num_ref_idx_l1_active = bits
+                    .read_ue()?
+                    .checked_add(1)
+                    .ok_or(HevcSyntaxError::Overflow)?;
             }
         }
         if num_ref_idx_l0_active != 1 || num_ref_idx_l1_active != 0 {
@@ -706,7 +780,9 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
         if entry_point_count != 0 {
             let offset_len_minus1 = bits.read_ue()?;
             if offset_len_minus1 >= 31 {
-                return Err(HevcSyntaxError::Unsupported("entry-point offset width is too large"));
+                return Err(HevcSyntaxError::Unsupported(
+                    "entry-point offset width is too large",
+                ));
             }
             entry_point_offset_len = (offset_len_minus1 + 1) as u8;
             for _ in 0..entry_point_count {
@@ -725,7 +801,9 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
     bits.byte_align()?;
     let header_rbsp_bits = bits.position_bits();
     if header_rbsp_bits & 7 != 0 {
-        return Err(HevcSyntaxError::Invalid("slice header did not end on a byte boundary"));
+        return Err(HevcSyntaxError::Invalid(
+            "slice header did not end on a byte boundary",
+        ));
     }
     let data_byte_offset = rbsp_prefix_to_nal_offset(nal, header_rbsp_bits / 8)?;
 
@@ -758,10 +836,7 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
     })
 }
 
-fn rbsp_prefix_to_nal_offset(
-    nal: &[u8],
-    rbsp_bytes: usize,
-) -> Result<usize, HevcSyntaxError> {
+fn rbsp_prefix_to_nal_offset(nal: &[u8], rbsp_bytes: usize) -> Result<usize, HevcSyntaxError> {
     if nal.len() < 2 {
         return Err(HevcSyntaxError::Truncated("HEVC NAL header"));
     }
@@ -791,7 +866,10 @@ fn rbsp_prefix_to_nal_offset(
     Ok(source)
 }
 
-fn skip_profile_tier_level(bits: &mut RbspReader, max_sub_layers_minus1: u8) -> Result<(), HevcSyntaxError> {
+fn skip_profile_tier_level(
+    bits: &mut RbspReader,
+    max_sub_layers_minus1: u8,
+) -> Result<(), HevcSyntaxError> {
     bits.skip_bits(88)?;
     bits.skip_bits(8)?; // general_level_idc
 
@@ -854,7 +932,11 @@ fn skip_short_term_ref_pic_set(
         let mut count = 0u32;
         for _ in 0..=ref_count {
             let used_by_curr_pic = bits.read_bit()?;
-            let use_delta = if used_by_curr_pic { true } else { bits.read_bit()? };
+            let use_delta = if used_by_curr_pic {
+                true
+            } else {
+                bits.read_bit()?
+            };
             if used_by_curr_pic || use_delta {
                 count = count.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
             }
@@ -871,7 +953,9 @@ fn skip_short_term_ref_pic_set(
             bits.read_ue()?;
             bits.read_bit()?;
         }
-        negative.checked_add(positive).ok_or(HevcSyntaxError::Overflow)
+        negative
+            .checked_add(positive)
+            .ok_or(HevcSyntaxError::Overflow)
     }
 }
 
@@ -898,18 +982,26 @@ fn nal_unit_type(nal: &[u8]) -> Result<u8, HevcSyntaxError> {
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, HevcSyntaxError> {
     let end = offset.checked_add(2).ok_or(HevcSyntaxError::Overflow)?;
-    let data = bytes.get(offset..end).ok_or(HevcSyntaxError::Truncated("u16"))?;
+    let data = bytes
+        .get(offset..end)
+        .ok_or(HevcSyntaxError::Truncated("u16"))?;
     Ok(u16::from_be_bytes([data[0], data[1]]))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, HevcSyntaxError> {
     let end = offset.checked_add(4).ok_or(HevcSyntaxError::Overflow)?;
-    let data = bytes.get(offset..end).ok_or(HevcSyntaxError::Truncated("u32"))?;
+    let data = bytes
+        .get(offset..end)
+        .ok_or(HevcSyntaxError::Truncated("u32"))?;
     Ok(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
 }
 
 fn ceil_log2(value: u32) -> u32 {
-    if value <= 1 { 0 } else { u32::BITS - (value - 1).leading_zeros() }
+    if value <= 1 {
+        0
+    } else {
+        u32::BITS - (value - 1).leading_zeros()
+    }
 }
 
 struct RbspReader {
@@ -947,9 +1039,15 @@ impl RbspReader {
     }
 
     fn read_bit(&mut self) -> Result<bool, HevcSyntaxError> {
-        let byte = *self.bytes.get(self.bit_pos / 8).ok_or(HevcSyntaxError::Truncated("RBSP bit"))?;
+        let byte = *self
+            .bytes
+            .get(self.bit_pos / 8)
+            .ok_or(HevcSyntaxError::Truncated("RBSP bit"))?;
         let shift = 7 - (self.bit_pos & 7);
-        self.bit_pos = self.bit_pos.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+        self.bit_pos = self
+            .bit_pos
+            .checked_add(1)
+            .ok_or(HevcSyntaxError::Overflow)?;
         Ok(((byte >> shift) & 1) != 0)
     }
 
@@ -965,7 +1063,10 @@ impl RbspReader {
     }
 
     fn skip_bits(&mut self, count: u32) -> Result<(), HevcSyntaxError> {
-        let end = self.bit_pos.checked_add(count as usize).ok_or(HevcSyntaxError::Overflow)?;
+        let end = self
+            .bit_pos
+            .checked_add(count as usize)
+            .ok_or(HevcSyntaxError::Overflow)?;
         if end > self.bytes.len() * 8 {
             return Err(HevcSyntaxError::Truncated("RBSP skip"));
         }
@@ -978,7 +1079,9 @@ impl RbspReader {
         while !self.read_bit()? {
             leading_zero_bits += 1;
             if leading_zero_bits > 31 {
-                return Err(HevcSyntaxError::Unsupported("Exp-Golomb value exceeds 32 bits"));
+                return Err(HevcSyntaxError::Unsupported(
+                    "Exp-Golomb value exceeds 32 bits",
+                ));
             }
         }
         if leading_zero_bits == 0 {
@@ -991,7 +1094,11 @@ impl RbspReader {
     fn read_se(&mut self) -> Result<i32, HevcSyntaxError> {
         let code_num = self.read_ue()?;
         let magnitude = ((code_num + 1) >> 1) as i32;
-        Ok(if code_num & 1 == 0 { -magnitude } else { magnitude })
+        Ok(if code_num & 1 == 0 {
+            -magnitude
+        } else {
+            magnitude
+        })
     }
 
     fn byte_align(&mut self) -> Result<(), HevcSyntaxError> {
@@ -999,11 +1106,15 @@ impl RbspReader {
         // If the preceding syntax already ends on a byte boundary this consumes
         // a complete 0x80 byte; it is not a no-op.
         if !self.read_bit()? {
-            return Err(HevcSyntaxError::Invalid("slice byte_alignment one-bit is zero"));
+            return Err(HevcSyntaxError::Invalid(
+                "slice byte_alignment one-bit is zero",
+            ));
         }
         while self.bit_pos & 7 != 0 {
             if self.read_bit()? {
-                return Err(HevcSyntaxError::Invalid("slice byte_alignment padding is nonzero"));
+                return Err(HevcSyntaxError::Invalid(
+                    "slice byte_alignment padding is nonzero",
+                ));
             }
         }
         Ok(())

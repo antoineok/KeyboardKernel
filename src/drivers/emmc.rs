@@ -741,8 +741,7 @@ impl Emmc {
         } else {
             0
         };
-        self.cache_enabled =
-            self.cache_size_kib != 0 && (ext_csd[EXT_CSD_CACHE_CTRL] & 1) != 0;
+        self.cache_enabled = self.cache_size_kib != 0 && (ext_csd[EXT_CSD_CACHE_CTRL] & 1) != 0;
         info!(
             "eMMC EXT_CSD: rev={}, cache={} KiB, cache_enabled={}",
             self.ext_csd_rev, self.cache_size_kib, self.cache_enabled

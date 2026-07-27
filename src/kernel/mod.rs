@@ -8,15 +8,12 @@ use crate::arch::{
 };
 
 use crate::graphics::{graphics_core_ready, GraphicsCoreProxy};
-use crate::memory::{
-    heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER,
-};
+use crate::memory::{heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER};
 use crate::storage::fs::vfs::FsId;
 use crate::time::time_manager;
 
 use crate::{
-    early_timeit,
-    info,
+    early_timeit, info,
     services::{Cpu0ControlPlane, KernelManagementBackend},
     transport::usb_core_ready,
     usb::MANAGEMENT_FRAME_CAPACITY,

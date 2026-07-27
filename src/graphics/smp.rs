@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use core::{
     slice,
-    time::Duration,
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+    time::Duration,
 };
 
 use crate::{
@@ -171,7 +171,11 @@ impl GraphicsCoreProxy {
     }
 
     fn next_id(&mut self) -> Result<u64, GraphicsSubmitError> {
-        assert_eq!(current_id().raw(), 0, "graphics commands must be submitted by CPU0");
+        assert_eq!(
+            current_id().raw(),
+            0,
+            "graphics commands must be submitted by CPU0"
+        );
         if !graphics_core_ready() {
             return Err(GraphicsSubmitError::WorkerNotReady);
         }
@@ -198,11 +202,19 @@ impl GraphicsCoreProxy {
     }
 
     fn submit_detached(&mut self, command: GraphicsCommand) -> Result<(), GraphicsSubmitError> {
-        assert_eq!(current_id().raw(), 0, "graphics commands must be submitted by CPU0");
+        assert_eq!(
+            current_id().raw(),
+            0,
+            "graphics commands must be submitted by CPU0"
+        );
         if !graphics_core_ready() {
             return Err(GraphicsSubmitError::WorkerNotReady);
         }
-        debug_assert_eq!(command.request_id(), 0, "detached graphics requests use ID 0");
+        debug_assert_eq!(
+            command.request_id(),
+            0,
+            "detached graphics requests use ID 0"
+        );
         CPU0_TO_CPU1_GRAPHICS
             .try_push(command)
             .map_err(|_| GraphicsSubmitError::QueueFull)?;
@@ -373,19 +385,25 @@ pub fn run_graphics_core() -> ! {
                     compositor.set_background_color(command.clear_color);
                     render_image_command(framebuffer, &compositor, command)
                 }
-                GraphicsCommand::StartVideo(command) => match VideoPlayer::open(command.fs, command.path) {
-                    Ok(player) => {
-                        crate::info!("CPU1 started KWVIDEO background: {}", command.path);
-                        video = Some(player);
-                        scene_dirty = true;
-                        backbuffer_ready = false;
-                        RESULT_OK
+                GraphicsCommand::StartVideo(command) => {
+                    match VideoPlayer::open(command.fs, command.path) {
+                        Ok(player) => {
+                            crate::info!("CPU1 started KWVIDEO background: {}", command.path);
+                            video = Some(player);
+                            scene_dirty = true;
+                            backbuffer_ready = false;
+                            RESULT_OK
+                        }
+                        Err(error) => {
+                            crate::error!(
+                                "CPU1 failed to start KWVIDEO {}: {}",
+                                command.path,
+                                error
+                            );
+                            RESULT_VIDEO_FAILED
+                        }
                     }
-                    Err(error) => {
-                        crate::error!("CPU1 failed to start KWVIDEO {}: {}", command.path, error);
-                        RESULT_VIDEO_FAILED
-                    }
-                },
+                }
                 GraphicsCommand::StopVideo { .. } => {
                     video = None;
                     scene_dirty = true;
@@ -442,7 +460,7 @@ pub fn run_graphics_core() -> ! {
                 Ok(true) => {
                     scene_dirty = true;
                     backbuffer_ready = false;
-                },
+                }
                 Ok(false) => {}
                 Err(error) => {
                     crate::error!("CPU1 KWVIDEO playback failed: {}", error);
@@ -482,7 +500,10 @@ pub fn run_graphics_core() -> ! {
             // the next vblank as soon as composition completes.
             let result = present_scene(framebuffer);
             if result != RESULT_OK {
-                crate::error!("CPU1 static scene presentation failed with result {}", result);
+                crate::error!(
+                    "CPU1 static scene presentation failed with result {}",
+                    result
+                );
             }
             backbuffer_ready = false;
         }
@@ -544,8 +565,16 @@ fn compose_scene(
         }
 
         if let Some(frame) = video_frame {
-            assert_eq!(frame.width(), backbuffer.width(), "KWVIDEO background width must match framebuffer");
-            assert_eq!(frame.height(), backbuffer.height(), "KWVIDEO background height must match framebuffer");
+            assert_eq!(
+                frame.width(),
+                backbuffer.width(),
+                "KWVIDEO background width must match framebuffer"
+            );
+            assert_eq!(
+                frame.height(),
+                backbuffer.height(),
+                "KWVIDEO background height must match framebuffer"
+            );
             let info = match SurfaceInfo::new(
                 frame.width(),
                 frame.height(),

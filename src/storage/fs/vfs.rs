@@ -286,7 +286,9 @@ impl<'a> Vfs<'a> {
     /// switches independent of the file's current cursor position.
     pub fn seek_stream(&self, stream: &mut FileStream, position: usize) -> Result<(), VfsError> {
         let mount = self.get_mount(stream.fs)?;
-        mount.vol.seek_file(mount.dev, &mut stream.reader, position)?;
+        mount
+            .vol
+            .seek_file(mount.dev, &mut stream.reader, position)?;
         Ok(())
     }
 

@@ -1,6 +1,15 @@
-use core::{cell::UnsafeCell, hint::spin_loop, sync::atomic::{AtomicU32, Ordering}};
+use core::{
+    cell::UnsafeCell,
+    hint::spin_loop,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
-use crate::{arch::{cpu::current_id, exceptions, gic::GIC_PLATFORM}, drivers::mailbox::MailboxBuffer, fdt::{AliasEntry, DeviceEntry}, info};
+use crate::{
+    arch::{cpu::current_id, exceptions, gic::GIC_PLATFORM},
+    drivers::mailbox::MailboxBuffer,
+    fdt::{AliasEntry, DeviceEntry},
+    info,
+};
 
 pub const HEVC_COMPATIBLE: &str = "brcm,bcm2711-hevc-dec";
 
@@ -54,9 +63,8 @@ impl HevcPlatform {
     }
 
     pub fn init(&self, device: Option<DeviceEntry>) {
-        let device = device.unwrap_or_else(|| {
-            panic!("BCM2711 HEVC decoder not found in device tree")
-        });
+        let device =
+            device.unwrap_or_else(|| panic!("BCM2711 HEVC decoder not found in device tree"));
 
         let hevc = device
             .resource("hevc")
@@ -65,8 +73,16 @@ impl HevcPlatform {
             .resource("intc")
             .unwrap_or_else(|| panic!("BCM2711 HEVC decoder has no 'intc' register resource"));
 
-        assert_eq!(hevc.arm_phys & 0xfff, 0, "HEVC register base is not page aligned");
-        assert_eq!(intc.arm_phys & 0xfff, 0, "HEVC interrupt-controller base is not page aligned");
+        assert_eq!(
+            hevc.arm_phys & 0xfff,
+            0,
+            "HEVC register base is not page aligned"
+        );
+        assert_eq!(
+            intc.arm_phys & 0xfff,
+            0,
+            "HEVC interrupt-controller base is not page aligned"
+        );
 
         let interrupt_cells = device.interrupts();
         assert_eq!(
@@ -97,7 +113,10 @@ impl HevcPlatform {
 
         unsafe {
             let slot = &mut *self.0.get();
-            assert!(slot.is_none(), "HEVC platform resources already initialized");
+            assert!(
+                slot.is_none(),
+                "HEVC platform resources already initialized"
+            );
             *slot = Some(HevcResources {
                 hevc,
                 intc,
@@ -172,7 +191,11 @@ impl HevcPlatform {
         assert_eq!(cpu.raw(), 1, "HEVC IRQ ownership must start on CPU1");
 
         let interrupt = self.resources().interrupt;
-        assert_eq!(interrupt.kind, GicInterruptKind::Spi, "HEVC interrupt must be a GIC SPI");
+        assert_eq!(
+            interrupt.kind,
+            GicInterruptKind::Spi,
+            "HEVC interrupt must be a GIC SPI"
+        );
         assert_eq!(interrupt.flags, 0x4, "HEVC interrupt must be level-high");
 
         let intid = self.gic_intid();
@@ -210,9 +233,6 @@ impl HevcPlatform {
     }
 
     pub fn resources(&self) -> HevcResources {
-        unsafe {
-            (*self.0.get())
-                .expect("HEVC platform resources requested before initialization")
-        }
+        unsafe { (*self.0.get()).expect("HEVC platform resources requested before initialization") }
     }
 }

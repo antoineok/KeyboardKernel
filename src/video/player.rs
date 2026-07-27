@@ -19,7 +19,6 @@ use super::{
 };
 
 const LATE_TOLERANCE: Duration = Duration::from_millis(20);
-const STATS_INTERVAL_FRAMES: u64 = 90;
 /// Keep several already-decoded RGB frames ready so a costly IDR or fragment
 /// read does not immediately turn into a visible presentation stall.
 const PREPARED_QUEUE_FRAMES: usize = 6;
@@ -207,24 +206,6 @@ impl VideoPlayer {
             .started_at
             .checked_add(self.ticks_to_duration_u64(self.presentation_ticks))
             .expect("KWVIDEO presentation deadline overflow");
-
-        if self.frames_presented % STATS_INTERVAL_FRAMES == 0 {
-            let media_ms = self.presentation_ticks.saturating_mul(1000) / u64::from(self.timescale);
-            let wall_ms = presented_at.saturating_sub(self.started_at).as_millis();
-            crate::info!(
-                "CPU1 KWVIDEO playback: frames={}, media={} ms, wall={} ms, late={}, rebases={}, underruns={}, deferred_prepares={}, queued={}, fragment={}, loops={}",
-                self.frames_presented,
-                media_ms,
-                wall_ms,
-                self.late_frames,
-                self.clock_rebases,
-                self.queue_underruns,
-                self.prepare_deferrals,
-                self.prepared.len(),
-                self.fragment_index + 1,
-                self.loops,
-            );
-        }
     }
 
     /// Decode at most one additional picture per graphics-scheduler pass.
@@ -297,7 +278,9 @@ impl VideoPlayer {
             assert_eq!(slice.slice_type, 1, "kwv1 inter pictures must be P slices");
         }
 
-        let cabac_ebsp = self.asset.picture_cabac_payload_bytes(sample_bytes, &picture)?;
+        let cabac_ebsp = self
+            .asset
+            .picture_cabac_payload_bytes(sample_bytes, &picture)?;
         let phase1 = RPIVID_WORKSPACE.submit_picture_phase1(&picture, cabac_ebsp);
         if !phase1.complete() {
             crate::error!(
@@ -327,11 +310,7 @@ impl VideoPlayer {
         }
 
         let pixels = self.spare_pixels.pop().unwrap_or_default();
-        let frame = RPIVID_WORKSPACE.copy_frame_rgbx_reuse(
-            &picture,
-            self.picture_index,
-            pixels,
-        );
+        let frame = RPIVID_WORKSPACE.copy_frame_rgbx_reuse(&picture, self.picture_index, pixels);
         self.prepared.push_back(PreparedFrame {
             frame,
             duration_ticks: sample.duration_ticks,

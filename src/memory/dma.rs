@@ -153,7 +153,10 @@ impl DmaBuffer {
         let end = offset
             .checked_add(len)
             .expect("DMA synchronization range overflow");
-        assert!(end <= self.len, "DMA synchronization range is out of bounds");
+        assert!(
+            end <= self.len,
+            "DMA synchronization range is out of bounds"
+        );
 
         unsafe { self.ptr.as_ptr().add(offset) }
     }
