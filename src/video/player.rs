@@ -1,11 +1,11 @@
 //! CPU1-owned Keywork Video playback state.
 //!
-//! The graphics core keeps one displayed RGBX frame and one prepared RGBX
-//! frame. After presenting frame N it immediately decodes/converts N+1, then
-//! waits for that frame's media deadline while remaining able to service
-//! graphics/overlay commands.
+//! The graphics core keeps one displayed RGBX frame plus a small queue of
+//! already-decoded RGBX frames. The queue absorbs expensive IDR/fragment
+//! boundaries, while presentation is paced independently from decode work and
+//! CPU1 remains able to service graphics/overlay commands between decode jobs.
 
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::time::Duration;
 
 use crate::{
@@ -20,6 +20,14 @@ use super::{
 
 const LATE_TOLERANCE: Duration = Duration::from_millis(2);
 const STATS_INTERVAL_FRAMES: u64 = 90;
+/// Keep several already-decoded RGB frames ready so a costly IDR or fragment
+/// read does not immediately turn into a visible presentation stall.
+const PREPARED_QUEUE_FRAMES: usize = 3;
+
+struct PreparedFrame {
+    frame: RpividDecodedFrame,
+    duration_ticks: u32,
+}
 
 pub struct VideoPlayer {
     asset: VideoAsset,
@@ -31,13 +39,15 @@ pub struct VideoPlayer {
 
     started_at: Duration,
     presentation_ticks: u64,
-    prepared_duration_ticks: u32,
-    prepared: Option<RpividDecodedFrame>,
+    next_present_at: Duration,
+    prepared: VecDeque<PreparedFrame>,
     current: Option<RpividDecodedFrame>,
-    spare_pixels: Vec<u8>,
+    spare_pixels: Vec<Vec<u8>>,
 
     frames_presented: u64,
     late_frames: u64,
+    queue_underruns: u64,
+    clock_rebases: u64,
     loops: u64,
 }
 
@@ -56,18 +66,25 @@ impl VideoPlayer {
             timescale,
             started_at: time_manager().uptime(),
             presentation_ticks: 0,
-            prepared_duration_ticks: 0,
-            prepared: None,
+            next_present_at: time_manager().uptime(),
+            prepared: VecDeque::new(),
             current: None,
             spare_pixels: Vec::new(),
             frames_presented: 0,
             late_frames: 0,
+            queue_underruns: 0,
+            clock_rebases: 0,
             loops: 0,
         };
-        player.prepare_next_frame()?;
-        // Start the media clock only after frame zero is decoded and ready.
-        // Asset open/decode latency must not make the entire stream late.
-        player.started_at = time_manager().uptime();
+        // Build a small presentation cushion before starting the media clock.
+        // Three RGB frames cost roughly 12 MiB at 1366x768 and absorb the
+        // expensive IDR/fragment-boundary spikes we observed on hardware.
+        while player.prepared.len() < PREPARED_QUEUE_FRAMES {
+            player.prepare_next_frame()?;
+        }
+        let now = time_manager().uptime();
+        player.started_at = now;
+        player.next_present_at = now;
         Ok(player)
     }
 
@@ -91,47 +108,65 @@ impl VideoPlayer {
         self.loops
     }
 
-    /// Present the prepared frame when its media deadline has arrived.
+    /// Present one queued frame when its deadline arrives.
     ///
-    /// Returns true when the visible background changed and CPU1 should
-    /// recompose/present the framebuffer.
+    /// When CPU1 misses a deadline, rebase the *next* deadline from the actual
+    /// presentation start instead of retaining an already-expired media clock.
+    /// This prevents the old "burst several frames, then wait" catch-up
+    /// behaviour: playback may momentarily slow after an expensive decode, but
+    /// it will never run faster than the encoded cadence to repay that delay.
     pub fn present_if_due(&mut self, now: Duration) -> Result<bool, KwVideoError> {
-        if self.prepared.is_none() {
+        if now < self.next_present_at {
+            return Ok(false);
+        }
+
+        if self.prepared.is_empty() {
+            self.queue_underruns = self.queue_underruns.saturating_add(1);
             self.prepare_next_frame()?;
         }
 
-        let deadline = self.presentation_deadline();
-        let elapsed = now.saturating_sub(self.started_at);
-        if elapsed < deadline {
-            return Ok(false);
-        }
-        if elapsed > deadline + LATE_TOLERANCE {
+        let late = now > self.next_present_at + LATE_TOLERANCE;
+        if late {
             self.late_frames = self.late_frames.saturating_add(1);
+            self.clock_rebases = self.clock_rebases.saturating_add(1);
         }
 
         let next = self
             .prepared
-            .take()
-            .expect("KWVIDEO prepared frame disappeared");
-        if let Some(previous) = self.current.replace(next) {
-            self.spare_pixels = previous.into_pixels();
+            .pop_front()
+            .expect("KWVIDEO prepared queue unexpectedly empty");
+        if let Some(previous) = self.current.replace(next.frame) {
+            self.spare_pixels.push(previous.into_pixels());
         }
 
         self.presentation_ticks = self
             .presentation_ticks
-            .checked_add(u64::from(self.prepared_duration_ticks))
+            .checked_add(u64::from(next.duration_ticks))
             .expect("KWVIDEO presentation clock overflow");
         self.frames_presented = self.frames_presented.saturating_add(1);
+
+        let frame_duration = self.ticks_to_duration(next.duration_ticks);
+        self.next_present_at = if late {
+            now.checked_add(frame_duration)
+                .expect("KWVIDEO rebased presentation deadline overflow")
+        } else {
+            self.next_present_at
+                .checked_add(frame_duration)
+                .expect("KWVIDEO presentation deadline overflow")
+        };
 
         if self.frames_presented % STATS_INTERVAL_FRAMES == 0 {
             let media_ms = self.presentation_ticks.saturating_mul(1000) / u64::from(self.timescale);
             let wall_ms = now.saturating_sub(self.started_at).as_millis();
             crate::info!(
-                "CPU1 KWVIDEO playback: frames={}, media={} ms, wall={} ms, late={}, fragment={}, loops={}",
+                "CPU1 KWVIDEO playback: frames={}, media={} ms, wall={} ms, late={}, rebases={}, underruns={}, queued={}, fragment={}, loops={}",
                 self.frames_presented,
                 media_ms,
                 wall_ms,
                 self.late_frames,
+                self.clock_rebases,
+                self.queue_underruns,
+                self.prepared.len(),
                 self.fragment_index + 1,
                 self.loops,
             );
@@ -140,23 +175,22 @@ impl VideoPlayer {
         Ok(true)
     }
 
-    /// Decode/convert the next picture when no prepared frame is waiting.
-    /// Call this after rendering the current frame so scanout is never held
-    /// hostage by preparation of the following picture.
+    /// Decode at most one additional picture per graphics-scheduler pass.
+    /// CPU1 therefore checks overlay/control commands between decode jobs while
+    /// still using otherwise-idle time to maintain the presentation cushion.
     pub fn prepare_if_needed(&mut self) -> Result<(), KwVideoError> {
-        self.prepare_next_frame()
+        if self.prepared.len() < PREPARED_QUEUE_FRAMES {
+            self.prepare_next_frame()?;
+        }
+        Ok(())
     }
 
-    fn presentation_deadline(&self) -> Duration {
-        let nanos = (u128::from(self.presentation_ticks) * 1_000_000_000u128)
-            / u128::from(self.timescale);
+    fn ticks_to_duration(&self, ticks: u32) -> Duration {
+        let nanos = (u128::from(ticks) * 1_000_000_000u128) / u128::from(self.timescale);
         Duration::from_nanos(nanos as u64)
     }
 
     fn prepare_next_frame(&mut self) -> Result<(), KwVideoError> {
-        if self.prepared.is_some() {
-            return Ok(());
-        }
         self.ensure_sample_available()?;
 
         let sample: FragmentSample = self.fragment.samples()[self.sample_index];
@@ -192,13 +226,16 @@ impl VideoPlayer {
         let phase2 = RPIVID_WORKSPACE.submit_picture_phase2(&picture, self.picture_index);
         assert!(phase2.complete(), "CPU1 RPIVID phase 2 failed");
 
-        let pixels = core::mem::take(&mut self.spare_pixels);
-        self.prepared = Some(RPIVID_WORKSPACE.copy_frame_rgbx_reuse(
+        let pixels = self.spare_pixels.pop().unwrap_or_default();
+        let frame = RPIVID_WORKSPACE.copy_frame_rgbx_reuse(
             &picture,
             self.picture_index,
             pixels,
-        ));
-        self.prepared_duration_ticks = sample.duration_ticks;
+        );
+        self.prepared.push_back(PreparedFrame {
+            frame,
+            duration_ticks: sample.duration_ticks,
+        });
         self.sample_index += 1;
         self.picture_index += 1;
         Ok(())
