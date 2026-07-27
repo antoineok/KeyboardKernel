@@ -131,6 +131,82 @@ impl Fat32Volume {
         FatFileReader::new(file)
     }
 
+    /// Reposition a sequential file reader without reading file payload bytes.
+    ///
+    /// FAT does not provide byte offsets directly, so seeking resolves the
+    /// cluster containing the requested position from the start of the file.
+    /// This is still much cheaper than replaying every data sector when a
+    /// streamed media asset loops or resumes after its RAM bootstrap cache.
+    pub fn seek_file(
+        &self,
+        dev: &dyn BlockDevice,
+        reader: &mut FatFileReader,
+        position: usize,
+    ) -> Result<(), Fat32Error> {
+        if position > reader.len() {
+            return Err(Fat32Error::Invalid("file seek exceeds declared size"));
+        }
+
+        if reader.is_empty() {
+            reader.position = 0;
+            reader.current_cluster = reader.file.first_cluster;
+            reader.cluster_offset = 0;
+            reader.cached_lba = None;
+            return Ok(());
+        }
+
+        let bytes_per_cluster = (self.bpb.sec_per_clus as usize)
+            .checked_mul(SECTOR_SIZE)
+            .ok_or(Fat32Error::Invalid("FAT32 cluster size overflow"))?;
+
+        if bytes_per_cluster == 0 {
+            return Err(Fat32Error::Invalid("FAT32 cluster size is zero"));
+        }
+
+        // At EOF on an exact cluster boundary, keep the cursor on the last
+        // cluster with cluster_offset == bytes_per_cluster. read_file() checks
+        // EOF before attempting to advance to a non-existent next cluster.
+        let (cluster_index, cluster_offset) = if position == reader.len() {
+            let last_byte = position - 1;
+            (
+                last_byte / bytes_per_cluster,
+                (last_byte % bytes_per_cluster) + 1,
+            )
+        } else {
+            (position / bytes_per_cluster, position % bytes_per_cluster)
+        };
+
+        let mut current_cluster = reader.file.first_cluster;
+
+        for _ in 0..cluster_index {
+            current_cluster = match self.fat32_get_link(dev, current_cluster)? {
+                FatLink::Next(next) => {
+                    if next == current_cluster {
+                        return Err(Fat32Error::Invalid("FAT self-loop in file chain"));
+                    }
+                    next
+                }
+                FatLink::Eoc => {
+                    return Err(Fat32Error::Invalid(
+                        "file cluster chain ended before seek position",
+                    ));
+                }
+                FatLink::Bad => return Err(Fat32Error::Invalid("BAD cluster in file chain")),
+                FatLink::Free => return Err(Fat32Error::Invalid("FREE cluster in file chain")),
+                FatLink::Reserved(_) => {
+                    return Err(Fat32Error::Invalid("reserved cluster in file chain"));
+                }
+            };
+        }
+
+        reader.position = position;
+        reader.current_cluster = current_cluster;
+        reader.cluster_offset = cluster_offset;
+        reader.cached_lba = None;
+
+        Ok(())
+    }
+
     /// Continue reading a file from the reader's current position.
     ///
     /// Returns the number of bytes copied into `out`. A return value of zero

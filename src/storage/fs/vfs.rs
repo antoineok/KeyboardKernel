@@ -278,6 +278,17 @@ impl<'a> Vfs<'a> {
         Ok(())
     }
 
+    /// Seek a streaming file to an absolute byte offset.
+    ///
+    /// This walks FAT metadata to the target cluster instead of replaying all
+    /// intervening payload sectors, which keeps large video loops and profile
+    /// switches independent of the file's current cursor position.
+    pub fn seek_stream(&self, stream: &mut FileStream, position: usize) -> Result<(), VfsError> {
+        let mount = self.get_mount(stream.fs)?;
+        mount.vol.seek_file(mount.dev, &mut stream.reader, position)?;
+        Ok(())
+    }
+
     /// Advance a streaming file without allocating a temporary buffer.
     pub fn skip_stream(&self, stream: &mut FileStream, mut amount: usize) -> Result<(), VfsError> {
         let expected = stream.position().checked_add(amount).unwrap_or(usize::MAX);
