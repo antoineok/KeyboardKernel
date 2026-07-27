@@ -163,6 +163,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         HEVC_PLATFORM.probe_hardware();
     });
 
+    early_timeit!("HEVC interrupt-controller init", {
+        HEVC_PLATFORM.initialize_interrupt_controller();
+    });
+
     init_phys_allocator();
 
     early_timeit!("USB power domain", {

@@ -148,6 +148,11 @@ impl HevcPlatform {
         super::rpivid::RpividRegisters::from_resources(self.resources()).probe()
     }
 
+    pub fn initialize_interrupt_controller(&self) -> super::rpivid::RpividInterruptInitSnapshot {
+        super::rpivid::RpividRegisters::from_resources(self.resources())
+            .initialize_interrupt_controller()
+    }
+
     pub fn resources(&self) -> HevcResources {
         unsafe {
             (*self.0.get())
