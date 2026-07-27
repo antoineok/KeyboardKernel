@@ -22,6 +22,8 @@ pub struct SpsSummary {
     pub bit_depth_luma_minus8: u32,
     pub bit_depth_chroma_minus8: u32,
     pub log2_max_pic_order_cnt_lsb: u32,
+    pub num_short_term_ref_pic_sets: u32,
+    pub long_term_ref_pics_present: bool,
     pub log2_min_luma_coding_block_size: u32,
     pub log2_ctb_size: u32,
     pub log2_min_luma_transform_block_size: u32,
@@ -96,6 +98,13 @@ pub struct SliceSummary {
     pub no_output_of_prior_pics: bool,
     pub pps_id: u32,
     pub slice_type: u32,
+    pub pic_order_cnt_lsb: u32,
+    pub num_ref_idx_l0_active: u32,
+    pub num_ref_idx_l1_active: u32,
+    pub max_num_merge_cand: u32,
+    pub cabac_init: bool,
+    pub slice_temporal_mvp_enabled: bool,
+    pub closest_negative_delta_poc: i32,
     pub sao_luma: bool,
     pub sao_chroma: bool,
     pub slice_qp_delta: i32,
@@ -326,7 +335,8 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
         num_delta_pocs.push(count);
     }
 
-    if bits.read_bit()? { // long_term_ref_pics_present_flag
+    let long_term_ref_pics_present = bits.read_bit()?;
+    if long_term_ref_pics_present {
         let num_long_term_ref_pics_sps = bits.read_ue()?;
         for _ in 0..num_long_term_ref_pics_sps {
             bits.read_bits(log2_max_pic_order_cnt_lsb)?;
@@ -350,6 +360,8 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
         bit_depth_luma_minus8,
         bit_depth_chroma_minus8,
         log2_max_pic_order_cnt_lsb,
+        num_short_term_ref_pic_sets: num_short_term_ref_pic_sets as u32,
+        long_term_ref_pics_present,
         log2_min_luma_coding_block_size,
         log2_ctb_size,
         log2_min_luma_transform_block_size,
@@ -497,14 +509,22 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
 
     if !first_slice_segment_in_pic {
         if pps.dependent_slice_segments_enabled && bits.read_bit()? {
-            return Err(HevcSyntaxError::Unsupported("dependent first-picture slice segments are not supported"));
+            return Err(HevcSyntaxError::Unsupported(
+                "dependent slice segments are not supported by kwv1",
+            ));
         }
-        let ctb_size = 1u32.checked_shl(sps.log2_ctb_size).ok_or(HevcSyntaxError::Overflow)?;
-        let ctb_count = sps.width.div_ceil(ctb_size)
+        let ctb_size = 1u32
+            .checked_shl(sps.log2_ctb_size)
+            .ok_or(HevcSyntaxError::Overflow)?;
+        let ctb_count = sps
+            .width
+            .div_ceil(ctb_size)
             .checked_mul(sps.height.div_ceil(ctb_size))
             .ok_or(HevcSyntaxError::Overflow)?;
-        let address_bits = ceil_log2(ctb_count);
-        bits.read_bits(address_bits)?;
+        bits.read_bits(ceil_log2(ctb_count))?;
+        return Err(HevcSyntaxError::Unsupported(
+            "kwv1 currently requires one slice segment per picture",
+        ));
     }
 
     for _ in 0..pps.num_extra_slice_header_bits {
@@ -514,6 +534,11 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
     if slice_type > 2 {
         return Err(HevcSyntaxError::Invalid("invalid HEVC slice type"));
     }
+    if slice_type == 0 {
+        return Err(HevcSyntaxError::Unsupported(
+            "kwv1 does not permit B slices",
+        ));
+    }
     if pps.output_flag_present {
         bits.read_bit()?;
     }
@@ -521,27 +546,128 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
         bits.read_bits(2)?;
     }
 
-    let mut slice_temporal_mvp_enabled = false;
+    let mut pic_order_cnt_lsb = 0u32;
+    let mut closest_negative_delta_poc = 0i32;
     if !is_idr {
-        bits.read_bits(sps.log2_max_pic_order_cnt_lsb)?;
+        pic_order_cnt_lsb = bits.read_bits(sps.log2_max_pic_order_cnt_lsb)?;
         let short_term_ref_pic_set_sps_flag = bits.read_bit()?;
-        if !short_term_ref_pic_set_sps_flag {
-            return Err(HevcSyntaxError::Unsupported("inline short-term reference picture sets are not supported yet"));
+        if short_term_ref_pic_set_sps_flag {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 requires inline short-term reference picture sets",
+            ));
         }
-        return Err(HevcSyntaxError::Unsupported("non-IDR first-picture slices are not supported yet"));
+        if sps.num_short_term_ref_pic_sets != 0 {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 requires SPS num_short_term_ref_pic_sets == 0",
+            ));
+        }
+
+        let num_negative_pics = bits.read_ue()?;
+        let num_positive_pics = bits.read_ue()?;
+        if num_negative_pics == 0 || num_positive_pics != 0 {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 P pictures require past-only short-term references",
+            ));
+        }
+        let mut delta_poc = 0i32;
+        let mut used_negative = 0u32;
+        for index in 0..num_negative_pics {
+            let delta_minus1 = bits.read_ue()? as i32;
+            delta_poc = delta_poc
+                .checked_sub(delta_minus1 + 1)
+                .ok_or(HevcSyntaxError::Overflow)?;
+            let used = bits.read_bit()?;
+            if used {
+                used_negative = used_negative.saturating_add(1);
+                if index == 0 {
+                    closest_negative_delta_poc = delta_poc;
+                }
+            }
+        }
+        for _ in 0..num_positive_pics {
+            bits.read_ue()?;
+            bits.read_bit()?;
+        }
+        if used_negative == 0 || closest_negative_delta_poc != -1 {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 requires the immediately previous picture as its primary reference",
+            ));
+        }
+        if sps.long_term_ref_pics_present {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 does not support long-term references",
+            ));
+        }
     }
-    if sps.temporal_mvp_enabled && !is_idr {
-        slice_temporal_mvp_enabled = bits.read_bit()?;
+
+    let slice_temporal_mvp_enabled = if sps.temporal_mvp_enabled && !is_idr {
+        bits.read_bit()?
+    } else {
+        false
+    };
+    if slice_temporal_mvp_enabled || sps.temporal_mvp_enabled {
+        return Err(HevcSyntaxError::Unsupported(
+            "kwv1 requires temporal MVP to be disabled",
+        ));
     }
 
     let sao_luma = if sps.sao_enabled { bits.read_bit()? } else { false };
-    let sao_chroma = if sps.sao_enabled && sps.chroma_format_idc != 0 { bits.read_bit()? } else { false };
+    let sao_chroma = if sps.sao_enabled && sps.chroma_format_idc != 0 {
+        bits.read_bit()?
+    } else {
+        false
+    };
 
-    // The first kwv1 picture is an IDR I-slice, so all reference-list,
-    // temporal-MVP, weighted-prediction and merge-candidate syntax is absent.
+    let mut num_ref_idx_l0_active = 0u32;
+    let mut num_ref_idx_l1_active = 0u32;
+    let mut cabac_init = false;
+    let mut max_num_merge_cand = 0u32;
     if slice_type != 2 {
-        let _ = slice_temporal_mvp_enabled;
-        return Err(HevcSyntaxError::Unsupported("first kwv1 picture must be an I-slice"));
+        let override_active = bits.read_bit()?;
+        num_ref_idx_l0_active = pps
+            .num_ref_idx_l0_default_active_minus1
+            .checked_add(1)
+            .ok_or(HevcSyntaxError::Overflow)?;
+        if slice_type == 0 {
+            num_ref_idx_l1_active = pps
+                .num_ref_idx_l1_default_active_minus1
+                .checked_add(1)
+                .ok_or(HevcSyntaxError::Overflow)?;
+        }
+        if override_active {
+            num_ref_idx_l0_active = bits.read_ue()?.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+            if slice_type == 0 {
+                num_ref_idx_l1_active = bits.read_ue()?.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+            }
+        }
+        if num_ref_idx_l0_active != 1 || num_ref_idx_l1_active != 0 {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 currently requires exactly one L0 reference",
+            ));
+        }
+        if pps.lists_modification_present {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 requires reference-list modification to be disabled",
+            ));
+        }
+        if pps.cabac_init_present {
+            cabac_init = bits.read_bit()?;
+        }
+        if cabac_init {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 requires cabac_init_flag to be false",
+            ));
+        }
+        if pps.weighted_pred || pps.weighted_bipred {
+            return Err(HevcSyntaxError::Unsupported(
+                "kwv1 requires weighted prediction to be disabled",
+            ));
+        }
+        let five_minus_max_num_merge_cand = bits.read_ue()?;
+        if five_minus_max_num_merge_cand > 4 {
+            return Err(HevcSyntaxError::Invalid("invalid merge-candidate count"));
+        }
+        max_num_merge_cand = 5 - five_minus_max_num_merge_cand;
     }
 
     let slice_qp_delta = bits.read_se()?;
@@ -609,6 +735,13 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
         no_output_of_prior_pics,
         pps_id,
         slice_type,
+        pic_order_cnt_lsb,
+        num_ref_idx_l0_active,
+        num_ref_idx_l1_active,
+        max_num_merge_cand,
+        cabac_init,
+        slice_temporal_mvp_enabled,
+        closest_negative_delta_poc,
         sao_luma,
         sao_chroma,
         slice_qp_delta,
@@ -624,7 +757,6 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
         data_byte_offset,
     })
 }
-
 
 fn rbsp_prefix_to_nal_offset(
     nal: &[u8],

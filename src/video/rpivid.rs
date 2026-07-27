@@ -109,6 +109,20 @@ const PROB_INIT_I: [u8; 156] = [
     136, 152, 136, 153, 136, 139, 111, 136, 139, 111, 0, 0,
 ];
 
+// HEVC Main P-slice CABAC initialisation values (H.265 section 9.3.2.2).
+// This is prob_init[1] from Raspberry Pi's RPIVID driver.
+const PROB_INIT_P: [u8; 156] = [
+    153, 185, 107, 139, 126, 197, 185, 201, 154, 149, 154, 139, 154, 154, 154, 152,
+    110, 122, 95, 79, 63, 31, 31, 153, 153, 168, 140, 198, 79, 124, 138, 94, 153, 111,
+    149, 107, 167, 154, 154, 154, 154, 196, 196, 167, 154, 152, 167, 182, 182, 134, 149,
+    136, 153, 121, 136, 137, 169, 194, 166, 167, 154, 167, 137, 182, 125, 110, 94, 110,
+    95, 79, 125, 111, 110, 78, 110, 111, 111, 95, 94, 108, 123, 108, 125, 110, 94, 110,
+    95, 79, 125, 111, 110, 78, 110, 111, 111, 95, 94, 108, 123, 108, 121, 140, 61, 154,
+    107, 167, 91, 122, 107, 167, 139, 139, 155, 154, 139, 153, 139, 123, 123, 63, 153,
+    166, 183, 140, 136, 153, 154, 166, 183, 140, 136, 153, 154, 166, 183, 140, 136, 153,
+    154, 170, 153, 123, 123, 107, 121, 107, 121, 167, 151, 183, 140, 151, 183, 140, 0, 0,
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RpividDmaAddress(u32);
 
@@ -408,7 +422,7 @@ impl RpividWorkspaceStatic {
         workspace.bitstream.window(0, data.len())
     }
 
-    pub fn submit_first_idr_phase1(
+    pub fn submit_picture_phase1(
         &self,
         picture: &FirstPictureSyntax,
         cabac_payload: &[u8],
@@ -416,39 +430,44 @@ impl RpividWorkspaceStatic {
         assert_eq!(
             crate::arch::cpu::current_id(),
             crate::arch::cpu::CpuId::BOOT,
-            "RPIVID phase-1 bring-up currently belongs to CPU0",
+            "RPIVID phase 1 currently belongs to CPU0",
         );
-        let workspace = self
-            .get_mut()
+        self.get_mut()
             .as_mut()
-            .expect("RPIVID workspace used before initialization");
-        workspace.submit_first_idr_phase1(picture, cabac_payload)
+            .expect("RPIVID workspace used before initialization")
+            .submit_picture_phase1(picture, cabac_payload)
     }
 
-    pub fn submit_first_idr_phase2(&self, picture: &FirstPictureSyntax) -> RpividPhase2Snapshot {
+    pub fn submit_picture_phase2(
+        &self,
+        picture: &FirstPictureSyntax,
+        picture_index: usize,
+    ) -> RpividPhase2Snapshot {
         assert_eq!(
             crate::arch::cpu::current_id(),
             crate::arch::cpu::CpuId::BOOT,
-            "RPIVID phase-2 bring-up currently belongs to CPU0",
+            "RPIVID phase 2 currently belongs to CPU0",
         );
-        let workspace = self
-            .get_mut()
+        self.get_mut()
             .as_mut()
-            .expect("RPIVID workspace used before initialization");
-        workspace.submit_first_idr_phase2(picture)
+            .expect("RPIVID workspace used before initialization")
+            .submit_picture_phase2(picture, picture_index)
     }
 
-    pub fn copy_first_frame_rgbx(&self, picture: &FirstPictureSyntax) -> RpividDecodedFrame {
+    pub fn copy_frame_rgbx(
+        &self,
+        picture: &FirstPictureSyntax,
+        picture_index: usize,
+    ) -> RpividDecodedFrame {
         assert_eq!(
             crate::arch::cpu::current_id(),
             crate::arch::cpu::CpuId::BOOT,
             "RPIVID frame conversion currently belongs to CPU0",
         );
-        let workspace = self
-            .get_mut()
+        self.get_mut()
             .as_mut()
-            .expect("RPIVID workspace used before initialization");
-        workspace.copy_first_frame_rgbx(picture)
+            .expect("RPIVID workspace used before initialization")
+            .copy_frame_rgbx(picture, picture_index)
     }
 }
 
@@ -537,8 +556,7 @@ pub struct RpividDecodeWorkspace {
     coeff: [DmaBuffer; RPIVID_PHASE_BUFFER_COUNT],
     pu_size: usize,
     coeff_size: usize,
-    first_frame: Option<RpividFrameBuffer>,
-    first_frame_mv: Option<DmaBuffer>,
+    frames: [Option<RpividFrameBuffer>; 2],
 }
 
 impl RpividDecodeWorkspace {
@@ -570,12 +588,11 @@ impl RpividDecodeWorkspace {
             coeff,
             pu_size,
             coeff_size,
-            first_frame: None,
-            first_frame_mv: None,
+            frames: [None, None],
         }
     }
 
-    fn submit_first_idr_phase1(
+    fn submit_picture_phase1(
         &mut self,
         picture: &FirstPictureSyntax,
         cabac_payload: &[u8],
@@ -584,29 +601,30 @@ impl RpividDecodeWorkspace {
         let pps = picture.pps;
         let slice = picture.slice;
 
-        assert!(matches!(slice.nal_unit_type, 19 | 20), "phase-1 bring-up requires an IDR");
-        assert!(slice.first_slice_segment_in_pic, "phase-1 bring-up requires the first slice");
-        assert_eq!(slice.slice_type, 2, "phase-1 bring-up requires an I-slice");
-        assert!(!pps.tiles_enabled, "phase-1 bring-up does not support tiles");
-        assert!(pps.entropy_coding_sync_enabled, "phase-1 bring-up expects WPP");
-        assert!(!sps.scaling_list_enabled, "phase-1 bring-up does not support scaling lists");
+        assert!(slice.first_slice_segment_in_pic, "kwv1 requires one slice per picture");
+        assert!(matches!(slice.slice_type, 1 | 2), "kwv1 RPIVID path only supports I/P slices");
+        assert!(!pps.tiles_enabled, "kwv1 RPIVID path does not support tiles");
+        assert!(pps.entropy_coding_sync_enabled, "kwv1 RPIVID path expects WPP");
+        assert!(!sps.scaling_list_enabled, "kwv1 RPIVID path does not support scaling lists");
+        assert!(!sps.temporal_mvp_enabled, "kwv1 RPIVID path requires temporal MVP disabled");
         assert_eq!(picture.ctb_height, slice.entry_point_count + 1, "WPP entry-point count does not match CTB rows");
-        assert!(!cabac_payload.is_empty(), "phase-1 CABAC payload is empty");
+        assert!(!cabac_payload.is_empty(), "RPIVID CABAC payload is empty");
+        if slice.slice_type == 1 {
+            assert_eq!(slice.num_ref_idx_l0_active, 1, "kwv1 P slice must use one L0 reference");
+            assert_eq!(slice.num_ref_idx_l1_active, 0, "kwv1 P slice must not use L1 references");
+            assert_eq!(slice.closest_negative_delta_poc, -1, "kwv1 P slice must reference the preceding picture");
+        }
 
         self.bitstream.load(cabac_payload);
         let bitstream = self.bitstream.window(0, cabac_payload.len());
 
         self.command.reset();
-        build_first_idr_wpp_commands(&mut self.command, picture, bitstream);
+        build_picture_wpp_commands(&mut self.command, picture, bitstream);
         self.command.sync_used_for_device();
 
         let phase_index = 0usize;
         let pu_stride = phase_stride(self.pu_size, picture.ctb_height as usize);
         let coeff_stride = phase_stride(self.coeff_size, picture.ctb_height as usize);
-
-        // These buffers were zeroed through the CPU allocator. Publish those
-        // dirty lines before handing ownership to the decoder, which then
-        // overwrites them during phase 1.
         self.pu[phase_index].sync_for_device();
         self.coeff[phase_index].sync_for_device();
 
@@ -630,12 +648,7 @@ impl RpividDecodeWorkspace {
             RPI_COEFFWSTRIDE,
             RpividDmaLength::from_bytes(coeff_stride).register_value(),
         );
-        registers
-            .hevc
-            .write32(RPI_CFNUM, self.command.used_commands() as u32);
-
-        // Writing CFBASE is the phase-1 start trigger. Match Linux's final
-        // ordered write after all command/workspace registers are visible.
+        registers.hevc.write32(RPI_CFNUM, self.command.used_commands() as u32);
         registers.hevc.write32(
             RPI_CFBASE,
             self.command.hardware_addr().register_value(),
@@ -663,33 +676,55 @@ impl RpividDecodeWorkspace {
         }
     }
 
-    fn submit_first_idr_phase2(&mut self, picture: &FirstPictureSyntax) -> RpividPhase2Snapshot {
+    fn submit_picture_phase2(
+        &mut self,
+        picture: &FirstPictureSyntax,
+        picture_index: usize,
+    ) -> RpividPhase2Snapshot {
         let sps = picture.sps;
         let slice = picture.slice;
-
-        assert!(matches!(slice.nal_unit_type, 19 | 20), "phase-2 bring-up requires an IDR");
-        assert_eq!(slice.slice_type, 2, "phase-2 bring-up requires an I-slice");
-        assert_eq!(sps.bit_depth_luma_minus8, 0, "phase-2 RGB bring-up supports 8-bit luma only");
-        assert_eq!(sps.bit_depth_chroma_minus8, 0, "phase-2 RGB bring-up supports 8-bit chroma only");
-        assert_eq!(sps.chroma_format_idc, 1, "phase-2 RGB bring-up requires 4:2:0 chroma");
+        assert!(matches!(slice.slice_type, 1 | 2), "kwv1 phase 2 only supports I/P slices");
+        assert_eq!(sps.bit_depth_luma_minus8, 0, "kwv1 phase 2 supports 8-bit luma only");
+        assert_eq!(sps.bit_depth_chroma_minus8, 0, "kwv1 phase 2 supports 8-bit chroma only");
+        assert_eq!(sps.chroma_format_idc, 1, "kwv1 phase 2 requires 4:2:0 chroma");
+        assert!(!sps.temporal_mvp_enabled, "kwv1 phase 2 requires temporal MVP disabled");
 
         let layout = RpividFrameLayout::from_picture(picture);
-        self.ensure_first_frame_buffers(layout);
-        let frame = self.first_frame.as_mut().expect("RPIVID frame buffer was not allocated");
-        let mv = self.first_frame_mv.as_mut().expect("RPIVID MV buffer was not allocated");
+        self.ensure_frame_buffers(layout);
+        let current_index = picture_index & 1;
+        let previous_index = current_index ^ 1;
+        let is_p = slice.slice_type == 1;
+        if is_p {
+            assert!(picture_index != 0, "first kwv1 picture cannot be a P slice");
+        }
 
-        // The CPU allocator zeroed these buffers through the cache. Clean the
-        // lines before phase 2 gains write ownership so no dirty zero line can
-        // later evict over the reconstructed picture or motion-vector data.
-        frame.dma.sync_for_device();
-        mv.sync_for_device();
+        self.frames[current_index]
+            .as_mut()
+            .expect("RPIVID current frame buffer was not allocated")
+            .dma
+            .sync_for_device();
 
         let phase_index = 0usize;
         let pu_stride = phase_stride(self.pu_size, picture.ctb_height as usize);
         let coeff_stride = phase_stride(self.coeff_size, picture.ctb_height as usize);
-        let write_motion_vectors = sps.temporal_mvp_enabled && is_reference_nal(slice.nal_unit_type);
-        let config2 = phase2_config2(picture, write_motion_vectors);
+        let config2 = phase2_config2(picture, false);
         let frame_size = (sps.height << 16) | sps.width;
+
+        let current = self.frames[current_index]
+            .as_ref()
+            .expect("RPIVID current frame buffer disappeared");
+        let frame_phys = current.dma.phys_addr();
+        let chroma_phys = frame_phys + layout.chroma_offset as u64;
+        let previous_phys = if is_p {
+            self.frames[previous_index]
+                .as_ref()
+                .expect("RPIVID previous reference frame was not decoded")
+                .dma
+                .phys_addr()
+        } else {
+            frame_phys
+        };
+        let previous_chroma_phys = previous_phys + layout.chroma_offset as u64;
 
         let registers = RpividRegisters::from_resources(super::hevc::HEVC_PLATFORM.resources());
         let _ = registers.acknowledge_interrupts();
@@ -712,23 +747,15 @@ impl RpividDecodeWorkspace {
             RpividDmaLength::from_bytes(coeff_stride).register_value(),
         );
 
-        let frame_phys = frame.dma.phys_addr();
-        let chroma_phys = frame_phys + layout.chroma_offset as u64;
         let frame_stride = RpividDmaLength::from_bytes(layout.frame_stride).register_value();
-        registers.hevc.write32(
-            RPI_OUTYBASE,
-            RpividDmaAddress::from_phys(frame_phys).register_value(),
-        );
+        registers.hevc.write32(RPI_OUTYBASE, RpividDmaAddress::from_phys(frame_phys).register_value());
         registers.hevc.write32(RPI_OUTYSTRIDE, frame_stride);
-        registers.hevc.write32(
-            RPI_OUTCBASE,
-            RpividDmaAddress::from_phys(chroma_phys).register_value(),
-        );
+        registers.hevc.write32(RPI_OUTCBASE, RpividDmaAddress::from_phys(chroma_phys).register_value());
         registers.hevc.write32(RPI_OUTCSTRIDE, frame_stride);
 
-        // Linux seeds all 16 reference slots with the current destination for
-        // a new picture. The IDR does not consume references, but keeping the
-        // register file valid avoids depending on stale reset contents.
+        // Seed every slot with a valid surface. P slices use DPB slot 0 for
+        // their sole L0 reference, which is always the immediately preceding
+        // picture in the constrained kwv1 encoder profile.
         for index in 0..16usize {
             let base = RPI_REF_BASE + index * RPI_REF_STRIDE;
             registers.hevc.write32(base, RpividDmaAddress::from_phys(frame_phys).register_value());
@@ -736,26 +763,23 @@ impl RpividDecodeWorkspace {
             registers.hevc.write32(base + 8, RpividDmaAddress::from_phys(chroma_phys).register_value());
             registers.hevc.write32(base + 12, frame_stride);
         }
+        if is_p {
+            registers.hevc.write32(RPI_REF_BASE, RpividDmaAddress::from_phys(previous_phys).register_value());
+            registers.hevc.write32(RPI_REF_BASE + 4, frame_stride);
+            registers.hevc.write32(RPI_REF_BASE + 8, RpividDmaAddress::from_phys(previous_chroma_phys).register_value());
+            registers.hevc.write32(RPI_REF_BASE + 12, frame_stride);
+        }
 
         registers.hevc.write32(RPI_CONFIG2, config2);
         registers.hevc.write32(RPI_FRAMESIZE, frame_size);
-        registers.hevc.write32(RPI_CURRPOC, 0);
+        registers.hevc.write32(RPI_CURRPOC, slice.pic_order_cnt_lsb);
 
         let colmv_stride = RpividDmaLength::from_bytes(layout.colmv_stride).register_value();
         registers.hevc.write32(RPI_COLSTRIDE, colmv_stride);
         registers.hevc.write32(RPI_MVSTRIDE, colmv_stride);
-        registers.hevc.write32(
-            RPI_MVBASE,
-            if write_motion_vectors {
-                RpividDmaAddress::from_phys(mv.phys_addr()).register_value()
-            } else {
-                0
-            },
-        );
-        // An IDR has no collocated reference picture.
+        registers.hevc.write32(RPI_MVBASE, 0);
         registers.hevc.write32(RPI_COLBASE, 0);
 
-        // NUMROWS is RPIVID's ordered phase-2 start trigger.
         registers.hevc.write32(RPI_NUMROWS, picture.ctb_height);
 
         let started = crate::time::time_manager().uptime();
@@ -768,11 +792,11 @@ impl RpividDecodeWorkspace {
 
         let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != irq_before;
         let (output_checksum, nonzero_bytes) = if irq_received {
-            frame.dma.sync_for_cpu();
-            if write_motion_vectors {
-                mv.sync_for_cpu();
-            }
-            buffer_signature(frame.dma.as_slice())
+            let current = self.frames[current_index]
+                .as_mut()
+                .expect("RPIVID current frame buffer disappeared after phase 2");
+            current.dma.sync_for_cpu();
+            buffer_signature(current.dma.as_slice())
         } else {
             (0, 0)
         };
@@ -790,43 +814,35 @@ impl RpividDecodeWorkspace {
             chroma_offset: layout.chroma_offset as u32,
             frame_bytes: layout.frame_bytes as u32,
             colmv_stride: layout.colmv_stride as u32,
-            colmv_bytes: layout.colmv_bytes as u32,
+            colmv_bytes: 0,
             output_checksum,
             nonzero_bytes,
         }
     }
 
-    fn ensure_first_frame_buffers(&mut self, layout: RpividFrameLayout) {
-        let frame_matches = self
-            .first_frame
-            .as_ref()
-            .map(|frame| frame.layout == layout)
-            .unwrap_or(false);
-        if !frame_matches {
-            self.first_frame = Some(RpividFrameBuffer {
-                dma: DmaBuffer::allocate(layout.frame_bytes, RPIVID_DMA_GRANULE)
-                    .expect("failed to allocate RPIVID decoded-frame DMA buffer"),
-                layout,
-            });
-        }
-
-        let mv_matches = self
-            .first_frame_mv
-            .as_ref()
-            .map(|buffer| buffer.len() == layout.colmv_bytes)
-            .unwrap_or(false);
-        if !mv_matches {
-            self.first_frame_mv = Some(
-                DmaBuffer::allocate(layout.colmv_bytes, RPIVID_DMA_GRANULE)
-                    .expect("failed to allocate RPIVID motion-vector DMA buffer"),
-            );
+    fn ensure_frame_buffers(&mut self, layout: RpividFrameLayout) {
+        for frame in &mut self.frames {
+            let matches = frame
+                .as_ref()
+                .map(|existing| existing.layout == layout)
+                .unwrap_or(false);
+            if !matches {
+                *frame = Some(RpividFrameBuffer {
+                    dma: DmaBuffer::allocate(layout.frame_bytes, RPIVID_DMA_GRANULE)
+                        .expect("failed to allocate RPIVID decoded-frame DMA buffer"),
+                    layout,
+                });
+            }
         }
     }
 
-    fn copy_first_frame_rgbx(&mut self, picture: &FirstPictureSyntax) -> RpividDecodedFrame {
+    fn copy_frame_rgbx(
+        &mut self,
+        picture: &FirstPictureSyntax,
+        picture_index: usize,
+    ) -> RpividDecodedFrame {
         let sps = picture.sps;
-        let frame = self
-            .first_frame
+        let frame = self.frames[picture_index & 1]
             .as_ref()
             .expect("RPIVID decoded frame requested before phase 2");
         let layout = frame.layout;
@@ -943,8 +959,7 @@ fn phase2_config2(picture: &FirstPictureSyntax, write_motion_vectors: bool) -> u
     if sps.bit_depth_chroma_minus8 != 0 {
         config |= 1 << 9;
     }
-    // The first picture is an IDR I-slice, so slice_temporal_mvp_enabled_flag
-    // is absent/false and CONFIG2 bit 19 remains clear.
+    // kwv1 disables temporal MVP, so CONFIG2 bit 19 remains clear.
     config
 }
 
@@ -980,7 +995,7 @@ fn phase_stride(buffer_size: usize, ctb_height: usize) -> usize {
     stride
 }
 
-fn build_first_idr_wpp_commands(
+fn build_picture_wpp_commands(
     commands: &mut RpividCommandBuffer,
     picture: &FirstPictureSyntax,
     bitstream: RpividBitstreamWindow,
@@ -996,8 +1011,8 @@ fn build_first_idr_wpp_commands(
     commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 7));
     commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 6));
 
-    write_i_slice_probabilities(commands, slice_qp);
-    write_i_slice_messages(commands, picture);
+    write_slice_probabilities(commands, slice_qp, slice.slice_type);
+    write_slice_messages(commands, picture);
     write_slice_segment_registers(commands, picture);
 
     let slice_const = (slice.slice_type << 12)
@@ -1034,11 +1049,20 @@ fn build_first_idr_wpp_commands(
     commands.push(RPI_STATUS, 1 | (last_x << 5) | (last_y << 18));
 }
 
-fn write_i_slice_probabilities(commands: &mut RpividCommandBuffer, slice_qp: i32) {
+fn write_slice_probabilities(
+    commands: &mut RpividCommandBuffer,
+    slice_qp: i32,
+    slice_type: u32,
+) {
+    let init = match slice_type {
+        2 => &PROB_INIT_I,
+        1 => &PROB_INIT_P,
+        _ => panic!("kwv1 CABAC initialization only supports I/P slices"),
+    };
     let q = slice_qp.clamp(0, 51);
     let mut probabilities = [0u8; 156];
     for index in 0..154 {
-        let init_value = PROB_INIT_I[index] as i32;
+        let init_value = init[index] as i32;
         let m = (init_value >> 4) * 5 - 45;
         let n = ((init_value & 15) << 3) - 16;
         let mut pre = 2 * (((m * q) >> 4) + n) - 127;
@@ -1059,25 +1083,52 @@ fn write_i_slice_probabilities(commands: &mut RpividCommandBuffer, slice_qp: i32
     commands.push(RPI_TRANSFER, PROB_BACKUP);
 }
 
-fn write_i_slice_messages(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax) {
+fn write_slice_messages(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax) {
     let pps = picture.pps;
     let slice = picture.slice;
+    let mut messages = [0u32; 5];
+    let mut count = 0usize;
 
-    // I-slice, zero references, no temporal MVP. The collocated-from-L0 bit is
-    // inferred true by the hardware message format in that case.
-    let cmd_slice = 1u32 | (1 << 14);
-    let filter = ((slice.beta_offset_div2 as u32) & 15)
+    let mut cmd_slice = match slice.slice_type {
+        2 => 1u32,
+        1 => 2u32,
+        _ => panic!("kwv1 slice messages only support I/P slices"),
+    };
+    if slice.slice_type == 1 {
+        cmd_slice |= 1 << 2; // one L0 reference
+        cmd_slice |= slice.max_num_merge_cand << 11;
+        cmd_slice |= 1 << 10; // NoBackwardPredictionFlag: sole ref is in the past
+    }
+    // With temporal MVP disabled the hardware treats the collocated source as
+    // L0. Keep the bit set for both I and P pictures, matching the Linux path.
+    cmd_slice |= 1 << 14;
+    messages[count] = cmd_slice;
+    count += 1;
+
+    if slice.slice_type == 1 {
+        messages[count] = 0; // DPB slot 0, short-term, unweighted
+        count += 1;
+        messages[count] = slice.pic_order_cnt_lsb.wrapping_sub(1) & 0xffff;
+        count += 1;
+    }
+
+    messages[count] = ((slice.beta_offset_div2 as u32) & 15)
         | (((slice.tc_offset_div2 as u32) & 15) << 4)
         | ((slice.deblocking_filter_disabled as u32) << 8)
         | ((slice.loop_filter_across_slices_enabled as u32) << 9)
         | ((pps.loop_filter_across_tiles_enabled as u32) << 10);
-    let qp_offsets = (((slice.slice_cr_qp_offset as u32) & 31) << 5)
+    count += 1;
+    messages[count] = (((slice.slice_cr_qp_offset as u32) & 31) << 5)
         | ((slice.slice_cb_qp_offset as u32) & 31);
+    count += 1;
 
-    commands.push(RPI_SLICECMDS, 3);
-    commands.push(0x4000, cmd_slice);
-    commands.push(0x4004, filter);
-    commands.push(0x4008, qp_offsets);
+    commands.push(
+        RPI_SLICECMDS,
+        u32::try_from(count).expect("slice command count does not fit in u32"),
+    );
+    for (index, &message) in messages[..count].iter().enumerate() {
+        commands.push(0x4000 + index * 4, message);
+    }
 }
 
 fn write_slice_segment_registers(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax) {

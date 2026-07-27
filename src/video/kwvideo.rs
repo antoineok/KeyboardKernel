@@ -131,6 +131,14 @@ pub struct FirstFragment {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FragmentSample {
+    pub offset: usize,
+    pub size: u32,
+    pub duration_ticks: u32,
+    pub sync: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VideoMetadata {
     pub track_id: u32,
     pub width: u16,
@@ -452,6 +460,35 @@ fn parse_first_fragment(
     )
 }
 
+fn parse_first_fragment_samples(
+    bootstrap: &[u8],
+    first_fragment_offset: usize,
+    track_id: u32,
+) -> Result<Vec<FragmentSample>, KwVideoError> {
+    let moof = find_box(bootstrap, 0, FourCc::new(*b"moof"))?;
+    if moof.start != first_fragment_offset {
+        return Err(KwVideoError::InvalidStructure(
+            "cached first fragment offset does not match first moof",
+        ));
+    }
+    let moof_end = moof
+        .payload_start
+        .checked_add(moof.payload.len())
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    let mdat = find_box(&bootstrap[moof_end..], moof_end, FourCc::new(*b"mdat"))?;
+    let traf = find_box(moof.payload, moof.payload_start, FourCc::new(*b"traf"))?;
+    let tfhd = find_box(traf.payload, traf.payload_start, FourCc::new(*b"tfhd"))?;
+    let defaults = parse_tfhd(tfhd.payload, track_id)?;
+    let trun = find_box(traf.payload, traf.payload_start, FourCc::new(*b"trun"))?;
+    parse_trun_samples(
+        trun.payload,
+        defaults,
+        moof.start,
+        mdat.payload_start,
+        mdat.payload.len(),
+    )
+}
+
 #[derive(Clone, Copy)]
 struct FragmentDefaults {
     duration: Option<u32>,
@@ -633,6 +670,115 @@ fn parse_trun(
         total_sample_bytes,
         first_sample_sync,
     })
+}
+
+fn parse_trun_samples(
+    bytes: &[u8],
+    defaults: FragmentDefaults,
+    moof_start: usize,
+    mdat_start: usize,
+    mdat_size: usize,
+) -> Result<Vec<FragmentSample>, KwVideoError> {
+    if bytes.len() < 12 {
+        return Err(KwVideoError::InvalidStructure("truncated trun"));
+    }
+    let flags = read_u32(bytes, 0)? & 0x00ff_ffff;
+    if flags & 0x000001 == 0 || flags & 0x000800 != 0 {
+        return Err(KwVideoError::UnsupportedProfile(
+            "kwv1 trun requires data_offset and no composition offsets",
+        ));
+    }
+
+    let sample_count = read_u32(bytes, 4)? as usize;
+    if sample_count == 0 {
+        return Err(KwVideoError::InvalidStructure("empty trun"));
+    }
+    let data_offset = read_u32(bytes, 8)? as i32;
+    let first_sample_offset = (moof_start as i128) + (data_offset as i128);
+    if first_sample_offset < 0 || first_sample_offset > usize::MAX as i128 {
+        return Err(KwVideoError::OffsetOverflow);
+    }
+
+    let mut cursor = 12usize;
+    let first_sample_flags = if flags & 0x000004 != 0 {
+        let value = read_u32(bytes, cursor)?;
+        cursor += 4;
+        Some(value)
+    } else {
+        None
+    };
+    let has_duration = flags & 0x000100 != 0;
+    let has_size = flags & 0x000200 != 0;
+    let has_flags = flags & 0x000400 != 0;
+
+    let mut sample_offset = first_sample_offset as usize;
+    let mut samples = Vec::with_capacity(sample_count);
+    for index in 0..sample_count {
+        let duration_ticks = if has_duration {
+            let value = read_u32(bytes, cursor)?;
+            cursor += 4;
+            value
+        } else {
+            defaults
+                .duration
+                .ok_or(KwVideoError::InvalidStructure("sample duration missing"))?
+        };
+        let size = if has_size {
+            let value = read_u32(bytes, cursor)?;
+            cursor += 4;
+            value
+        } else {
+            defaults
+                .size
+                .ok_or(KwVideoError::InvalidStructure("sample size missing"))?
+        };
+        let flags = if index == 0 {
+            first_sample_flags.or_else(|| {
+                if has_flags {
+                    None
+                } else {
+                    defaults.flags
+                }
+            })
+        } else if has_flags {
+            None
+        } else {
+            defaults.flags
+        };
+        let sample_flags = if has_flags {
+            let value = read_u32(bytes, cursor)?;
+            cursor += 4;
+            if index == 0 {
+                first_sample_flags.unwrap_or(value)
+            } else {
+                value
+            }
+        } else {
+            flags.ok_or(KwVideoError::InvalidStructure("sample flags missing"))?
+        };
+        if size == 0 {
+            return Err(KwVideoError::InvalidStructure("zero-sized fragment sample"));
+        }
+        samples.push(FragmentSample {
+            offset: sample_offset,
+            size,
+            duration_ticks,
+            sync: sample_flags & 0x00010000 == 0,
+        });
+        sample_offset = sample_offset
+            .checked_add(size as usize)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+    }
+
+    let mdat_end = mdat_start
+        .checked_add(mdat_size)
+        .ok_or(KwVideoError::OffsetOverflow)?;
+    if samples[0].offset < mdat_start || sample_offset > mdat_end {
+        return Err(KwVideoError::InvalidStructure(
+            "fragment sample bytes escape first mdat",
+        ));
+    }
+    Ok(samples)
 }
 
 fn find_hvcc_in_bootstrap(bootstrap: &[u8]) -> Result<MemoryBox<'_>, KwVideoError> {
@@ -920,6 +1066,66 @@ impl VideoAsset {
     #[inline(always)]
     pub fn bootstrap(&self) -> &[u8] {
         &self.bootstrap
+    }
+
+    pub fn first_fragment_samples(&self) -> Result<Vec<FragmentSample>, KwVideoError> {
+        parse_first_fragment_samples(
+            &self.bootstrap,
+            self.first_fragment_offset,
+            self.metadata.track_id,
+        )
+    }
+
+    pub fn sample_bytes(&self, sample: FragmentSample) -> Result<&[u8], KwVideoError> {
+        let end = sample
+            .offset
+            .checked_add(sample.size as usize)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        self.bootstrap
+            .get(sample.offset..end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "HEVC sample escapes transition bootstrap",
+            ))
+    }
+
+    pub fn picture_syntax(
+        &self,
+        sample: FragmentSample,
+    ) -> Result<super::hevc_syntax::FirstPictureSyntax, KwVideoError> {
+        let hvcc = find_hvcc_in_bootstrap(&self.bootstrap)?;
+        super::hevc_syntax::FirstPictureSyntax::parse(
+            hvcc.payload,
+            self.sample_bytes(sample)?,
+            self.metadata.hevc.nal_length_size as usize,
+        )
+        .map_err(KwVideoError::HevcSyntax)
+    }
+
+    pub fn picture_cabac_payload<'a>(
+        &'a self,
+        sample: FragmentSample,
+        picture: &super::hevc_syntax::FirstPictureSyntax,
+    ) -> Result<&'a [u8], KwVideoError> {
+        let nal_start = sample
+            .offset
+            .checked_add(picture.slice_nal_sample_offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let nal_end = nal_start
+            .checked_add(picture.slice_nal_len)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let payload_start = nal_start
+            .checked_add(picture.slice.data_byte_offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        if payload_start >= nal_end {
+            return Err(KwVideoError::InvalidStructure(
+                "HEVC slice has no CABAC payload",
+            ));
+        }
+        self.bootstrap
+            .get(payload_start..nal_end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "HEVC CABAC payload escapes transition bootstrap",
+            ))
     }
 
     /// Rebuild the first `hvc1` sample as one Annex-B access unit.
