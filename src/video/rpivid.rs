@@ -424,7 +424,7 @@ impl RpividWorkspaceStatic {
     pub fn submit_picture_phase1(
         &self,
         picture: &FirstPictureSyntax,
-        cabac_payload: &[u8],
+        cabac_ebsp: &[u8],
     ) -> RpividPhase1Snapshot {
         assert_eq!(
             crate::arch::cpu::current_id(),
@@ -434,7 +434,7 @@ impl RpividWorkspaceStatic {
         self.get_mut()
             .as_mut()
             .expect("RPIVID workspace used before initialization")
-            .submit_picture_phase1(picture, cabac_payload)
+            .submit_picture_phase1(picture, cabac_ebsp)
     }
 
     pub fn submit_picture_phase2(
@@ -594,7 +594,7 @@ impl RpividDecodeWorkspace {
     fn submit_picture_phase1(
         &mut self,
         picture: &FirstPictureSyntax,
-        cabac_payload: &[u8],
+        cabac_ebsp: &[u8],
     ) -> RpividPhase1Snapshot {
         let sps = picture.sps;
         let pps = picture.pps;
@@ -607,15 +607,15 @@ impl RpividDecodeWorkspace {
         assert!(!sps.scaling_list_enabled, "kwv1 RPIVID path does not support scaling lists");
         assert!(!sps.temporal_mvp_enabled, "kwv1 RPIVID path requires temporal MVP disabled");
         assert_eq!(slice.entry_point_count, 0, "kwv1 non-WPP slice must not contain entry points");
-        assert!(!cabac_payload.is_empty(), "RPIVID CABAC payload is empty");
+        assert!(!cabac_ebsp.is_empty(), "RPIVID CABAC payload is empty");
         if slice.slice_type == 1 {
             assert_eq!(slice.num_ref_idx_l0_active, 1, "kwv1 P slice must use one L0 reference");
             assert_eq!(slice.num_ref_idx_l1_active, 0, "kwv1 P slice must not use L1 references");
             assert_eq!(slice.closest_negative_delta_poc, -1, "kwv1 P slice must reference the preceding picture");
         }
 
-        self.bitstream.load(cabac_payload);
-        let bitstream = self.bitstream.window(0, cabac_payload.len());
+        self.bitstream.load(cabac_ebsp);
+        let bitstream = self.bitstream.window(0, cabac_ebsp.len());
 
         self.command.reset();
         build_picture_single_tile_commands(&mut self.command, picture, bitstream);
@@ -1008,8 +1008,9 @@ fn build_picture_single_tile_commands(
     commands.push(RPI_BFBASE, bitstream.base_register_value());
     commands.push(RPI_BFNUM, bitstream.byte_len());
     commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 7));
-    // CABAC is staged as RBSP, so hardware emulation-prevention removal stays off.
-    commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32);
+    // Match Raspberry Pi's driver: feed the original EBSP bytes and let
+    // RPIVID remove emulation-prevention bytes in hardware.
+    commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 6));
 
     write_slice_probabilities(commands, slice_qp, slice.slice_type);
     write_slice_messages(commands, picture);

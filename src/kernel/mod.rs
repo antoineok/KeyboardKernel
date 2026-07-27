@@ -181,22 +181,14 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
                 assert_eq!(slice.slice_type, 1, "kwv1 inter pictures must be P slices");
             }
 
-            let raw_cabac_len = video
+            let cabac_ebsp = video
                 .picture_cabac_payload_bytes(sample_bytes, &picture)
-                .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {global_picture_index} raw CABAC payload: {error}"))
-                .len();
-            let boundary_epb = video
-                .picture_cabac_boundary_has_epb_bytes(sample_bytes, &picture)
-                .unwrap_or_else(|error| panic!("failed to inspect KWVIDEO picture {global_picture_index} CABAC boundary: {error}"));
-            let cabac_payload = video
-                .picture_cabac_rbsp_bytes(sample_bytes, &picture)
-                .unwrap_or_else(|error| panic!("failed to materialize KWVIDEO picture {global_picture_index} CABAC RBSP: {error}"));
-            let emulation_bytes_removed = raw_cabac_len.saturating_sub(cabac_payload.len());
+                .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {global_picture_index} CABAC EBSP: {error}"));
             let phase1 = crate::video::rpivid::RPIVID_WORKSPACE
-                .submit_picture_phase1(&picture, &cabac_payload);
+                .submit_picture_phase1(&picture, cabac_ebsp);
             if !phase1.complete() {
                 info!(
-                    "RPIVID phase1 failure: picture={}, fragment={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes RBSP, epb_removed={}, boundary_epb={}, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
+                    "RPIVID phase1 failure: picture={}, fragment={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes EBSP, hw_epb=true, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
                     global_picture_index,
                     fragment_index,
                     slice.nal_unit_type,
@@ -205,9 +197,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
                     slice.num_ref_idx_l0_active,
                     slice.num_ref_idx_l1_active,
                     slice.max_num_merge_cand,
-                    cabac_payload.len(),
-                    emulation_bytes_removed,
-                    boundary_epb,
+                    cabac_ebsp.len(),
                     phase1.command_count,
                     phase1.irq_received,
                     phase1.cfstatus,
@@ -280,16 +270,14 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             wait_for_graphics_request(&mut graphics, request_id);
 
             info!(
-                "KWVIDEO frame {}/{}: fragment={}, type={}, POC={}, sample={} bytes, CABAC={} bytes RBSP, epb_removed={}, boundary_epb={}, P1={}/{}, P2={}, yuv_checksum={:#018x}, rgb_checksum={:#018x}, center=#{:02x}{:02x}{:02x}",
+                "KWVIDEO frame {}/{}: fragment={}, type={}, POC={}, sample={} bytes, CABAC={} bytes EBSP, hw_epb=true, P1={}/{}, P2={}, yuv_checksum={:#018x}, rgb_checksum={:#018x}, center=#{:02x}{:02x}{:02x}",
                 global_picture_index + 1,
                 total_frames,
                 fragment_index + 1,
                 slice.slice_type,
                 slice.pic_order_cnt_lsb,
                 sample.size,
-                cabac_payload.len(),
-                emulation_bytes_removed,
-                boundary_epb,
+                cabac_ebsp.len(),
                 phase1.cfstatus,
                 phase1.cfnum,
                 phase2.status2,

@@ -243,7 +243,7 @@ impl ManagementBackend for KernelManagementBackend {
     fn get_device_info(&mut self) -> Result<DeviceInfo, ManagementStatus> {
         Ok(DeviceInfo {
             hardware_revision: 1,
-            firmware_version: 0x0001_0013,
+            firmware_version: 0x0001_0014,
             bootloader_version: 0,
             active_slot: FirmwareSlot::Unknown,
             profile_count: 0,
