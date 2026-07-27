@@ -14,8 +14,11 @@ use crate::{
 };
 
 use super::{
+    hevc_syntax::FirstPictureSyntax,
     kwvideo::{FragmentSample, KwVideoError, MediaFragment, VideoAsset},
-    rpivid::{RpividDecodedFrame, RPIVID_WORKSPACE},
+    rpivid::{
+        RpividDecodedFrame, RpividPhase1Pending, RpividPhase2Pending, RPIVID_WORKSPACE,
+    },
 };
 
 const LATE_TOLERANCE: Duration = Duration::from_millis(20);
@@ -28,6 +31,25 @@ const MIN_SAFE_QUEUED_FRAMES: usize = 2;
 struct PreparedFrame {
     frame: RpividDecodedFrame,
     duration_ticks: u32,
+}
+
+#[derive(Clone, Copy)]
+enum PrepareState {
+    Idle,
+    Phase1 {
+        sample: FragmentSample,
+        picture: FirstPictureSyntax,
+        pending: RpividPhase1Pending,
+    },
+    Phase2 {
+        sample: FragmentSample,
+        picture: FirstPictureSyntax,
+        pending: RpividPhase2Pending,
+    },
+    Convert {
+        sample: FragmentSample,
+        picture: FirstPictureSyntax,
+    },
 }
 
 pub struct VideoPlayer {
@@ -44,6 +66,7 @@ pub struct VideoPlayer {
     pending_present_duration_ticks: Option<u32>,
     pending_present_was_late: bool,
     prepared: VecDeque<PreparedFrame>,
+    prepare_state: PrepareState,
     current: Option<RpividDecodedFrame>,
     spare_pixels: Vec<Vec<u8>>,
 
@@ -74,6 +97,7 @@ impl VideoPlayer {
             pending_present_duration_ticks: None,
             pending_present_was_late: false,
             prepared: VecDeque::new(),
+            prepare_state: PrepareState::Idle,
             current: None,
             spare_pixels: Vec::new(),
             frames_presented: 0,
@@ -84,7 +108,7 @@ impl VideoPlayer {
             loops: 0,
         };
         // Build a small presentation cushion before starting the media clock.
-        // Three RGB frames cost roughly 12 MiB at 1366x768 and absorb the
+        // Six RGB frames cost roughly 24 MiB at 1366x768 and absorb the
         // expensive IDR/fragment-boundary spikes we observed on hardware.
         while player.prepared.len() < PREPARED_QUEUE_FRAMES {
             player.prepare_next_frame()?;
@@ -224,36 +248,128 @@ impl VideoPlayer {
         }
     }
 
-    /// Decode at most one additional picture per graphics-scheduler pass.
-    /// CPU1 therefore checks overlay/control commands between decode jobs while
-    /// still using otherwise-idle time to maintain the presentation cushion.
+    /// Advance at most one non-blocking RPIVID preparation step per graphics
+    /// scheduler pass. Phase 1 and phase 2 run in hardware while CPU1 returns
+    /// to presentation/overlay work; only the final YUV->RGBX conversion still
+    /// consumes CPU1 synchronously.
     pub fn prepare_if_needed(
         &mut self,
         now: Duration,
         presentation_guard: Duration,
     ) -> Result<(), KwVideoError> {
+        match self.prepare_state {
+            PrepareState::Phase1 {
+                sample,
+                picture,
+                pending,
+            } => {
+                let Some(phase1) = RPIVID_WORKSPACE.poll_picture_phase1(pending) else {
+                    return Ok(());
+                };
+                if !phase1.complete() {
+                    crate::error!(
+                        "CPU1 RPIVID async phase1 failure: fragment={}, picture={}, POC={}, commands={}/{}, STATUS={:#010x}, BFSTATUS={:#010x}",
+                        self.fragment_index + 1,
+                        self.picture_index,
+                        picture.slice.pic_order_cnt_lsb,
+                        phase1.cfstatus,
+                        phase1.cfnum,
+                        phase1.status,
+                        phase1.bfstatus,
+                    );
+                    panic!("CPU1 RPIVID async phase 1 failed");
+                }
+
+                let pending =
+                    RPIVID_WORKSPACE.begin_picture_phase2(&picture, self.picture_index);
+                self.prepare_state = PrepareState::Phase2 {
+                    sample,
+                    picture,
+                    pending,
+                };
+                return Ok(());
+            }
+            PrepareState::Phase2 {
+                sample,
+                picture,
+                pending,
+            } => {
+                let Some(phase2) = RPIVID_WORKSPACE.poll_picture_phase2(pending) else {
+                    return Ok(());
+                };
+                assert!(phase2.complete(), "CPU1 RPIVID async phase 2 failed");
+                self.prepare_state = PrepareState::Convert { sample, picture };
+                return Ok(());
+            }
+            PrepareState::Convert { sample, picture } => {
+                // Conversion is still CPU work. Never start the full-frame
+                // column-NV12 -> RGBX pass when an already-composed page is
+                // approaching its presentation boundary.
+                if self.prepared.len() >= MIN_SAFE_QUEUED_FRAMES
+                    && self.pending_present_duration_ticks.is_some()
+                    && now
+                        .checked_add(presentation_guard)
+                        .map(|guard_end| guard_end >= self.next_present_at)
+                        .unwrap_or(true)
+                {
+                    self.prepare_deferrals = self.prepare_deferrals.saturating_add(1);
+                    return Ok(());
+                }
+
+                let pixels = self.spare_pixels.pop().unwrap_or_default();
+                let frame = RPIVID_WORKSPACE.copy_frame_rgbx_reuse(
+                    &picture,
+                    self.picture_index,
+                    pixels,
+                );
+                self.prepared.push_back(PreparedFrame {
+                    frame,
+                    duration_ticks: sample.duration_ticks,
+                });
+                self.sample_index += 1;
+                self.picture_index += 1;
+                self.prepare_state = PrepareState::Idle;
+                return Ok(());
+            }
+            PrepareState::Idle => {}
+        }
+
         if self.prepared.len() >= PREPARED_QUEUE_FRAMES {
             return Ok(());
         }
 
-        // Never start an optional decode/conversion job when the already-
-        // composed next page is entering its VSYNC presentation window. The
-        // RPIVID submission path is currently synchronous, so a decode spike
-        // here would prevent CPU1 from flipping a frame that is already ready.
-        // Keep at least two queued pictures before deferring, so very high-FPS
-        // streams degrade by missing a deadline rather than starving forever.
-        if self.prepared.len() >= MIN_SAFE_QUEUED_FRAMES
-            && self.pending_present_duration_ticks.is_some()
-            && now
-                .checked_add(presentation_guard)
-                .map(|guard_end| guard_end >= self.next_present_at)
-                .unwrap_or(true)
-        {
-            self.prepare_deferrals = self.prepare_deferrals.saturating_add(1);
-            return Ok(());
+        self.begin_prepare_next_frame()?;
+        Ok(())
+    }
+
+    fn begin_prepare_next_frame(&mut self) -> Result<(), KwVideoError> {
+        assert!(
+            matches!(self.prepare_state, PrepareState::Idle),
+            "KWVIDEO attempted to start a second RPIVID picture",
+        );
+        self.ensure_sample_available()?;
+
+        let sample: FragmentSample = self.fragment.samples()[self.sample_index];
+        let sample_bytes = self.fragment.sample_bytes(sample)?;
+        let picture = self.asset.picture_syntax_bytes(sample_bytes)?;
+        let slice = picture.slice;
+
+        if self.picture_index == 0 {
+            assert!(
+                matches!(slice.nal_unit_type, 19 | 20) && slice.slice_type == 2,
+                "each kwv1 fragment must begin with an IDR I-slice",
+            );
+        } else {
+            assert_eq!(slice.slice_type, 1, "kwv1 inter pictures must be P slices");
         }
 
-        self.prepare_next_frame()?;
+        let cabac_ebsp = self.asset.picture_cabac_payload_bytes(sample_bytes, &picture)?;
+        let pending = RPIVID_WORKSPACE.begin_picture_phase1(&picture, cabac_ebsp);
+        self.prepare_state = PrepareState::Phase1 {
+            sample,
+            picture,
+            pending,
+        };
         Ok(())
     }
 
