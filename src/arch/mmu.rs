@@ -405,6 +405,12 @@ unsafe fn enable_translation_root(l1_phys: PhysAddr) {
         options(nostack, preserves_flags),
     );
 
+    // The armstub disables caching before entering the kernel but does not
+    // invalidate residual per-core L1 data-cache state. Discard it before this
+    // CPU starts allocating cacheable lines, otherwise a secondary CPU can
+    // resurrect stale data left by firmware when SCTLR_EL1.C becomes set.
+    crate::arch::cache::invalidate_l1_data_cache();
+
     let mut sctlr: u64;
     asm!(
         "mrs {value}, sctlr_el1",
@@ -412,8 +418,6 @@ unsafe fn enable_translation_root(l1_phys: PhysAddr) {
         options(nomem, nostack, preserves_flags),
     );
 
-    // The Raspberry Pi firmware/armstub enters every CPU with its data cache
-    // disabled and the loaded kernel image cleaned to the point of coherency.
     // Normal RAM is Inner Shareable WB, so the Cortex-A72 cores participate in
     // hardware cache coherency once SCTLR_EL1.C is enabled. Non-coherent device
     // buffers are either mapped Normal-NC or synchronized explicitly.

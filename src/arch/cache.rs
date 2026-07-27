@@ -23,6 +23,93 @@ pub fn data_cache_enabled() -> bool {
     sctlr & SCTLR_C != 0
 }
 
+/// Invalidate every set/way in the current CPU's private L1 data cache.
+///
+/// This must run with `SCTLR_EL1.C == 0`, immediately before enabling the
+/// data cache on that CPU. The Raspberry Pi armstub disables caching but does
+/// not invalidate residual per-core L1 state, so a secondary core can
+/// otherwise resurrect stale cache lines when EL1 turns caching back on.
+///
+/// Deliberately do not walk higher cache levels here: BCM2711's L2 is shared
+/// by the Cortex-A72 cluster, and secondary CPUs are released after CPU0 has
+/// already started using cacheable RAM.
+///
+/// # Safety
+///
+/// The caller must ensure the current CPU's EL1 data cache is disabled.
+pub unsafe fn invalidate_l1_data_cache() {
+    debug_assert!(
+        !data_cache_enabled(),
+        "L1 data cache must be disabled before whole-cache invalidation"
+    );
+
+    let clidr: u64;
+    asm!(
+        "mrs {value}, clidr_el1",
+        value = out(reg) clidr,
+        options(nomem, nostack, preserves_flags),
+    );
+
+    // CLIDR_EL1.Ctype1 describes level 1. A data cache exists for encodings
+    // 2 (data only), 3 (separate instruction/data), and 4 (unified).
+    let cache_type = clidr & 0x7;
+    if !matches!(cache_type, 2 | 3 | 4) {
+        return;
+    }
+
+    // Select level-1 data/unified cache for CCSIDR_EL1.
+    asm!(
+        "msr csselr_el1, xzr",
+        "isb",
+        options(nomem, nostack, preserves_flags),
+    );
+
+    let ccsidr: u64;
+    asm!(
+        "mrs {value}, ccsidr_el1",
+        value = out(reg) ccsidr,
+        options(nomem, nostack, preserves_flags),
+    );
+
+    // Cortex-A72 implements the original Armv8 CCSIDR layout:
+    //   LineSize       [2:0]   => log2(words per line) - 2
+    //   Associativity  [12:3]  => ways - 1
+    //   NumSets        [27:13] => sets - 1
+    let line_shift = ((ccsidr & 0x7) + 4) as u32;
+    let ways_minus_one = ((ccsidr >> 3) & 0x3ff) as u32;
+    let sets_minus_one = ((ccsidr >> 13) & 0x7fff) as u32;
+    let way_shift = if ways_minus_one == 0 {
+        0
+    } else {
+        ways_minus_one.leading_zeros()
+    };
+
+    let mut way = ways_minus_one;
+    loop {
+        let mut set = sets_minus_one;
+        loop {
+            let operand = ((way as u64) << way_shift) | ((set as u64) << line_shift);
+            asm!(
+                "dc isw, {operand}",
+                operand = in(reg) operand,
+                options(nostack, preserves_flags),
+            );
+
+            if set == 0 {
+                break;
+            }
+            set -= 1;
+        }
+
+        if way == 0 {
+            break;
+        }
+        way -= 1;
+    }
+
+    asm!("dsb sy", "isb", options(nostack, preserves_flags));
+}
+
 #[inline(always)]
 fn data_cache_line_size() -> usize {
     let ctr: u64;
