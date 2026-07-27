@@ -21,6 +21,14 @@ const GRAPHICS_QUEUE_SLOTS: usize = 9;
 const OVERLAY_SLOTS: usize = 8;
 const VSYNC_CALIBRATION_INTERVALS: u32 = 6;
 const FALLBACK_VSYNC_PERIOD: Duration = Duration::from_micros(16_667);
+/// Arm the blocking VideoCore VSYNC wait shortly before the media PTS.
+///
+/// Using a whole refresh period here lets a frame flip one vblank *before*
+/// its intended PTS. On 24p/60 Hz that turns the expected stable 3:2 cadence
+/// into timing-sensitive 2/3/2/4 holds. Two milliseconds is long enough to
+/// enter the mailbox wait before the intended vblank without making the
+/// previous vblank eligible.
+const VSYNC_ARMING_LEAD: Duration = Duration::from_millis(2);
 
 const RESULT_NONE: u8 = 0;
 const RESULT_OK: u8 = 1;
@@ -422,7 +430,7 @@ pub fn run_graphics_core() -> ! {
 
         if let Some(player) = video.as_mut() {
             if backbuffer_ready
-                && player.presentation_window_open(time_manager().uptime(), vsync_period)
+                && player.presentation_window_open(time_manager().uptime(), VSYNC_ARMING_LEAD)
             {
                 let result = present_scene(framebuffer);
                 if result != RESULT_OK {
