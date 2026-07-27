@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod cpu;
 pub mod exceptions;
+pub mod gic;
 pub mod time;
 
 pub mod mmu;

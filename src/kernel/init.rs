@@ -1,5 +1,5 @@
 use crate::{
-    arch::mmu,
+    arch::{gic::{GIC_COMPATIBLE, GIC_PLATFORM}, mmu},
     drivers::{emmc::EMMC, gpio::GPIO_REGS, mailbox, uart::UART},
     early_timeit,
     fdt::BootInfo,
@@ -30,7 +30,7 @@ extern "C" {
 }
 
 const REQUIRED_ALIASES: &[&str] = &["gpio", "aux", "mailbox", "mmc0", "watchdog", "usb"];
-const REQUIRED_DEVICES: &[&str] = &[HEVC_COMPATIBLE];
+const REQUIRED_DEVICES: &[&str] = &[HEVC_COMPATIBLE, GIC_COMPATIBLE];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let boot_info = early_timeit!("Parse boot FDT", {
@@ -82,6 +82,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
 
     early_timeit!("HEVC decoder discovery", {
         HEVC_PLATFORM.init(boot_info.device(HEVC_COMPATIBLE));
+    });
+
+    early_timeit!("GICv2 discovery", {
+        GIC_PLATFORM.init(boot_info.device(GIC_COMPATIBLE));
     });
 
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
@@ -154,6 +158,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         "EL1 data cache failed to enable"
     );
     crate::info!("EL1 MMU and data cache enabled");
+
+    early_timeit!("GICv2 register probe", {
+        GIC_PLATFORM.probe();
+    });
 
     early_timeit!("HEVC clock enable", {
         HEVC_PLATFORM.enable_clock(mailbox);
