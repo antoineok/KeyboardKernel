@@ -181,14 +181,22 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
                 assert_eq!(slice.slice_type, 1, "kwv1 inter pictures must be P slices");
             }
 
-            let cabac_payload = video
+            let raw_cabac_len = video
                 .picture_cabac_payload_bytes(sample_bytes, &picture)
-                .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {global_picture_index} CABAC payload: {error}"));
+                .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {global_picture_index} raw CABAC payload: {error}"))
+                .len();
+            let boundary_epb = video
+                .picture_cabac_boundary_has_epb_bytes(sample_bytes, &picture)
+                .unwrap_or_else(|error| panic!("failed to inspect KWVIDEO picture {global_picture_index} CABAC boundary: {error}"));
+            let cabac_payload = video
+                .picture_cabac_rbsp_bytes(sample_bytes, &picture)
+                .unwrap_or_else(|error| panic!("failed to materialize KWVIDEO picture {global_picture_index} CABAC RBSP: {error}"));
+            let emulation_bytes_removed = raw_cabac_len.saturating_sub(cabac_payload.len());
             let phase1 = crate::video::rpivid::RPIVID_WORKSPACE
-                .submit_picture_phase1(&picture, cabac_payload);
+                .submit_picture_phase1(&picture, &cabac_payload);
             if !phase1.complete() {
                 info!(
-                    "RPIVID phase1 failure: picture={}, fragment={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
+                    "RPIVID phase1 failure: picture={}, fragment={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes RBSP, epb_removed={}, boundary_epb={}, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
                     global_picture_index,
                     fragment_index,
                     slice.nal_unit_type,
@@ -198,6 +206,8 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
                     slice.num_ref_idx_l1_active,
                     slice.max_num_merge_cand,
                     cabac_payload.len(),
+                    emulation_bytes_removed,
+                    boundary_epb,
                     phase1.command_count,
                     phase1.irq_received,
                     phase1.cfstatus,
@@ -221,6 +231,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
 
             let decoded = crate::video::rpivid::RPIVID_WORKSPACE
                 .copy_frame_rgbx(&picture, picture_index);
+            let (rgb_checksum, center_pixel) = rgbx_signature_and_center(&decoded);
             assert_eq!(
                 decoded.width(),
                 metadata.width.into(),
@@ -269,7 +280,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             wait_for_graphics_request(&mut graphics, request_id);
 
             info!(
-                "KWVIDEO frame {}/{}: fragment={}, type={}, POC={}, sample={} bytes, CABAC={} bytes, P1={}/{}, P2={}, checksum={:#018x}",
+                "KWVIDEO frame {}/{}: fragment={}, type={}, POC={}, sample={} bytes, CABAC={} bytes RBSP, epb_removed={}, boundary_epb={}, P1={}/{}, P2={}, yuv_checksum={:#018x}, rgb_checksum={:#018x}, center=#{:02x}{:02x}{:02x}",
                 global_picture_index + 1,
                 total_frames,
                 fragment_index + 1,
@@ -277,10 +288,16 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
                 slice.pic_order_cnt_lsb,
                 sample.size,
                 cabac_payload.len(),
+                emulation_bytes_removed,
+                boundary_epb,
                 phase1.cfstatus,
                 phase1.cfnum,
                 phase2.status2,
                 phase2.output_checksum,
+                rgb_checksum,
+                center_pixel[0],
+                center_pixel[1],
+                center_pixel[2],
             );
 
             presentation_ticks = presentation_ticks
@@ -408,6 +425,35 @@ fn bring_up_secondary_cpu(raw_id: u8) {
 
         spin_loop();
     }
+}
+
+fn rgbx_signature_and_center(
+    decoded: &crate::video::rpivid::RpividDecodedFrame,
+) -> (u64, [u8; 4]) {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in decoded.pixels() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    let center_x = decoded.width() as usize / 2;
+    let center_y = decoded.height() as usize / 2;
+    let offset = center_y
+        .checked_mul(decoded.pitch())
+        .and_then(|row| row.checked_add(center_x * 4))
+        .expect("decoded center-pixel offset overflow");
+    let pixels = decoded.pixels();
+    assert!(offset + 4 <= pixels.len(), "decoded center pixel is out of bounds");
+
+    (
+        hash,
+        [
+            pixels[offset],
+            pixels[offset + 1],
+            pixels[offset + 2],
+            pixels[offset + 3],
+        ],
+    )
 }
 
 fn log_memory_summary() {

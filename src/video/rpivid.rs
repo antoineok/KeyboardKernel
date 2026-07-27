@@ -1009,7 +1009,12 @@ fn build_picture_wpp_commands(
     commands.push(RPI_BFBASE, bitstream.base_register_value());
     commands.push(RPI_BFNUM, bitstream.byte_len());
     commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 7));
-    commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 6));
+    // CABAC is staged as RBSP, with emulation-prevention bytes already
+    // removed in software. Do not enable RPIVID's EBSP de-escaping here: the
+    // hardware starts at CABAC rather than the NAL header and therefore cannot
+    // reliably recognize an emulation-prevention byte inserted across the
+    // slice-header/CABAC boundary.
+    commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32);
 
     write_slice_probabilities(commands, slice_qp, slice.slice_type);
     write_slice_messages(commands, picture);

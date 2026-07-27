@@ -1225,6 +1225,81 @@ impl VideoAsset {
             ))
     }
 
+    pub fn picture_cabac_boundary_has_epb_bytes(
+        &self,
+        sample: &[u8],
+        picture: &super::hevc_syntax::FirstPictureSyntax,
+    ) -> Result<bool, KwVideoError> {
+        let nal_start = picture.slice_nal_sample_offset;
+        let nal_end = nal_start
+            .checked_add(picture.slice_nal_len)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let payload_start = nal_start
+            .checked_add(picture.slice.data_byte_offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        if payload_start >= nal_end {
+            return Err(KwVideoError::InvalidStructure(
+                "HEVC slice has no CABAC payload",
+            ));
+        }
+        Ok(payload_start >= nal_start + 2
+            && sample.get(payload_start) == Some(&0x03)
+            && sample.get(payload_start - 1) == Some(&0x00)
+            && sample.get(payload_start - 2) == Some(&0x00))
+    }
+
+    /// Return the CABAC slice data as RBSP bytes.
+    ///
+    /// RPIVID can remove emulation-prevention bytes itself, but our stateless
+    /// path starts the hardware at the first CABAC byte rather than at the NAL
+    /// header. An emulation-prevention byte may have been inserted across the
+    /// slice-header/CABAC boundary; starting after the header loses the two
+    /// preceding zero bytes that make that 0x03 recognizable. De-escape the
+    /// complete NAL payload first, then cut at the parsed RBSP header boundary.
+    pub fn picture_cabac_rbsp_bytes(
+        &self,
+        sample: &[u8],
+        picture: &super::hevc_syntax::FirstPictureSyntax,
+    ) -> Result<Vec<u8>, KwVideoError> {
+        let nal_start = picture.slice_nal_sample_offset;
+        let nal_end = nal_start
+            .checked_add(picture.slice_nal_len)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let nal = sample
+            .get(nal_start..nal_end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "HEVC slice NAL escapes sample",
+            ))?;
+        if nal.len() < 2 {
+            return Err(KwVideoError::InvalidStructure(
+                "HEVC slice NAL is shorter than its header",
+            ));
+        }
+
+        let mut rbsp = Vec::with_capacity(nal.len() - 2);
+        let mut zero_run = 0u8;
+        for &byte in &nal[2..] {
+            if zero_run >= 2 && byte == 0x03 {
+                zero_run = 0;
+                continue;
+            }
+            rbsp.push(byte);
+            if byte == 0 {
+                zero_run = zero_run.saturating_add(1);
+            } else {
+                zero_run = 0;
+            }
+        }
+
+        let header_bytes = picture.slice.header_rbsp_bits / 8;
+        if picture.slice.header_rbsp_bits & 7 != 0 || header_bytes >= rbsp.len() {
+            return Err(KwVideoError::InvalidStructure(
+                "HEVC slice has no RBSP CABAC payload",
+            ));
+        }
+        Ok(rbsp[header_bytes..].to_vec())
+    }
+
     /// Rebuild the first `hvc1` sample as one Annex-B access unit.
     ///
     /// MP4 stores VPS/SPS/PPS in `hvcC` and the sample itself as 4-byte
