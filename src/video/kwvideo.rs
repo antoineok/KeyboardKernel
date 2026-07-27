@@ -27,6 +27,9 @@ pub const KWVIDEO_BRAND: FourCc = FourCc::new(*b"kwv1");
 /// bounded instead of letting media assets consume the complete kernel heap.
 pub const MAX_TRANSITION_BOOTSTRAP_BYTES: usize = 4 * 1024 * 1024;
 
+/// Eight configurable profiles plus the optional fallback visual profile.
+pub const VIDEO_PROFILE_SLOT_COUNT: usize = 9;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileType {
     major_brand: FourCc,
@@ -243,6 +246,74 @@ impl VideoAsset {
     }
 }
 
+/// Resident transition state for every profile video.
+///
+/// Slots 0..=7 are available to the normal profiles. Slot 8 is reserved for
+/// the optional fallback visual profile; input behavior for that slot remains
+/// governed by the keyboard fallback layout rather than by this video cache.
+pub struct VideoTransitionCache {
+    slots: [Option<VideoAsset>; VIDEO_PROFILE_SLOT_COUNT],
+}
+
+impl VideoTransitionCache {
+    pub fn new() -> Self {
+        Self {
+            slots: core::array::from_fn(|_| None),
+        }
+    }
+
+    pub fn load(
+        &mut self,
+        vfs: &Vfs<'_>,
+        slot: usize,
+        fs: FsId,
+        path: &str,
+    ) -> Result<(), KwVideoError> {
+        let destination = self
+            .slots
+            .get_mut(slot)
+            .ok_or(KwVideoError::VideoProfileSlotOutOfRange(slot))?;
+        *destination = Some(VideoAsset::open(vfs, fs, path)?);
+        Ok(())
+    }
+
+    pub fn unload(&mut self, slot: usize) -> Result<Option<VideoAsset>, KwVideoError> {
+        let asset = self
+            .slots
+            .get_mut(slot)
+            .ok_or(KwVideoError::VideoProfileSlotOutOfRange(slot))?;
+        Ok(asset.take())
+    }
+
+    #[inline(always)]
+    pub fn get(&self, slot: usize) -> Option<&VideoAsset> {
+        self.slots.get(slot).and_then(Option::as_ref)
+    }
+
+    #[inline(always)]
+    pub fn get_mut(&mut self, slot: usize) -> Option<&mut VideoAsset> {
+        self.slots.get_mut(slot).and_then(Option::as_mut)
+    }
+
+    pub fn loaded_count(&self) -> usize {
+        self.slots.iter().filter(|asset| asset.is_some()).count()
+    }
+
+    pub fn bootstrap_bytes(&self) -> usize {
+        self.slots
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(|asset| asset.bootstrap().len())
+            .sum()
+    }
+}
+
+impl Default for VideoTransitionCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 pub enum KwVideoError {
     EmptyFile,
@@ -259,6 +330,7 @@ pub enum KwVideoError {
         maximum: usize,
     },
     OffsetOverflow,
+    VideoProfileSlotOutOfRange(usize),
     IsoBmff(IsoBmffError),
 }
 
@@ -309,6 +381,11 @@ impl fmt::Display for KwVideoError {
                 )
             }
             Self::OffsetOverflow => write!(f, "Keywork Video box offset overflow"),
+            Self::VideoProfileSlotOutOfRange(slot) => write!(
+                f,
+                "video profile slot {slot} is out of range; maximum is {}",
+                VIDEO_PROFILE_SLOT_COUNT - 1
+            ),
             Self::IsoBmff(error) => fmt::Display::fmt(error, f),
         }
     }
