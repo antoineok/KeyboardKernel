@@ -144,6 +144,10 @@ impl HevcPlatform {
         actual_rate
     }
 
+    pub fn probe_hardware(&self) -> u32 {
+        super::rpivid::RpividRegisters::from_resources(self.resources()).probe()
+    }
+
     pub fn resources(&self) -> HevcResources {
         unsafe {
             (*self.0.get())

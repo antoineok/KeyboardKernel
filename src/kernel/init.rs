@@ -159,6 +159,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
         HEVC_PLATFORM.enable_clock(mailbox);
     });
 
+    early_timeit!("HEVC register probe", {
+        HEVC_PLATFORM.probe_hardware();
+    });
+
     init_phys_allocator();
 
     early_timeit!("USB power domain", {
