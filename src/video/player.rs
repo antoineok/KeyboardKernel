@@ -22,7 +22,8 @@ const LATE_TOLERANCE: Duration = Duration::from_millis(20);
 const STATS_INTERVAL_FRAMES: u64 = 90;
 /// Keep several already-decoded RGB frames ready so a costly IDR or fragment
 /// read does not immediately turn into a visible presentation stall.
-const PREPARED_QUEUE_FRAMES: usize = 3;
+const PREPARED_QUEUE_FRAMES: usize = 6;
+const MIN_SAFE_QUEUED_FRAMES: usize = 2;
 
 struct PreparedFrame {
     frame: RpividDecodedFrame,
@@ -49,6 +50,7 @@ pub struct VideoPlayer {
     frames_presented: u64,
     late_frames: u64,
     queue_underruns: u64,
+    prepare_deferrals: u64,
     clock_rebases: u64,
     loops: u64,
 }
@@ -77,6 +79,7 @@ impl VideoPlayer {
             frames_presented: 0,
             late_frames: 0,
             queue_underruns: 0,
+            prepare_deferrals: 0,
             clock_rebases: 0,
             loops: 0,
         };
@@ -112,32 +115,21 @@ impl VideoPlayer {
         self.loops
     }
 
-    /// Advance the current video frame when its deadline arrives.
+    /// Select the next decoded picture for composition into the hidden
+    /// framebuffer page.
     ///
-    /// This does *not* advance the presentation clock. CPU1 still has to
-    /// composite the selected frame and flip the framebuffer. `frame_presented`
-    /// commits the duration only after that visible presentation completes.
-    pub fn advance_if_due(
-        &mut self,
-        now: Duration,
-        presentation_lead: Duration,
-    ) -> Result<bool, KwVideoError> {
-        let presentation_window_open = now
-            .checked_add(presentation_lead)
-            .map(|ready_by| ready_by >= self.next_present_at)
-            .unwrap_or(true);
-        if self.pending_present_duration_ticks.is_some() || !presentation_window_open {
+    /// This deliberately happens *well before* the frame's presentation
+    /// deadline. CPU1 can therefore perform the full-screen RGBX copy and all
+    /// overlay work while the previous page is still scanning out. The actual
+    /// deadline path then contains only VSYNC + page flip.
+    pub fn stage_next_frame(&mut self) -> Result<bool, KwVideoError> {
+        if self.pending_present_duration_ticks.is_some() {
             return Ok(false);
         }
 
         if self.prepared.is_empty() {
             self.queue_underruns = self.queue_underruns.saturating_add(1);
             self.prepare_next_frame()?;
-        }
-
-        let late = now > self.next_present_at + LATE_TOLERANCE;
-        if late {
-            self.late_frames = self.late_frames.saturating_add(1);
         }
 
         let next = self
@@ -149,8 +141,20 @@ impl VideoPlayer {
         }
 
         self.pending_present_duration_ticks = Some(next.duration_ticks);
-        self.pending_present_was_late = late;
+        self.pending_present_was_late = false;
         Ok(true)
+    }
+
+    /// Return true once it is time to block for the VSYNC that should expose
+    /// the already-composed hidden framebuffer page.
+    pub fn presentation_window_open(&self, now: Duration, presentation_lead: Duration) -> bool {
+        if self.pending_present_duration_ticks.is_none() {
+            return false;
+        }
+
+        now.checked_add(presentation_lead)
+            .map(|ready_by| ready_by >= self.next_present_at)
+            .unwrap_or(true)
     }
 
     /// Commit one frame at a real display presentation boundary.
@@ -163,6 +167,12 @@ impl VideoPlayer {
             .pending_present_duration_ticks
             .take()
             .expect("KWVIDEO frame_presented without an advanced frame");
+
+        let late = presented_at > self.next_present_at + LATE_TOLERANCE;
+        if late {
+            self.late_frames = self.late_frames.saturating_add(1);
+        }
+        self.pending_present_was_late = late;
 
         let rebase = self.pending_present_was_late;
         if rebase {
@@ -199,13 +209,14 @@ impl VideoPlayer {
             let media_ms = self.presentation_ticks.saturating_mul(1000) / u64::from(self.timescale);
             let wall_ms = presented_at.saturating_sub(self.started_at).as_millis();
             crate::info!(
-                "CPU1 KWVIDEO playback: frames={}, media={} ms, wall={} ms, late={}, rebases={}, underruns={}, queued={}, fragment={}, loops={}",
+                "CPU1 KWVIDEO playback: frames={}, media={} ms, wall={} ms, late={}, rebases={}, underruns={}, deferred_prepares={}, queued={}, fragment={}, loops={}",
                 self.frames_presented,
                 media_ms,
                 wall_ms,
                 self.late_frames,
                 self.clock_rebases,
                 self.queue_underruns,
+                self.prepare_deferrals,
                 self.prepared.len(),
                 self.fragment_index + 1,
                 self.loops,
@@ -216,10 +227,33 @@ impl VideoPlayer {
     /// Decode at most one additional picture per graphics-scheduler pass.
     /// CPU1 therefore checks overlay/control commands between decode jobs while
     /// still using otherwise-idle time to maintain the presentation cushion.
-    pub fn prepare_if_needed(&mut self) -> Result<(), KwVideoError> {
-        if self.prepared.len() < PREPARED_QUEUE_FRAMES {
-            self.prepare_next_frame()?;
+    pub fn prepare_if_needed(
+        &mut self,
+        now: Duration,
+        presentation_guard: Duration,
+    ) -> Result<(), KwVideoError> {
+        if self.prepared.len() >= PREPARED_QUEUE_FRAMES {
+            return Ok(());
         }
+
+        // Never start an optional decode/conversion job when the already-
+        // composed next page is entering its VSYNC presentation window. The
+        // RPIVID submission path is currently synchronous, so a decode spike
+        // here would prevent CPU1 from flipping a frame that is already ready.
+        // Keep at least two queued pictures before deferring, so very high-FPS
+        // streams degrade by missing a deadline rather than starving forever.
+        if self.prepared.len() >= MIN_SAFE_QUEUED_FRAMES
+            && self.pending_present_duration_ticks.is_some()
+            && now
+                .checked_add(presentation_guard)
+                .map(|guard_end| guard_end >= self.next_present_at)
+                .unwrap_or(true)
+        {
+            self.prepare_deferrals = self.prepare_deferrals.saturating_add(1);
+            return Ok(());
+        }
+
+        self.prepare_next_frame()?;
         Ok(())
     }
 

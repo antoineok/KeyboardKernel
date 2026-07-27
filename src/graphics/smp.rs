@@ -303,6 +303,7 @@ pub fn run_graphics_core() -> ! {
     let mut video: Option<VideoPlayer> = None;
     let mut overlays: [Option<OwnedOverlay>; OVERLAY_SLOTS] = core::array::from_fn(|_| None);
     let mut scene_dirty = false;
+    let mut backbuffer_ready = false;
 
     framebuffer
         .as_surface_mut()
@@ -338,6 +339,7 @@ pub fn run_graphics_core() -> ! {
                         crate::info!("CPU1 started KWVIDEO background: {}", command.path);
                         video = Some(player);
                         scene_dirty = true;
+                        backbuffer_ready = false;
                         RESULT_OK
                     }
                     Err(error) => {
@@ -348,6 +350,7 @@ pub fn run_graphics_core() -> ! {
                 GraphicsCommand::StopVideo { .. } => {
                     video = None;
                     scene_dirty = true;
+                    backbuffer_ready = false;
                     RESULT_OK
                 }
                 GraphicsCommand::SetOverlay(command) => {
@@ -359,6 +362,7 @@ pub fn run_graphics_core() -> ! {
                             Ok(overlay) => {
                                 overlays[slot] = Some(overlay);
                                 scene_dirty = true;
+                                backbuffer_ready = false;
                                 RESULT_OK
                             }
                             Err(error) => {
@@ -375,6 +379,7 @@ pub fn run_graphics_core() -> ! {
                     } else {
                         overlays[slot] = None;
                         scene_dirty = true;
+                        backbuffer_ready = false;
                         RESULT_OK
                     }
                 }
@@ -385,12 +390,15 @@ pub fn run_graphics_core() -> ! {
             send_event();
         }
 
-        let mut video_frame_advanced = false;
+        // Stage the next decoded video frame as soon as the previous page has
+        // been presented. Composition then happens into the hidden page long
+        // before the next media deadline, leaving the deadline path with only
+        // VSYNC + page flip.
         if let Some(player) = video.as_mut() {
-            match player.advance_if_due(time_manager().uptime(), vsync_period) {
+            match player.stage_next_frame() {
                 Ok(true) => {
                     scene_dirty = true;
-                    video_frame_advanced = true;
+                    backbuffer_ready = false;
                 },
                 Ok(false) => {}
                 Err(error) => {
@@ -402,21 +410,42 @@ pub fn run_graphics_core() -> ! {
         }
 
         if scene_dirty {
-            let result = render_scene(framebuffer, &compositor, video.as_ref(), &overlays);
+            let result = compose_scene(framebuffer, &compositor, video.as_ref(), &overlays);
             if result != RESULT_OK {
-                crate::error!("CPU1 scene presentation failed with result {}", result);
-            } else if video_frame_advanced {
-                // Start this frame's visible duration only after composition and
-                // the framebuffer page flip have actually completed.
-                if let Some(player) = video.as_mut() {
-                    player.frame_presented(time_manager().uptime());
-                }
+                crate::error!("CPU1 scene composition failed with result {}", result);
+                backbuffer_ready = false;
+            } else {
+                backbuffer_ready = true;
             }
             scene_dirty = false;
         }
 
         if let Some(player) = video.as_mut() {
-            if let Err(error) = player.prepare_if_needed() {
+            if backbuffer_ready
+                && player.presentation_window_open(time_manager().uptime(), vsync_period)
+            {
+                let result = present_scene(framebuffer);
+                if result != RESULT_OK {
+                    crate::error!("CPU1 scene presentation failed with result {}", result);
+                    backbuffer_ready = false;
+                    scene_dirty = true;
+                } else {
+                    player.frame_presented(time_manager().uptime());
+                    backbuffer_ready = false;
+                }
+            }
+        } else if backbuffer_ready {
+            // Static scene changes do not have a media clock. Present them at
+            // the next vblank as soon as composition completes.
+            let result = present_scene(framebuffer);
+            if result != RESULT_OK {
+                crate::error!("CPU1 static scene presentation failed with result {}", result);
+            }
+            backbuffer_ready = false;
+        }
+
+        if let Some(player) = video.as_mut() {
+            if let Err(error) = player.prepare_if_needed(time_manager().uptime(), vsync_period) {
                 crate::error!("CPU1 KWVIDEO decode preparation failed: {}", error);
                 video = None;
                 scene_dirty = true;
@@ -448,7 +477,7 @@ fn calibrate_vsync_period(framebuffer: &mut super::framebuffer::Framebuffer) -> 
     Some(Duration::from_nanos(nanos as u64))
 }
 
-fn render_scene(
+fn compose_scene(
     framebuffer: &mut super::framebuffer::Framebuffer,
     compositor: &Compositor,
     video: Option<&VideoPlayer>,
@@ -530,6 +559,10 @@ fn render_scene(
         }
     }
 
+    RESULT_OK
+}
+
+fn present_scene(framebuffer: &mut super::framebuffer::Framebuffer) -> u8 {
     if !framebuffer.wait_for_vsync() {
         crate::error!("CPU1 framebuffer VSYNC wait failed");
         return RESULT_PRESENT_FAILED;
