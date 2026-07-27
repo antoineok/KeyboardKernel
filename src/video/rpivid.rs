@@ -4,6 +4,8 @@
 //! physical addresses discovered from the FDT can be used directly as virtual
 //! addresses after EL1 translation is enabled.
 
+use alloc::vec;
+use alloc::vec::Vec;
 use core::{
     cell::UnsafeCell,
     hint::spin_loop,
@@ -43,8 +45,26 @@ const RPI_CFBASE: usize = 0x006c;
 const RPI_CFNUM: usize = 0x0070;
 const RPI_CFSTATUS: usize = 0x0074;
 
-// Phase-2 status register. The phase-2 register file begins at 0x8000.
+// Phase-2 HEVC register offsets.
+const RPI_PURBASE: usize = 0x8000;
+const RPI_PURSTRIDE: usize = 0x8004;
+const RPI_COEFFRBASE: usize = 0x8008;
+const RPI_COEFFRSTRIDE: usize = 0x800c;
+const RPI_NUMROWS: usize = 0x8010;
+const RPI_CONFIG2: usize = 0x8014;
+const RPI_OUTYBASE: usize = 0x8018;
+const RPI_OUTYSTRIDE: usize = 0x801c;
+const RPI_OUTCBASE: usize = 0x8020;
+const RPI_OUTCSTRIDE: usize = 0x8024;
 const RPI_STATUS2: usize = 0x8028;
+const RPI_FRAMESIZE: usize = 0x802c;
+const RPI_MVBASE: usize = 0x8030;
+const RPI_MVSTRIDE: usize = 0x8034;
+const RPI_COLBASE: usize = 0x8038;
+const RPI_COLSTRIDE: usize = 0x803c;
+const RPI_CURRPOC: usize = 0x8040;
+const RPI_REF_BASE: usize = 0x9000;
+const RPI_REF_STRIDE: usize = 0x10;
 
 // Local Argon interrupt controller register block.
 const ARG_IC_ICTRL: usize = 0x0000;
@@ -311,6 +331,56 @@ impl RpividPhase1Snapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpividPhase2Snapshot {
+    pub irq_received: bool,
+    pub status2: u32,
+    pub interrupt_control: u32,
+    pub config2: u32,
+    pub coded_width: u32,
+    pub coded_height: u32,
+    pub storage_width: u32,
+    pub storage_height: u32,
+    pub frame_stride: u32,
+    pub chroma_offset: u32,
+    pub frame_bytes: u32,
+    pub colmv_stride: u32,
+    pub colmv_bytes: u32,
+    pub output_checksum: u64,
+    pub nonzero_bytes: u32,
+}
+
+impl RpividPhase2Snapshot {
+    pub const fn complete(self) -> bool {
+        self.irq_received
+    }
+}
+
+pub struct RpividDecodedFrame {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    pitch: usize,
+}
+
+impl RpividDecodedFrame {
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub const fn pitch(&self) -> usize {
+        self.pitch
+    }
+
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
 pub struct RpividWorkspaceStatic(UnsafeCell<Option<RpividDecodeWorkspace>>);
 
 unsafe impl Sync for RpividWorkspaceStatic {}
@@ -354,6 +424,32 @@ impl RpividWorkspaceStatic {
             .expect("RPIVID workspace used before initialization");
         workspace.submit_first_idr_phase1(picture, cabac_payload)
     }
+
+    pub fn submit_first_idr_phase2(&self, picture: &FirstPictureSyntax) -> RpividPhase2Snapshot {
+        assert_eq!(
+            crate::arch::cpu::current_id(),
+            crate::arch::cpu::CpuId::BOOT,
+            "RPIVID phase-2 bring-up currently belongs to CPU0",
+        );
+        let workspace = self
+            .get_mut()
+            .as_mut()
+            .expect("RPIVID workspace used before initialization");
+        workspace.submit_first_idr_phase2(picture)
+    }
+
+    pub fn copy_first_frame_rgbx(&self, picture: &FirstPictureSyntax) -> RpividDecodedFrame {
+        assert_eq!(
+            crate::arch::cpu::current_id(),
+            crate::arch::cpu::CpuId::BOOT,
+            "RPIVID frame conversion currently belongs to CPU0",
+        );
+        let workspace = self
+            .get_mut()
+            .as_mut()
+            .expect("RPIVID workspace used before initialization");
+        workspace.copy_first_frame_rgbx(picture)
+    }
 }
 
 pub static RPIVID_WORKSPACE: RpividWorkspaceStatic = RpividWorkspaceStatic::new();
@@ -377,6 +473,63 @@ fn round_up_workspace_size(bytes: usize) -> usize {
     if bytes >= three { four } else { three }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RpividFrameLayout {
+    coded_width: usize,
+    coded_height: usize,
+    storage_width: usize,
+    storage_height: usize,
+    frame_stride: usize,
+    chroma_offset: usize,
+    frame_bytes: usize,
+    colmv_stride: usize,
+    colmv_bytes: usize,
+}
+
+impl RpividFrameLayout {
+    fn from_picture(picture: &FirstPictureSyntax) -> Self {
+        let coded_width = picture.sps.width as usize;
+        let coded_height = picture.sps.height as usize;
+        let storage_width = align_up(coded_width, 128);
+        let storage_height = align_up(coded_height, 16);
+        let column_height = storage_height
+            .checked_mul(3)
+            .expect("RPIVID column height overflow")
+            / 2;
+        let frame_stride = column_height
+            .checked_mul(128)
+            .expect("RPIVID column stride overflow");
+        let chroma_offset = storage_height
+            .checked_mul(128)
+            .expect("RPIVID chroma offset overflow");
+        let frame_bytes = column_height
+            .checked_mul(storage_width)
+            .expect("RPIVID frame allocation overflow");
+        let colmv_stride = align_up(coded_width, 64);
+        let colmv_rows = align_up(coded_height, 64) >> 4;
+        let colmv_bytes = colmv_stride
+            .checked_mul(colmv_rows)
+            .expect("RPIVID motion-vector allocation overflow");
+
+        Self {
+            coded_width,
+            coded_height,
+            storage_width,
+            storage_height,
+            frame_stride,
+            chroma_offset,
+            frame_bytes,
+            colmv_stride,
+            colmv_bytes,
+        }
+    }
+}
+
+struct RpividFrameBuffer {
+    dma: DmaBuffer,
+    layout: RpividFrameLayout,
+}
+
 pub struct RpividDecodeWorkspace {
     command: RpividCommandBuffer,
     bitstream: RpividBitstreamBuffer,
@@ -384,6 +537,8 @@ pub struct RpividDecodeWorkspace {
     coeff: [DmaBuffer; RPIVID_PHASE_BUFFER_COUNT],
     pu_size: usize,
     coeff_size: usize,
+    first_frame: Option<RpividFrameBuffer>,
+    first_frame_mv: Option<DmaBuffer>,
 }
 
 impl RpividDecodeWorkspace {
@@ -415,6 +570,8 @@ impl RpividDecodeWorkspace {
             coeff,
             pu_size,
             coeff_size,
+            first_frame: None,
+            first_frame_mv: None,
         }
     }
 
@@ -506,6 +663,218 @@ impl RpividDecodeWorkspace {
         }
     }
 
+    fn submit_first_idr_phase2(&mut self, picture: &FirstPictureSyntax) -> RpividPhase2Snapshot {
+        let sps = picture.sps;
+        let slice = picture.slice;
+
+        assert!(matches!(slice.nal_unit_type, 19 | 20), "phase-2 bring-up requires an IDR");
+        assert_eq!(slice.slice_type, 2, "phase-2 bring-up requires an I-slice");
+        assert_eq!(sps.bit_depth_luma_minus8, 0, "phase-2 RGB bring-up supports 8-bit luma only");
+        assert_eq!(sps.bit_depth_chroma_minus8, 0, "phase-2 RGB bring-up supports 8-bit chroma only");
+        assert_eq!(sps.chroma_format_idc, 1, "phase-2 RGB bring-up requires 4:2:0 chroma");
+
+        let layout = RpividFrameLayout::from_picture(picture);
+        self.ensure_first_frame_buffers(layout);
+        let frame = self.first_frame.as_mut().expect("RPIVID frame buffer was not allocated");
+        let mv = self.first_frame_mv.as_mut().expect("RPIVID MV buffer was not allocated");
+
+        // The CPU allocator zeroed these buffers through the cache. Clean the
+        // lines before phase 2 gains write ownership so no dirty zero line can
+        // later evict over the reconstructed picture or motion-vector data.
+        frame.dma.sync_for_device();
+        mv.sync_for_device();
+
+        let phase_index = 0usize;
+        let pu_stride = phase_stride(self.pu_size, picture.ctb_height as usize);
+        let coeff_stride = phase_stride(self.coeff_size, picture.ctb_height as usize);
+        let write_motion_vectors = sps.temporal_mvp_enabled && is_reference_nal(slice.nal_unit_type);
+        let config2 = phase2_config2(picture, write_motion_vectors);
+        let frame_size = (sps.height << 16) | sps.width;
+
+        let registers = RpividRegisters::from_resources(super::hevc::HEVC_PLATFORM.resources());
+        let _ = registers.acknowledge_interrupts();
+        let irq_before = super::hevc::HEVC_PLATFORM.irq_count();
+
+        registers.hevc.write32(
+            RPI_PURBASE,
+            RpividDmaAddress::from_phys(self.pu[phase_index].phys_addr()).register_value(),
+        );
+        registers.hevc.write32(
+            RPI_PURSTRIDE,
+            RpividDmaLength::from_bytes(pu_stride).register_value(),
+        );
+        registers.hevc.write32(
+            RPI_COEFFRBASE,
+            RpividDmaAddress::from_phys(self.coeff[phase_index].phys_addr()).register_value(),
+        );
+        registers.hevc.write32(
+            RPI_COEFFRSTRIDE,
+            RpividDmaLength::from_bytes(coeff_stride).register_value(),
+        );
+
+        let frame_phys = frame.dma.phys_addr();
+        let chroma_phys = frame_phys + layout.chroma_offset as u64;
+        let frame_stride = RpividDmaLength::from_bytes(layout.frame_stride).register_value();
+        registers.hevc.write32(
+            RPI_OUTYBASE,
+            RpividDmaAddress::from_phys(frame_phys).register_value(),
+        );
+        registers.hevc.write32(RPI_OUTYSTRIDE, frame_stride);
+        registers.hevc.write32(
+            RPI_OUTCBASE,
+            RpividDmaAddress::from_phys(chroma_phys).register_value(),
+        );
+        registers.hevc.write32(RPI_OUTCSTRIDE, frame_stride);
+
+        // Linux seeds all 16 reference slots with the current destination for
+        // a new picture. The IDR does not consume references, but keeping the
+        // register file valid avoids depending on stale reset contents.
+        for index in 0..16usize {
+            let base = RPI_REF_BASE + index * RPI_REF_STRIDE;
+            registers.hevc.write32(base, RpividDmaAddress::from_phys(frame_phys).register_value());
+            registers.hevc.write32(base + 4, frame_stride);
+            registers.hevc.write32(base + 8, RpividDmaAddress::from_phys(chroma_phys).register_value());
+            registers.hevc.write32(base + 12, frame_stride);
+        }
+
+        registers.hevc.write32(RPI_CONFIG2, config2);
+        registers.hevc.write32(RPI_FRAMESIZE, frame_size);
+        registers.hevc.write32(RPI_CURRPOC, 0);
+
+        let colmv_stride = RpividDmaLength::from_bytes(layout.colmv_stride).register_value();
+        registers.hevc.write32(RPI_COLSTRIDE, colmv_stride);
+        registers.hevc.write32(RPI_MVSTRIDE, colmv_stride);
+        registers.hevc.write32(
+            RPI_MVBASE,
+            if write_motion_vectors {
+                RpividDmaAddress::from_phys(mv.phys_addr()).register_value()
+            } else {
+                0
+            },
+        );
+        // An IDR has no collocated reference picture.
+        registers.hevc.write32(RPI_COLBASE, 0);
+
+        // NUMROWS is RPIVID's ordered phase-2 start trigger.
+        registers.hevc.write32(RPI_NUMROWS, picture.ctb_height);
+
+        let started = crate::time::time_manager().uptime();
+        let timeout = Duration::from_millis(250);
+        while super::hevc::HEVC_PLATFORM.irq_count() == irq_before
+            && crate::time::time_manager().uptime().saturating_sub(started) < timeout
+        {
+            spin_loop();
+        }
+
+        let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != irq_before;
+        let (output_checksum, nonzero_bytes) = if irq_received {
+            frame.dma.sync_for_cpu();
+            if write_motion_vectors {
+                mv.sync_for_cpu();
+            }
+            buffer_signature(frame.dma.as_slice())
+        } else {
+            (0, 0)
+        };
+
+        RpividPhase2Snapshot {
+            irq_received,
+            status2: registers.hevc.read32(RPI_STATUS2),
+            interrupt_control: registers.intc.read32(ARG_IC_ICTRL),
+            config2,
+            coded_width: layout.coded_width as u32,
+            coded_height: layout.coded_height as u32,
+            storage_width: layout.storage_width as u32,
+            storage_height: layout.storage_height as u32,
+            frame_stride: layout.frame_stride as u32,
+            chroma_offset: layout.chroma_offset as u32,
+            frame_bytes: layout.frame_bytes as u32,
+            colmv_stride: layout.colmv_stride as u32,
+            colmv_bytes: layout.colmv_bytes as u32,
+            output_checksum,
+            nonzero_bytes,
+        }
+    }
+
+    fn ensure_first_frame_buffers(&mut self, layout: RpividFrameLayout) {
+        let frame_matches = self
+            .first_frame
+            .as_ref()
+            .map(|frame| frame.layout == layout)
+            .unwrap_or(false);
+        if !frame_matches {
+            self.first_frame = Some(RpividFrameBuffer {
+                dma: DmaBuffer::allocate(layout.frame_bytes, RPIVID_DMA_GRANULE)
+                    .expect("failed to allocate RPIVID decoded-frame DMA buffer"),
+                layout,
+            });
+        }
+
+        let mv_matches = self
+            .first_frame_mv
+            .as_ref()
+            .map(|buffer| buffer.len() == layout.colmv_bytes)
+            .unwrap_or(false);
+        if !mv_matches {
+            self.first_frame_mv = Some(
+                DmaBuffer::allocate(layout.colmv_bytes, RPIVID_DMA_GRANULE)
+                    .expect("failed to allocate RPIVID motion-vector DMA buffer"),
+            );
+        }
+    }
+
+    fn copy_first_frame_rgbx(&mut self, picture: &FirstPictureSyntax) -> RpividDecodedFrame {
+        let sps = picture.sps;
+        let frame = self
+            .first_frame
+            .as_ref()
+            .expect("RPIVID decoded frame requested before phase 2");
+        let layout = frame.layout;
+        assert_eq!(layout, RpividFrameLayout::from_picture(picture));
+
+        let visible_width = sps.visible_width() as usize;
+        let visible_height = sps.visible_height() as usize;
+        let pitch = visible_width
+            .checked_mul(4)
+            .expect("decoded RGBX pitch overflow");
+        let len = pitch
+            .checked_mul(visible_height)
+            .expect("decoded RGBX allocation overflow");
+        let mut pixels = vec![0u8; len];
+        let source = frame.dma.as_slice();
+
+        for y in 0..visible_height {
+            let source_y = y + sps.crop_top as usize;
+            for x in 0..visible_width {
+                let source_x = x + sps.crop_left as usize;
+                let column = source_x / 128;
+                let in_column = source_x & 127;
+                let column_base = column * layout.frame_stride;
+                let y_offset = column_base + source_y * 128 + in_column;
+                let uv_offset = column_base
+                    + layout.chroma_offset
+                    + (source_y / 2) * 128
+                    + (in_column & !1);
+                let y_sample = source[y_offset];
+                let cb = source[uv_offset];
+                let cr = source[uv_offset + 1];
+                let rgb = limited_bt709_rgb(y_sample, cb, cr);
+                let dest = y * pitch + x * 4;
+                pixels[dest] = rgb[0];
+                pixels[dest + 1] = rgb[1];
+                pixels[dest + 2] = rgb[2];
+                pixels[dest + 3] = 0xff;
+            }
+        }
+
+        RpividDecodedFrame {
+            pixels,
+            width: visible_width as u32,
+            height: visible_height as u32,
+            pitch,
+        }
+    }
+
     pub fn total_bytes(&self) -> usize {
         RPIVID_COMMAND_BYTES
             + RPIVID_BITSTREAM_STAGING_BYTES
@@ -541,6 +910,67 @@ impl RpividDecodeWorkspace {
             let _ = RpividDmaLength::from_bytes(buffer.len());
         }
     }
+}
+
+fn align_up(value: usize, alignment: usize) -> usize {
+    assert!(alignment.is_power_of_two(), "RPIVID alignment must be a power of two");
+    value
+        .checked_add(alignment - 1)
+        .expect("RPIVID alignment overflow")
+        & !(alignment - 1)
+}
+
+fn is_reference_nal(nal_unit_type: u8) -> bool {
+    (u32::from(nal_unit_type) & !0x0e) != 0
+}
+
+fn phase2_config2(picture: &FirstPictureSyntax, write_motion_vectors: bool) -> u32 {
+    let sps = picture.sps;
+    let pps = picture.pps;
+    let mut config = (sps.bit_depth_luma_minus8 + 8)
+        | ((sps.bit_depth_chroma_minus8 + 8) << 4)
+        | (sps.log2_ctb_size << 10)
+        | ((pps.constrained_intra_pred as u32) << 13)
+        | ((sps.strong_intra_smoothing_enabled as u32) << 14)
+        | ((write_motion_vectors as u32) << 15)
+        | ((pps.log2_parallel_merge_level_minus2 + 2) << 16)
+        | ((sps.pcm_loop_filter_disabled as u32) << 20)
+        | (((pps.pps_cb_qp_offset as u32) & 31) << 21)
+        | (((pps.pps_cr_qp_offset as u32) & 31) << 26);
+    if sps.bit_depth_luma_minus8 != 0 {
+        config |= 1 << 8;
+    }
+    if sps.bit_depth_chroma_minus8 != 0 {
+        config |= 1 << 9;
+    }
+    // The first picture is an IDR I-slice, so slice_temporal_mvp_enabled_flag
+    // is absent/false and CONFIG2 bit 19 remains clear.
+    config
+}
+
+fn buffer_signature(bytes: &[u8]) -> (u64, u32) {
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut nonzero = 0u32;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+        nonzero = nonzero.saturating_add((byte != 0) as u32);
+    }
+    (hash, nonzero)
+}
+
+fn limited_bt709_rgb(y: u8, cb: u8, cr: u8) -> [u8; 3] {
+    let c = (i32::from(y) - 16).max(0);
+    let d = i32::from(cb) - 128;
+    let e = i32::from(cr) - 128;
+    let r = (298 * c + 459 * e + 128) >> 8;
+    let g = (298 * c - 55 * d - 136 * e + 128) >> 8;
+    let b = (298 * c + 541 * d + 128) >> 8;
+    [clamp_u8(r), clamp_u8(g), clamp_u8(b)]
+}
+
+fn clamp_u8(value: i32) -> u8 {
+    value.clamp(0, 255) as u8
 }
 
 fn phase_stride(buffer_size: usize, ctb_height: usize) -> usize {

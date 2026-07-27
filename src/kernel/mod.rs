@@ -7,9 +7,9 @@ use crate::arch::{
     exceptions::PrivilegeLevel,
 };
 
-use crate::assets::ImageAsset;
 use crate::graphics::{
-    graphics_core_ready, BlendMode, GraphicsCoreProxy, GraphicsRequestResult, Point, SourceRect,
+    graphics_core_ready, BlendMode, GraphicsCoreProxy, GraphicsRequestResult, PixelFormat, Point,
+    SourceRect, Surface, SurfaceInfo,
 };
 use crate::memory::{
     dma::DmaBuffer, heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER,
@@ -141,9 +141,15 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     let pps = picture.pps;
     let slice = picture.slice;
     info!(
-        "KWVIDEO SPS: coded={}x{}, CTB=2^{} ({}x{} CTBs), min_cb=2^{}, transform=2^{}..2^{}, depth inter/intra={}/{}, amp={}, sao={}, pcm={}, scaling_list={}, tmvp={}, strong_intra_smoothing={}",
+        "KWVIDEO SPS: coded={}x{}, visible={}x{}, crop={}/{}/{}/{}, CTB=2^{} ({}x{} CTBs), min_cb=2^{}, transform=2^{}..2^{}, depth inter/intra={}/{}, amp={}, sao={}, pcm={}, scaling_list={}, tmvp={}, strong_intra_smoothing={}",
         sps.width,
         sps.height,
+        sps.visible_width(),
+        sps.visible_height(),
+        sps.crop_left,
+        sps.crop_right,
+        sps.crop_top,
+        sps.crop_bottom,
         sps.log2_ctb_size,
         picture.ctb_width,
         picture.ctb_height,
@@ -219,23 +225,61 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         phase1.coeff_stride,
     );
 
-    let background_file = vfs
-        .open_fs(FsId::Rom, "background.kwim")
-        .expect("failed to load background image");
-    let background =
-        ImageAsset::parse(background_file.as_bytes()).expect("failed to parse background image");
-    let background_surface = background.surface();
+    assert!(phase1.complete(), "RPIVID phase 1 did not complete");
+
+    let phase2 = crate::video::rpivid::RPIVID_WORKSPACE.submit_first_idr_phase2(&picture);
+    info!(
+        "RPIVID phase2 IDR: irq={}, complete={}, STATUS2={:#010x}, intc={:#010x}, CONFIG2={:#010x}, coded={}x{}, storage={}x{}, frame_stride={} bytes, chroma_offset={} bytes, frame={} KiB, colmv_stride={} bytes, colmv={} KiB, checksum={:#018x}, nonzero={} bytes",
+        phase2.irq_received,
+        phase2.complete(),
+        phase2.status2,
+        phase2.interrupt_control,
+        phase2.config2,
+        phase2.coded_width,
+        phase2.coded_height,
+        phase2.storage_width,
+        phase2.storage_height,
+        phase2.frame_stride,
+        phase2.chroma_offset,
+        phase2.frame_bytes / 1024,
+        phase2.colmv_stride,
+        phase2.colmv_bytes / 1024,
+        phase2.output_checksum,
+        phase2.nonzero_bytes,
+    );
+    assert!(phase2.complete(), "RPIVID phase 2 did not complete");
+
+    let decoded = crate::video::rpivid::RPIVID_WORKSPACE.copy_first_frame_rgbx(&picture);
+    assert_eq!(decoded.width(), metadata.width.into(), "SPS crop width disagrees with MP4 metadata");
+    assert_eq!(decoded.height(), metadata.height.into(), "SPS crop height disagrees with MP4 metadata");
+    let decoded_info = SurfaceInfo::new(
+        decoded.width(),
+        decoded.height(),
+        decoded.pitch(),
+        PixelFormat::Rgbx8888,
+    )
+    .expect("failed to describe decoded RPIVID frame");
+    let decoded_surface = Surface::new(decoded.pixels(), decoded_info)
+        .expect("failed to expose decoded RPIVID frame as a surface");
+
+    info!(
+        "RPIVID frame0 ready for compositor: {}x{}, pitch={} bytes, RGBX={} KiB",
+        decoded.width(),
+        decoded.height(),
+        decoded.pitch(),
+        decoded.pixels().len() / 1024,
+    );
 
     let mut graphics = GraphicsCoreProxy::new();
     let request_id = graphics
         .submit_image(
-            &background_surface,
-            SourceRect::whole(&background_surface),
+            &decoded_surface,
+            SourceRect::whole(&decoded_surface),
             Point::new(0, 0),
             BlendMode::Opaque,
             0x000000ff,
         )
-        .expect("failed to submit background frame to CPU1");
+        .expect("failed to submit decoded frame 0 to CPU1");
     wait_for_graphics_request(&mut graphics, request_id);
 
     log_memory_summary();

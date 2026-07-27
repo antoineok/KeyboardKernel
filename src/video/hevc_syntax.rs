@@ -15,6 +15,10 @@ pub struct SpsSummary {
     pub separate_colour_plane: bool,
     pub width: u32,
     pub height: u32,
+    pub crop_left: u32,
+    pub crop_right: u32,
+    pub crop_top: u32,
+    pub crop_bottom: u32,
     pub bit_depth_luma_minus8: u32,
     pub bit_depth_chroma_minus8: u32,
     pub log2_max_pic_order_cnt_lsb: u32,
@@ -28,12 +32,23 @@ pub struct SpsSummary {
     pub amp_enabled: bool,
     pub sao_enabled: bool,
     pub pcm_enabled: bool,
+    pub pcm_loop_filter_disabled: bool,
     pub pcm_sample_bit_depth_luma: u32,
     pub pcm_sample_bit_depth_chroma: u32,
     pub log2_min_pcm_luma_coding_block_size: u32,
     pub log2_max_pcm_luma_coding_block_size: u32,
     pub temporal_mvp_enabled: bool,
     pub strong_intra_smoothing_enabled: bool,
+}
+
+impl SpsSummary {
+    pub const fn visible_width(self) -> u32 {
+        self.width - self.crop_left - self.crop_right
+    }
+
+    pub const fn visible_height(self) -> u32 {
+        self.height - self.crop_top - self.crop_bottom
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,11 +248,29 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
         return Err(HevcSyntaxError::Invalid("zero-sized SPS picture"));
     }
 
-    if bits.read_bit()? { // conformance_window_flag
-        bits.read_ue()?;
-        bits.read_ue()?;
-        bits.read_ue()?;
-        bits.read_ue()?;
+    let (sub_width_c, sub_height_c) = if separate_colour_plane {
+        (1, 1)
+    } else {
+        match chroma_format_idc {
+            1 => (2, 2),
+            2 => (2, 1),
+            _ => (1, 1),
+        }
+    };
+    let (crop_left, crop_right, crop_top, crop_bottom) = if bits.read_bit()? {
+        // Conformance-window offsets are expressed in chroma sample units.
+        let left = bits.read_ue()?.checked_mul(sub_width_c).ok_or(HevcSyntaxError::Overflow)?;
+        let right = bits.read_ue()?.checked_mul(sub_width_c).ok_or(HevcSyntaxError::Overflow)?;
+        let top = bits.read_ue()?.checked_mul(sub_height_c).ok_or(HevcSyntaxError::Overflow)?;
+        let bottom = bits.read_ue()?.checked_mul(sub_height_c).ok_or(HevcSyntaxError::Overflow)?;
+        (left, right, top, bottom)
+    } else {
+        (0, 0, 0, 0)
+    };
+    if crop_left.checked_add(crop_right).ok_or(HevcSyntaxError::Overflow)? >= width
+        || crop_top.checked_add(crop_bottom).ok_or(HevcSyntaxError::Overflow)? >= height
+    {
+        return Err(HevcSyntaxError::Invalid("HEVC conformance crop removes the whole picture"));
     }
 
     let bit_depth_luma_minus8 = bits.read_ue()?;
@@ -271,6 +304,7 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
     let amp_enabled = bits.read_bit()?;
     let sao_enabled = bits.read_bit()?;
     let pcm_enabled = bits.read_bit()?;
+    let mut pcm_loop_filter_disabled = false;
     let mut pcm_sample_bit_depth_luma = 0;
     let mut pcm_sample_bit_depth_chroma = 0;
     let mut log2_min_pcm_luma_coding_block_size = 0;
@@ -282,7 +316,7 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
         log2_max_pcm_luma_coding_block_size = log2_min_pcm_luma_coding_block_size
             .checked_add(bits.read_ue()?)
             .ok_or(HevcSyntaxError::Overflow)?;
-        bits.read_bit()?; // pcm_loop_filter_disabled_flag
+        pcm_loop_filter_disabled = bits.read_bit()?;
     }
 
     let num_short_term_ref_pic_sets = bits.read_ue()? as usize;
@@ -309,6 +343,10 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
         separate_colour_plane,
         width,
         height,
+        crop_left,
+        crop_right,
+        crop_top,
+        crop_bottom,
         bit_depth_luma_minus8,
         bit_depth_chroma_minus8,
         log2_max_pic_order_cnt_lsb,
@@ -322,6 +360,7 @@ fn parse_sps(nal: &[u8]) -> Result<SpsSummary, HevcSyntaxError> {
         amp_enabled,
         sao_enabled,
         pcm_enabled,
+        pcm_loop_filter_disabled,
         pcm_sample_bit_depth_luma,
         pcm_sample_bit_depth_chroma,
         log2_min_pcm_luma_coding_block_size,
