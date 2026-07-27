@@ -503,7 +503,7 @@ impl Fat32Volume {
         }
 
         self.update_dirent_size(dev, file.dirent_lba, file.dirent_off, data.len() as u32)?;
-        dev.flush().ok();
+        dev.flush()?;
 
         Ok(())
     }

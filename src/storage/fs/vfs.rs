@@ -330,6 +330,13 @@ impl<'a> Vfs<'a> {
         self.write_fs(fs, path, data)
     }
 
+    /// Force all completed writes for a mounted filesystem to non-volatile storage.
+    pub fn flush_fs(&self, fs: FsId) -> Result<(), VfsError> {
+        let m = self.get_mount(fs)?;
+        m.dev.flush()?;
+        Ok(())
+    }
+
     pub fn rename_fs(&self, fs: FsId, old_path: &str, new_path: &str) -> Result<(), VfsError> {
         let old_path = normalize_path(old_path)?;
         let new_path = normalize_path(new_path)?;

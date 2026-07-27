@@ -157,7 +157,7 @@ impl Fat32Volume {
 
         dev.write_sector(dirent_lba, &sec)?;
 
-        dev.flush().ok();
+        dev.flush()?;
 
         Ok(FatFile {
             name: String::from(file_name),
