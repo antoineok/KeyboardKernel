@@ -571,10 +571,8 @@ fn compose_scene(
 }
 
 fn present_scene(framebuffer: &mut super::framebuffer::Framebuffer) -> u8 {
-    if !framebuffer.wait_for_vsync() {
-        crate::error!("CPU1 framebuffer VSYNC wait failed");
-        return RESULT_PRESENT_FAILED;
-    }
+    // Framebuffer::present queues the virtual-offset flip first and only hands
+    // the old front page back to the compositor after the VSYNC fence.
     if !framebuffer.present() {
         crate::error!("CPU1 framebuffer present failed");
         return RESULT_PRESENT_FAILED;
@@ -617,10 +615,6 @@ fn render_image_command(
         }
     }
 
-    if !framebuffer.wait_for_vsync() {
-        crate::error!("CPU1 framebuffer VSYNC wait failed");
-        return RESULT_PRESENT_FAILED;
-    }
     if !framebuffer.present() {
         crate::error!("CPU1 framebuffer present failed");
         return RESULT_PRESENT_FAILED;

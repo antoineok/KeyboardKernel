@@ -602,8 +602,8 @@ impl Framebuffer {
 
     /// Wait for the next VideoCore display VSYNC.
     ///
-    /// Call this only after the next backbuffer has been fully composed so the
-    /// following page flip can be issued immediately at the scanout boundary.
+    /// This is also used as the completion fence for a queued virtual-offset
+    /// page flip. Do not reuse the old front page until this wait has returned.
     pub fn wait_for_vsync(&mut self) -> bool {
         if !MAILBOX.get().wait_for_vsync() {
             warn!("Framebuffer VSYNC wait mailbox call failed");
@@ -655,6 +655,16 @@ impl Framebuffer {
                 y_offset, mbox.buffer[5], mbox.buffer[6],
             );
 
+            return false;
+        }
+
+        // SET_VIRTUAL_OFFSET queues the new scanout page. Keep software page
+        // ownership unchanged until the next VSYNC confirms that VideoCore has
+        // crossed the scanout boundary. Otherwise CPU1 can start rendering into
+        // the old front page while it is still being scanned out, producing a
+        // horizontal mix of two video frames.
+        if !self.wait_for_vsync() {
+            warn!("Framebuffer page flip VSYNC fence failed");
             return false;
         }
 
