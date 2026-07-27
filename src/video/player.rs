@@ -40,6 +40,8 @@ pub struct VideoPlayer {
     started_at: Duration,
     presentation_ticks: u64,
     next_present_at: Duration,
+    pending_present_duration_ticks: Option<u32>,
+    pending_present_was_late: bool,
     prepared: VecDeque<PreparedFrame>,
     current: Option<RpividDecodedFrame>,
     spare_pixels: Vec<Vec<u8>>,
@@ -67,6 +69,8 @@ impl VideoPlayer {
             started_at: time_manager().uptime(),
             presentation_ticks: 0,
             next_present_at: time_manager().uptime(),
+            pending_present_duration_ticks: None,
+            pending_present_was_late: false,
             prepared: VecDeque::new(),
             current: None,
             spare_pixels: Vec::new(),
@@ -108,15 +112,13 @@ impl VideoPlayer {
         self.loops
     }
 
-    /// Present one queued frame when its deadline arrives.
+    /// Advance the current video frame when its deadline arrives.
     ///
-    /// When CPU1 misses a deadline, rebase the *next* deadline from the actual
-    /// presentation start instead of retaining an already-expired media clock.
-    /// This prevents the old "burst several frames, then wait" catch-up
-    /// behaviour: playback may momentarily slow after an expensive decode, but
-    /// it will never run faster than the encoded cadence to repay that delay.
-    pub fn present_if_due(&mut self, now: Duration) -> Result<bool, KwVideoError> {
-        if now < self.next_present_at {
+    /// This does *not* advance the presentation clock. CPU1 still has to
+    /// composite the selected frame and flip the framebuffer. `frame_presented`
+    /// commits the duration only after that visible presentation completes.
+    pub fn advance_if_due(&mut self, now: Duration) -> Result<bool, KwVideoError> {
+        if self.pending_present_duration_ticks.is_some() || now < self.next_present_at {
             return Ok(false);
         }
 
@@ -128,7 +130,6 @@ impl VideoPlayer {
         let late = now > self.next_present_at + LATE_TOLERANCE;
         if late {
             self.late_frames = self.late_frames.saturating_add(1);
-            self.clock_rebases = self.clock_rebases.saturating_add(1);
         }
 
         let next = self
@@ -139,25 +140,42 @@ impl VideoPlayer {
             self.spare_pixels.push(previous.into_pixels());
         }
 
+        self.pending_present_duration_ticks = Some(next.duration_ticks);
+        self.pending_present_was_late = late;
+        Ok(true)
+    }
+
+    /// Commit one video frame after the compositor/page flip has completed.
+    ///
+    /// Anchoring the next deadline to the *actual* visible presentation time
+    /// prevents composition cost from shortening a frame's on-screen lifetime.
+    /// A 24000/1001 stream therefore keeps ~41.7 ms between completed flips
+    /// even when composing the frame itself takes measurable CPU time.
+    pub fn frame_presented(&mut self, presented_at: Duration) {
+        let duration_ticks = self
+            .pending_present_duration_ticks
+            .take()
+            .expect("KWVIDEO frame_presented without an advanced frame");
+
+        if self.pending_present_was_late {
+            self.clock_rebases = self.clock_rebases.saturating_add(1);
+        }
+        self.pending_present_was_late = false;
+
         self.presentation_ticks = self
             .presentation_ticks
-            .checked_add(u64::from(next.duration_ticks))
+            .checked_add(u64::from(duration_ticks))
             .expect("KWVIDEO presentation clock overflow");
         self.frames_presented = self.frames_presented.saturating_add(1);
 
-        let frame_duration = self.ticks_to_duration(next.duration_ticks);
-        self.next_present_at = if late {
-            now.checked_add(frame_duration)
-                .expect("KWVIDEO rebased presentation deadline overflow")
-        } else {
-            self.next_present_at
-                .checked_add(frame_duration)
-                .expect("KWVIDEO presentation deadline overflow")
-        };
+        let frame_duration = self.ticks_to_duration(duration_ticks);
+        self.next_present_at = presented_at
+            .checked_add(frame_duration)
+            .expect("KWVIDEO presentation deadline overflow");
 
         if self.frames_presented % STATS_INTERVAL_FRAMES == 0 {
             let media_ms = self.presentation_ticks.saturating_mul(1000) / u64::from(self.timescale);
-            let wall_ms = now.saturating_sub(self.started_at).as_millis();
+            let wall_ms = presented_at.saturating_sub(self.started_at).as_millis();
             crate::info!(
                 "CPU1 KWVIDEO playback: frames={}, media={} ms, wall={} ms, late={}, rebases={}, underruns={}, queued={}, fragment={}, loops={}",
                 self.frames_presented,
@@ -171,8 +189,6 @@ impl VideoPlayer {
                 self.loops,
             );
         }
-
-        Ok(true)
     }
 
     /// Decode at most one additional picture per graphics-scheduler pass.

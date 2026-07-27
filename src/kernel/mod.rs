@@ -62,24 +62,26 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     let video_request = graphics
         .start_video(FsId::Rom, "output.kwv")
         .expect("failed to request KWVIDEO background from CPU1");
-    let mut video_start_pending = Some(video_request);
+    // This is only an acknowledgement poll. CPU1 is already running its own
+    // permanent scheduler loop and consumes the command independently.
+    let mut video_start_ack_pending = Some(video_request);
     let mut memory_summary_logged = false;
     info!("CPU0 requested KWVIDEO background {} on CPU1", video_request);
 
     loop {
-        if let Some(request_id) = video_start_pending {
+        if let Some(request_id) = video_start_ack_pending {
             if let Some(result) = graphics.request_result(request_id) {
                 assert_eq!(
                     result,
                     GraphicsRequestResult::Complete,
                     "CPU1 KWVIDEO start request failed: {result:?}",
                 );
-                video_start_pending = None;
+                video_start_ack_pending = None;
                 info!("CPU1 accepted KWVIDEO background request {}", request_id);
             }
         }
 
-        if !memory_summary_logged && video_start_pending.is_none() {
+        if !memory_summary_logged && video_start_ack_pending.is_none() {
             log_memory_summary();
             memory_summary_logged = true;
         }

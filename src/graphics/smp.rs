@@ -371,9 +371,13 @@ pub fn run_graphics_core() -> ! {
             send_event();
         }
 
+        let mut video_frame_advanced = false;
         if let Some(player) = video.as_mut() {
-            match player.present_if_due(time_manager().uptime()) {
-                Ok(true) => scene_dirty = true,
+            match player.advance_if_due(time_manager().uptime()) {
+                Ok(true) => {
+                    scene_dirty = true;
+                    video_frame_advanced = true;
+                },
                 Ok(false) => {}
                 Err(error) => {
                     crate::error!("CPU1 KWVIDEO playback failed: {}", error);
@@ -387,6 +391,12 @@ pub fn run_graphics_core() -> ! {
             let result = render_scene(framebuffer, &compositor, video.as_ref(), &overlays);
             if result != RESULT_OK {
                 crate::error!("CPU1 scene presentation failed with result {}", result);
+            } else if video_frame_advanced {
+                // Start this frame's visible duration only after composition and
+                // the framebuffer page flip have actually completed.
+                if let Some(player) = video.as_mut() {
+                    player.frame_presented(time_manager().uptime());
+                }
             }
             scene_dirty = false;
         }
