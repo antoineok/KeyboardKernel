@@ -8,11 +8,9 @@ use crate::arch::{
 };
 
 use crate::assets::ImageAsset;
-use crate::drivers::gpio::{GpioPin, GpioPull};
 use crate::graphics::{
     graphics_core_ready, BlendMode, GraphicsCoreProxy, GraphicsRequestResult, Point, SourceRect,
 };
-use crate::hid::Key;
 use crate::memory::{
     dma::DmaBuffer, heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER,
 };
@@ -21,7 +19,6 @@ use crate::time::time_manager;
 
 use crate::{
     early_timeit,
-    hid::{KeyboardModifiers, KeyboardReport},
     info,
     services::{KernelManagementBackend, KeyworkServices},
     transport::{usb_core_ready, KeyworkTransport, TransportState, UsbCoreProxy},
@@ -66,39 +63,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     let mut services = KeyworkServices::<MANAGEMENT_FRAME_CAPACITY>::new();
     let mut management_backend = KernelManagementBackend::new();
 
-    // Temporary HID test input. GPIO17 is held high by its internal pull-up.
-    // Connecting GPIO17 directly to GND presses A; disconnecting it releases A.
-    const HID_TEST_GPIO: u32 = 17;
-    const HID_TEST_DEBOUNCE: Duration = Duration::from_millis(5);
-
-    let hid_test_pin = GpioPin::new(HID_TEST_GPIO);
-    hid_test_pin.configure_input(GpioPull::Up);
-
-    let mut hid_test_sample = hid_test_pin.is_low();
-    let mut hid_test_stable = hid_test_sample;
-    let mut hid_test_sample_since = time_manager().uptime();
-
-    if hid_test_stable {
-        services.hid_mut().set_keyboard(KeyboardReport {
-            modifiers: KeyboardModifiers::LEFT_SHIFT,
-            keys: [
-                Key::F,
-                Key::None,
-                Key::None,
-                Key::None,
-                Key::None,
-                Key::None,
-            ],
-        });
-    }
-
-    info!(
-        "HID GPIO test enabled on GPIO{}: connect pin to GND to hold A",
-        HID_TEST_GPIO
-    );
-
-    dma_buffer_smoke_test();
-
     let vfs = VFS.get();
     let background_file = vfs
         .open_fs(FsId::Rom, "background.kwim")
@@ -122,46 +86,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     log_memory_summary();
 
     loop {
-        let now = time_manager().uptime();
-        let sample = hid_test_pin.is_low();
-
-        if sample != hid_test_sample {
-            hid_test_sample = sample;
-            hid_test_sample_since = now;
-        }
-
-        if hid_test_sample != hid_test_stable
-            && now.saturating_sub(hid_test_sample_since) >= HID_TEST_DEBOUNCE
-        {
-            hid_test_stable = hid_test_sample;
-
-            let report = if hid_test_stable {
-                KeyboardReport {
-                    modifiers: KeyboardModifiers::LEFT_SHIFT,
-                    keys: [
-                        Key::F,
-                        Key::None,
-                        Key::None,
-                        Key::None,
-                        Key::None,
-                        Key::None,
-                    ],
-                }
-            } else {
-                KeyboardReport::released()
-            };
-
-            services.hid_mut().set_keyboard(report);
-            info!(
-                "HID GPIO test: F {}",
-                if hid_test_stable {
-                    "pressed"
-                } else {
-                    "released"
-                }
-            );
-        }
-
         let transition = services
             .update_transport_selection(usb_transport.state(), TransportState::Disconnected);
         if transition.changed() {
@@ -177,44 +101,6 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         management_backend.poll_pending_action();
     }
 }
-
-fn dma_buffer_smoke_test() {
-    const TEST_SIZE: usize = 2 * 1024 * 1024;
-    const TEST_ALIGNMENT: usize = 64 * 1024;
-
-    let mut buffer =
-        DmaBuffer::allocate(TEST_SIZE, TEST_ALIGNMENT).expect("DMA buffer smoke allocation failed");
-
-    assert_eq!(
-        buffer.phys_addr() as usize % TEST_ALIGNMENT,
-        0,
-        "DMA buffer did not satisfy requested alignment"
-    );
-
-    for (index, byte) in buffer.as_mut_slice().iter_mut().enumerate() {
-        *byte = (index as u8).wrapping_mul(17).wrapping_add(0x5a);
-    }
-
-    // There is no device involved in this smoke test. Cleaning and then
-    // invalidating forces the verification read to come back through the same
-    // ownership-transition primitives the HEVC driver will use.
-    buffer.sync_for_device();
-    buffer.sync_for_cpu();
-
-    for (index, byte) in buffer.as_slice().iter().copied().enumerate() {
-        let expected = (index as u8).wrapping_mul(17).wrapping_add(0x5a);
-        assert_eq!(byte, expected, "DMA buffer cache round-trip mismatch");
-    }
-
-    info!(
-        "DMA buffer smoke test passed: phys={:#018x}, len={} KiB, capacity={} KiB, alignment={} KiB",
-        buffer.phys_addr(),
-        buffer.len() / 1024,
-        buffer.capacity() / 1024,
-        TEST_ALIGNMENT / 1024,
-    );
-}
-
 
 fn wait_for_graphics_core() {
     const GRAPHICS_CORE_BOOT_TIMEOUT: Duration = Duration::from_millis(100);
