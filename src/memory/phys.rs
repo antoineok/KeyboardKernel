@@ -162,58 +162,81 @@ impl PhysAllocator {
     ///
     /// Returns the physical address of the first page, or None.
     pub unsafe fn alloc_contiguous(&mut self, count: usize) -> Option<PhysAddr> {
+        self.alloc_contiguous_aligned(count, PAGE_SIZE as usize)
+    }
+
+    /// Allocate `count` contiguous pages whose first physical address satisfies
+    /// `alignment`. Alignments smaller than one page are promoted to page size.
+    pub unsafe fn alloc_contiguous_aligned(
+        &mut self,
+        count: usize,
+        alignment: usize,
+    ) -> Option<PhysAddr> {
         assert!(self.initialized, "PhysAllocator used before init");
-        if count == 0 {
+        if count == 0 || alignment == 0 || !alignment.is_power_of_two() {
             return None;
         }
 
-        let max_start = self.total_pages.saturating_sub(count);
+        let alignment = alignment.max(PAGE_SIZE as usize) as u64;
+        let max_start = self.total_pages.checked_sub(count)?;
+        let mut start_page = 0usize;
 
-        'outer: for start_page in 0..=max_start {
-            let mut all_free = true;
+        'search: while start_page <= max_start {
+            let candidate = self.arena_start + (start_page as u64) * self.page_size;
+            let misalignment = candidate & (alignment - 1);
+
+            if misalignment != 0 {
+                let advance_bytes = alignment - misalignment;
+                let advance_pages =
+                    ((advance_bytes + self.page_size - 1) / self.page_size) as usize;
+                start_page = start_page.saturating_add(advance_pages.max(1));
+                continue;
+            }
 
             for offset in 0..count {
                 let page_index = start_page + offset;
-                let word_index = page_index / 64;
-                let bit_pos = page_index % 64;
-
-                if word_index >= self.bitmap_len {
-                    all_free = false;
-                    break;
-                }
-
-                let word = core::ptr::read_volatile(self.bitmap.add(word_index));
-                if (word & (1u64 << bit_pos)) != 0 {
-                    all_free = false;
-                    break;
+                if self.page_is_allocated(page_index) {
+                    // Everything before and including the allocated page cannot
+                    // begin a free run covering `count` pages.
+                    start_page = start_page.saturating_add(offset + 1);
+                    continue 'search;
                 }
             }
 
-            if !all_free {
-                continue 'outer;
-            }
-
-            // Mark them allocated.
             for offset in 0..count {
-                let page_index = start_page + offset;
-                let word_index = page_index / 64;
-                let bit_pos = page_index % 64;
-
-                let word = core::ptr::read_volatile(self.bitmap.add(word_index));
-                let mask = 1u64 << bit_pos;
-                let new_word = word | mask;
-                core::ptr::write_volatile(self.bitmap.add(word_index), new_word);
+                self.set_page_allocated(start_page + offset, true);
             }
 
-            let addr = self.arena_start + (start_page as u64) * self.page_size;
-            if addr + (count as u64) * self.page_size > self.arena_end {
-                return None;
-            }
-
-            return Some(addr);
+            return Some(candidate);
         }
 
         None
+    }
+
+    /// Free `count` contiguous pages beginning at `pa`.
+    pub unsafe fn free_contiguous(&mut self, pa: PhysAddr, count: usize) {
+        assert!(self.initialized, "PhysAllocator used before init");
+        assert!(count != 0, "cannot free zero physical pages");
+        assert!(pa >= self.arena_start && pa < self.arena_end, "physical free outside arena");
+        assert_eq!(
+            (pa - self.arena_start) % self.page_size,
+            0,
+            "physical free is not page aligned"
+        );
+
+        let first_page = ((pa - self.arena_start) / self.page_size) as usize;
+        let end_page = first_page
+            .checked_add(count)
+            .expect("physical free page range overflow");
+        assert!(end_page <= self.total_pages, "physical free exceeds arena");
+
+        for page_index in first_page..end_page {
+            assert!(
+                self.page_is_allocated(page_index),
+                "double free in physical allocator"
+            );
+            self.set_page_allocated(page_index, false);
+        }
     }
 
     /// Free a single 4 KiB page.
@@ -266,6 +289,31 @@ impl PhysAllocator {
     pub fn free_bytes(&self) -> Option<PhysSize> {
         self.free_pages()
             .map(|pages| (pages as PhysSize).saturating_mul(self.page_size))
+    }
+
+    #[inline(always)]
+    unsafe fn page_is_allocated(&self, page_index: usize) -> bool {
+        if page_index >= self.total_pages {
+            return true;
+        }
+
+        let word_index = page_index / 64;
+        let bit_pos = page_index % 64;
+        let word = core::ptr::read_volatile(self.bitmap.add(word_index));
+        word & (1u64 << bit_pos) != 0
+    }
+
+    #[inline(always)]
+    unsafe fn set_page_allocated(&mut self, page_index: usize, allocated: bool) {
+        assert!(page_index < self.total_pages, "physical page index out of bounds");
+
+        let word_index = page_index / 64;
+        let bit_pos = page_index % 64;
+        let word_ptr = self.bitmap.add(word_index);
+        let word = core::ptr::read_volatile(word_ptr);
+        let mask = 1u64 << bit_pos;
+        let new_word = if allocated { word | mask } else { word & !mask };
+        core::ptr::write_volatile(word_ptr, new_word);
     }
 
     fn mark_range(&mut self, start: PhysAddr, end: PhysAddr, free: bool) {

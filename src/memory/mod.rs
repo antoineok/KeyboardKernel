@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod boot;
+pub mod dma;
 pub mod heap;
 pub mod phys;
 

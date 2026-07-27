@@ -13,7 +13,9 @@ use crate::graphics::{
     graphics_core_ready, BlendMode, GraphicsCoreProxy, GraphicsRequestResult, Point, SourceRect,
 };
 use crate::hid::Key;
-use crate::memory::{heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER};
+use crate::memory::{
+    dma::DmaBuffer, heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER,
+};
 use crate::storage::fs::vfs::{FsId, VFS};
 use crate::time::time_manager;
 
@@ -95,6 +97,8 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         HID_TEST_GPIO
     );
 
+    dma_buffer_smoke_test();
+
     let vfs = VFS.get();
     let background_file = vfs
         .open_fs(FsId::Rom, "background.kwim")
@@ -173,6 +177,44 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         management_backend.poll_pending_action();
     }
 }
+
+fn dma_buffer_smoke_test() {
+    const TEST_SIZE: usize = 2 * 1024 * 1024;
+    const TEST_ALIGNMENT: usize = 64 * 1024;
+
+    let mut buffer =
+        DmaBuffer::allocate(TEST_SIZE, TEST_ALIGNMENT).expect("DMA buffer smoke allocation failed");
+
+    assert_eq!(
+        buffer.phys_addr() as usize % TEST_ALIGNMENT,
+        0,
+        "DMA buffer did not satisfy requested alignment"
+    );
+
+    for (index, byte) in buffer.as_mut_slice().iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(17).wrapping_add(0x5a);
+    }
+
+    // There is no device involved in this smoke test. Cleaning and then
+    // invalidating forces the verification read to come back through the same
+    // ownership-transition primitives the HEVC driver will use.
+    buffer.sync_for_device();
+    buffer.sync_for_cpu();
+
+    for (index, byte) in buffer.as_slice().iter().copied().enumerate() {
+        let expected = (index as u8).wrapping_mul(17).wrapping_add(0x5a);
+        assert_eq!(byte, expected, "DMA buffer cache round-trip mismatch");
+    }
+
+    info!(
+        "DMA buffer smoke test passed: phys={:#018x}, len={} KiB, capacity={} KiB, alignment={} KiB",
+        buffer.phys_addr(),
+        buffer.len() / 1024,
+        buffer.capacity() / 1024,
+        TEST_ALIGNMENT / 1024,
+    );
+}
+
 
 fn wait_for_graphics_core() {
     const GRAPHICS_CORE_BOOT_TIMEOUT: Duration = Duration::from_millis(100);

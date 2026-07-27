@@ -110,3 +110,38 @@ pub unsafe fn invalidate_data_range_to_poc(ptr: *const u8, len: usize) {
 
     asm!("dsb sy", options(nostack, preserves_flags));
 }
+
+/// Clean and invalidate every cache line intersecting `[ptr, ptr + len)`.
+///
+/// This is primarily useful when retiring a buffer that has crossed a
+/// CPU/device ownership boundary and its contents are no longer needed.
+///
+/// # Safety
+///
+/// `ptr..ptr+len` must designate a valid mapped range for the duration of the
+/// operation.
+pub unsafe fn clean_invalidate_data_range_to_poc(ptr: *const u8, len: usize) {
+    if len == 0 || !data_cache_enabled() {
+        return;
+    }
+
+    let line_size = data_cache_line_size();
+    let start = (ptr as usize) & !(line_size - 1);
+    let end = (ptr as usize)
+        .checked_add(len)
+        .expect("data-cache clean/invalidate range overflow");
+
+    let mut address = start;
+    while address < end {
+        asm!(
+            "dc civac, {address}",
+            address = in(reg) address,
+            options(nostack, preserves_flags),
+        );
+        address = address
+            .checked_add(line_size)
+            .expect("data-cache clean/invalidate address overflow");
+    }
+
+    asm!("dsb sy", options(nostack, preserves_flags));
+}
