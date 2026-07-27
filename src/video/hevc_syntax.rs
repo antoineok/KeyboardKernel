@@ -995,9 +995,9 @@ impl RbspReader {
     }
 
     fn byte_align(&mut self) -> Result<(), HevcSyntaxError> {
-        if self.bit_pos & 7 == 0 {
-            return Ok(());
-        }
+        // HEVC byte_alignment() always starts with alignment_bit_equal_to_one.
+        // If the preceding syntax already ends on a byte boundary this consumes
+        // a complete 0x80 byte; it is not a no-op.
         if !self.read_bit()? {
             return Err(HevcSyntaxError::Invalid("slice byte_alignment one-bit is zero"));
         }
