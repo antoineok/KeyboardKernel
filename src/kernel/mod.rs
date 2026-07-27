@@ -134,6 +134,70 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         bitstream_window.byte_len(),
     );
 
+    let picture = video
+        .first_picture_syntax()
+        .expect("failed to parse first KWVIDEO HEVC picture syntax");
+    let sps = picture.sps;
+    let pps = picture.pps;
+    let slice = picture.slice;
+    info!(
+        "KWVIDEO SPS: coded={}x{}, CTB=2^{} ({}x{} CTBs), min_cb=2^{}, transform=2^{}..2^{}, depth inter/intra={}/{}, amp={}, sao={}, pcm={}, scaling_list={}, tmvp={}, strong_intra_smoothing={}",
+        sps.width,
+        sps.height,
+        sps.log2_ctb_size,
+        picture.ctb_width,
+        picture.ctb_height,
+        sps.log2_min_luma_coding_block_size,
+        sps.log2_min_luma_transform_block_size,
+        sps.log2_max_luma_transform_block_size,
+        sps.max_transform_hierarchy_depth_inter,
+        sps.max_transform_hierarchy_depth_intra,
+        sps.amp_enabled,
+        sps.sao_enabled,
+        sps.pcm_enabled,
+        sps.scaling_list_enabled,
+        sps.temporal_mvp_enabled,
+        sps.strong_intra_smoothing_enabled,
+    );
+    info!(
+        "KWVIDEO PPS: id={}, init_qp={}, cb/cr={}/{}, signhide={}, transform_skip={}, cu_qp_delta={} depth={}, constrained_intra={}, tiles={} {}x{}, wpp={}, loop_tile={}, loop_slice={}, deblock_disabled={}",
+        pps.pps_id,
+        pps.init_qp_minus26 + 26,
+        pps.pps_cb_qp_offset,
+        pps.pps_cr_qp_offset,
+        pps.sign_data_hiding_enabled,
+        pps.transform_skip_enabled,
+        pps.cu_qp_delta_enabled,
+        pps.diff_cu_qp_delta_depth,
+        pps.constrained_intra_pred,
+        pps.tiles_enabled,
+        pps.tile_columns,
+        pps.tile_rows,
+        pps.entropy_coding_sync_enabled,
+        pps.loop_filter_across_tiles_enabled,
+        pps.loop_filter_across_slices_enabled,
+        pps.pps_deblocking_filter_disabled,
+    );
+    info!(
+        "KWVIDEO IDR slice: nal_type={}, first={}, slice_type={}, qp_delta={}, qp={}, sao={}/{}, chroma_qp={}/{}, deblock_disabled={}, beta/tc={}/{}, loop_slice={}, entry_points={}, entry_bits={}, header_rbsp_bits={}",
+        slice.nal_unit_type,
+        slice.first_slice_segment_in_pic,
+        slice.slice_type,
+        slice.slice_qp_delta,
+        pps.init_qp_minus26 + 26 + slice.slice_qp_delta,
+        slice.sao_luma,
+        slice.sao_chroma,
+        slice.slice_cb_qp_offset,
+        slice.slice_cr_qp_offset,
+        slice.deblocking_filter_disabled,
+        slice.beta_offset_div2,
+        slice.tc_offset_div2,
+        slice.loop_filter_across_slices_enabled,
+        slice.entry_point_count,
+        slice.entry_point_offset_len,
+        slice.header_rbsp_bits,
+    );
+
     let background_file = vfs
         .open_fs(FsId::Rom, "background.kwim")
         .expect("failed to load background image");

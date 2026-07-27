@@ -928,6 +928,31 @@ impl VideoAsset {
     /// length-prefixed NAL units. The decoder bring-up path consumes one
     /// contiguous byte window, so prepend the out-of-band parameter sets and
     /// replace every sample length prefix with a four-byte Annex-B start code.
+    /// Parse the first IDR picture into the stateless HEVC fields RPIVID needs.
+    pub fn first_picture_syntax(
+        &self,
+    ) -> Result<super::hevc_syntax::FirstPictureSyntax, KwVideoError> {
+        let fragment = self.metadata.first_fragment;
+        let sample_start = fragment.first_sample_offset;
+        let sample_end = sample_start
+            .checked_add(fragment.first_sample_size as usize)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let sample = self
+            .bootstrap
+            .get(sample_start..sample_end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "first HEVC sample escapes transition bootstrap",
+            ))?;
+        let hvcc = find_hvcc_in_bootstrap(&self.bootstrap)?;
+
+        super::hevc_syntax::FirstPictureSyntax::parse(
+            hvcc.payload,
+            sample,
+            self.metadata.hevc.nal_length_size as usize,
+        )
+        .map_err(KwVideoError::HevcSyntax)
+    }
+
     pub fn first_access_unit_annex_b(&self) -> Result<FirstAccessUnit, KwVideoError> {
         let fragment = self.metadata.first_fragment;
         let sample_start = fragment.first_sample_offset;
@@ -1080,6 +1105,7 @@ pub enum KwVideoError {
     UnsupportedProfile(&'static str),
     VideoProfileSlotOutOfRange(usize),
     IsoBmff(IsoBmffError),
+    HevcSyntax(super::hevc_syntax::HevcSyntaxError),
 }
 
 impl From<IsoBmffError> for KwVideoError {
@@ -1137,6 +1163,7 @@ impl fmt::Display for KwVideoError {
                 VIDEO_PROFILE_SLOT_COUNT - 1
             ),
             Self::IsoBmff(error) => fmt::Display::fmt(error, f),
+            Self::HevcSyntax(error) => fmt::Display::fmt(error, f),
         }
     }
 }
