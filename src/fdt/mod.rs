@@ -36,8 +36,13 @@ pub const MAX_DEPTH: usize = 32;
 pub const MAX_PATH_LEN: usize = 256;
 pub const MAX_ALIASES: usize = 64;
 pub const MAX_ALIAS_NAME_LEN: usize = 31;
-pub const MAX_DEVICES: usize = 16;
-pub const MAX_DEVICE_RESOURCES: usize = 8;
+// Requested-compatible discovery is part of the allocation-free early-boot
+// parser and therefore lives on CPU0's EL1 stack. Keep these capacities
+// deliberately small: DeviceEntry embeds its resource array and is carried by
+// both Parser and BootInfo. The CM4 boot path currently requests only the HEVC
+// decoder, which exposes two named register resources.
+pub const MAX_DEVICES: usize = 4;
+pub const MAX_DEVICE_RESOURCES: usize = 4;
 pub const MAX_INDEXED_NODES: usize = 128;
 pub const MAX_RAM_REGIONS: usize = 16;
 pub const MAX_RESERVED_REGIONS: usize = 64;
