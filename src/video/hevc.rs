@@ -1,6 +1,6 @@
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, hint::spin_loop, sync::atomic::{AtomicU32, Ordering}};
 
-use crate::{drivers::mailbox::MailboxBuffer, fdt::{AliasEntry, DeviceEntry}, info};
+use crate::{arch::{cpu::current_id, exceptions, gic::GIC_PLATFORM}, drivers::mailbox::MailboxBuffer, fdt::{AliasEntry, DeviceEntry}, info};
 
 pub const HEVC_COMPATIBLE: &str = "brcm,bcm2711-hevc-dec";
 
@@ -45,6 +45,8 @@ pub struct HevcPlatform(UnsafeCell<Option<HevcResources>>);
 unsafe impl Sync for HevcPlatform {}
 
 pub static HEVC_PLATFORM: HevcPlatform = HevcPlatform(UnsafeCell::new(None));
+
+static HEVC_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 
 impl HevcPlatform {
     pub const fn new() -> Self {
@@ -151,6 +153,60 @@ impl HevcPlatform {
     pub fn initialize_interrupt_controller(&self) -> super::rpivid::RpividInterruptInitSnapshot {
         super::rpivid::RpividRegisters::from_resources(self.resources())
             .initialize_interrupt_controller()
+    }
+
+    pub fn gic_intid(&self) -> u32 {
+        let interrupt = self.resources().interrupt;
+        match interrupt.kind {
+            // GIC DT SPI numbers are relative to architectural INTID 32.
+            GicInterruptKind::Spi => 32 + interrupt.number,
+            GicInterruptKind::Ppi => 16 + interrupt.number,
+        }
+    }
+
+    /// Configure HEVC completion delivery to the CPU executing this method,
+    /// unmask EL1 IRQs locally, and validate the complete vector/GIC path by
+    /// software-pending the HEVC SPI once.
+    pub fn initialize_irq_on_current_cpu(&self) {
+        let cpu = current_id();
+        assert_eq!(cpu.raw(), 1, "HEVC IRQ ownership must start on CPU1");
+
+        let interrupt = self.resources().interrupt;
+        assert_eq!(interrupt.kind, GicInterruptKind::Spi, "HEVC interrupt must be a GIC SPI");
+        assert_eq!(interrupt.flags, 0x4, "HEVC interrupt must be level-high");
+
+        let intid = self.gic_intid();
+        let target_mask = GIC_PLATFORM.initialize_current_cpu_interface();
+        GIC_PLATFORM.configure_level_spi(intid, target_mask, 0x80);
+
+        let before = self.irq_count();
+        exceptions::unmask_irq();
+        GIC_PLATFORM.set_pending(intid);
+
+        while self.irq_count() == before {
+            spin_loop();
+        }
+
+        info!(
+            "{} HEVC GIC IRQ self-test passed: SPI {} -> INTID {}, target_mask={:#04x}",
+            cpu, interrupt.number, intid, target_mask
+        );
+    }
+
+    /// IRQ-context handler. Do not log or allocate here.
+    pub fn handle_irq(&self) {
+        // Clear any real decoder-local source before the GIC EOI. During the
+        // software-pending bring-up test there is no local source, so this is a
+        // harmless read-only operation.
+        let _pending = super::rpivid::RpividRegisters::from_resources(self.resources())
+            .acknowledge_interrupts();
+
+        let next = HEVC_IRQ_COUNT.load(Ordering::Relaxed).wrapping_add(1);
+        HEVC_IRQ_COUNT.store(next, Ordering::Release);
+    }
+
+    pub fn irq_count(&self) -> u32 {
+        HEVC_IRQ_COUNT.load(Ordering::Acquire)
     }
 
     pub fn resources(&self) -> HevcResources {

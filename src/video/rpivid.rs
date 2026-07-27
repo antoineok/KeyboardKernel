@@ -124,6 +124,22 @@ impl RpividRegisters {
     }
 
 
+    /// Acknowledge any decoder-local interrupt latches.
+    ///
+    /// The Argon interrupt latch bits are write-one-to-clear. The enable bits
+    /// share the same register, so preserve the complete register value when
+    /// clearing pending sources.
+    pub fn acknowledge_interrupts(self) -> u32 {
+        let state = self.intc.read32(ARG_IC_ICTRL);
+        let pending = state & ARG_IC_ICTRL_ALL_IRQ_MASK;
+
+        if pending != 0 {
+            self.intc.write32(ARG_IC_ICTRL, state);
+        }
+
+        pending
+    }
+
     pub fn initialize_interrupt_controller(self) -> RpividInterruptInitSnapshot {
         let before = self.intc.read32(ARG_IC_ICTRL);
 

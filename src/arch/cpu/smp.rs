@@ -119,6 +119,10 @@ pub extern "C" fn secondary_el1_entry() -> ! {
     let mmu_enabled = mmu_installed && mmu::is_enabled();
     let data_cache_enabled = mmu_installed && mmu::is_data_cache_enabled();
 
+    if cpu.raw() == 1 {
+        crate::video::hevc::HEVC_PLATFORM.initialize_irq_on_current_cpu();
+    }
+
     publish_secondary_status(cpu, at_el1, mmu_enabled, data_cache_enabled);
 
     match cpu.raw() {
