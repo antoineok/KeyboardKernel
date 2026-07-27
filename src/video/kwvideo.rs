@@ -953,6 +953,35 @@ impl VideoAsset {
         .map_err(KwVideoError::HevcSyntax)
     }
 
+    pub fn first_picture_cabac_payload<'a>(
+        &'a self,
+        picture: &super::hevc_syntax::FirstPictureSyntax,
+    ) -> Result<&'a [u8], KwVideoError> {
+        let fragment = self.metadata.first_fragment;
+        let sample_start = fragment.first_sample_offset;
+        let nal_start = sample_start
+            .checked_add(picture.slice_nal_sample_offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let nal_end = nal_start
+            .checked_add(picture.slice_nal_len)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+        let payload_start = nal_start
+            .checked_add(picture.slice.data_byte_offset)
+            .ok_or(KwVideoError::OffsetOverflow)?;
+
+        if payload_start >= nal_end {
+            return Err(KwVideoError::InvalidStructure(
+                "first HEVC slice has no CABAC payload",
+            ));
+        }
+
+        self.bootstrap
+            .get(payload_start..nal_end)
+            .ok_or(KwVideoError::InvalidStructure(
+                "first HEVC CABAC payload escapes transition bootstrap",
+            ))
+    }
+
     pub fn first_access_unit_annex_b(&self) -> Result<FirstAccessUnit, KwVideoError> {
         let fragment = self.metadata.first_fragment;
         let sample_start = fragment.first_sample_offset;

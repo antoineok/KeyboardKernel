@@ -179,7 +179,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         pps.pps_deblocking_filter_disabled,
     );
     info!(
-        "KWVIDEO IDR slice: nal_type={}, first={}, slice_type={}, qp_delta={}, qp={}, sao={}/{}, chroma_qp={}/{}, deblock_disabled={}, beta/tc={}/{}, loop_slice={}, entry_points={}, entry_bits={}, header_rbsp_bits={}",
+        "KWVIDEO IDR slice: nal_type={}, first={}, slice_type={}, qp_delta={}, qp={}, sao={}/{}, chroma_qp={}/{}, deblock_disabled={}, beta/tc={}/{}, loop_slice={}, entry_points={}, entry_bits={}, header_rbsp_bits={}, data_byte_offset={}",
         slice.nal_unit_type,
         slice.first_slice_segment_in_pic,
         slice.slice_type,
@@ -196,6 +196,27 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         slice.entry_point_count,
         slice.entry_point_offset_len,
         slice.header_rbsp_bits,
+        slice.data_byte_offset,
+    );
+
+    let cabac_payload = video
+        .first_picture_cabac_payload(&picture)
+        .expect("failed to locate first KWVIDEO CABAC payload");
+    let phase1 = crate::video::rpivid::RPIVID_WORKSPACE
+        .submit_first_idr_phase1(&picture, cabac_payload);
+    info!(
+        "RPIVID phase1 IDR: cabac={} bytes, commands={}, irq={}, complete={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}, PU_stride={} bytes, coeff_stride={} bytes",
+        cabac_payload.len(),
+        phase1.command_count,
+        phase1.irq_received,
+        phase1.complete(),
+        phase1.cfstatus,
+        phase1.cfnum,
+        phase1.status,
+        phase1.bfstatus,
+        phase1.interrupt_control,
+        phase1.pu_stride,
+        phase1.coeff_stride,
     );
 
     let background_file = vfs

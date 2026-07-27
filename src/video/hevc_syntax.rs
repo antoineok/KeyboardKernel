@@ -93,6 +93,10 @@ pub struct SliceSummary {
     pub entry_point_count: u32,
     pub entry_point_offset_len: u8,
     pub header_rbsp_bits: usize,
+    /// Byte offset from the start of the VCL NAL to the first CABAC byte.
+    /// This is measured in the original EBSP (emulation-prevention bytes
+    /// included), which is the representation consumed by RPIVID.
+    pub data_byte_offset: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +106,9 @@ pub struct FirstPictureSyntax {
     pub slice: SliceSummary,
     pub ctb_width: u32,
     pub ctb_height: u32,
+    /// Offset of the first VCL NAL within the length-prefixed MP4 sample.
+    pub slice_nal_sample_offset: usize,
+    pub slice_nal_len: usize,
 }
 
 impl FirstPictureSyntax {
@@ -119,7 +126,7 @@ impl FirstPictureSyntax {
         if pps.sps_id != sps.sps_id {
             return Err(HevcSyntaxError::Invalid("PPS references a different SPS"));
         }
-        let slice = parse_slice(slice_nal, &sps, &pps)?;
+        let slice = parse_slice(slice_nal.bytes, &sps, &pps)?;
         if slice.pps_id != pps.pps_id {
             return Err(HevcSyntaxError::Invalid("slice references a different PPS"));
         }
@@ -136,6 +143,8 @@ impl FirstPictureSyntax {
             slice,
             ctb_width,
             ctb_height,
+            slice_nal_sample_offset: slice_nal.sample_offset,
+            slice_nal_len: slice_nal.bytes.len(),
         })
     }
 }
@@ -168,19 +177,35 @@ fn find_hvcc_nal(hvcc: &[u8], wanted_type: u8) -> Result<&[u8], HevcSyntaxError>
     Err(HevcSyntaxError::MissingNal(wanted_type))
 }
 
-fn find_first_vcl_nal(sample: &[u8], nal_length_size: usize) -> Result<&[u8], HevcSyntaxError> {
+struct SampleNal<'a> {
+    bytes: &'a [u8],
+    sample_offset: usize,
+}
+
+fn find_first_vcl_nal(
+    sample: &[u8],
+    nal_length_size: usize,
+) -> Result<SampleNal<'_>, HevcSyntaxError> {
     let mut cursor = 0usize;
     while cursor < sample.len() {
         let len = read_u32(sample, cursor)? as usize;
-        cursor = cursor.checked_add(nal_length_size).ok_or(HevcSyntaxError::Overflow)?;
+        cursor = cursor
+            .checked_add(nal_length_size)
+            .ok_or(HevcSyntaxError::Overflow)?;
         if len == 0 {
             return Err(HevcSyntaxError::Invalid("zero-length sample NAL"));
         }
+        let nal_start = cursor;
         let end = cursor.checked_add(len).ok_or(HevcSyntaxError::Overflow)?;
-        let nal = sample.get(cursor..end).ok_or(HevcSyntaxError::Truncated("sample NAL"))?;
+        let nal = sample
+            .get(cursor..end)
+            .ok_or(HevcSyntaxError::Truncated("sample NAL"))?;
         let nal_type = nal_unit_type(nal)?;
         if nal_type <= 31 {
-            return Ok(nal);
+            return Ok(SampleNal {
+                bytes: nal,
+                sample_offset: nal_start,
+            });
         }
         cursor = end;
     }
@@ -534,6 +559,10 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
 
     bits.byte_align()?;
     let header_rbsp_bits = bits.position_bits();
+    if header_rbsp_bits & 7 != 0 {
+        return Err(HevcSyntaxError::Invalid("slice header did not end on a byte boundary"));
+    }
+    let data_byte_offset = rbsp_prefix_to_nal_offset(nal, header_rbsp_bits / 8)?;
 
     Ok(SliceSummary {
         nal_unit_type,
@@ -553,7 +582,42 @@ fn parse_slice(nal: &[u8], sps: &SpsSummary, pps: &PpsSummary) -> Result<SliceSu
         entry_point_count,
         entry_point_offset_len,
         header_rbsp_bits,
+        data_byte_offset,
     })
+}
+
+
+fn rbsp_prefix_to_nal_offset(
+    nal: &[u8],
+    rbsp_bytes: usize,
+) -> Result<usize, HevcSyntaxError> {
+    if nal.len() < 2 {
+        return Err(HevcSyntaxError::Truncated("HEVC NAL header"));
+    }
+
+    let mut source = 2usize;
+    let mut emitted = 0usize;
+    let mut zero_run = 0u8;
+    while emitted < rbsp_bytes {
+        let byte = *nal
+            .get(source)
+            .ok_or(HevcSyntaxError::Truncated("slice header EBSP"))?;
+        source = source.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+
+        if zero_run >= 2 && byte == 0x03 {
+            zero_run = 0;
+            continue;
+        }
+
+        emitted = emitted.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
+        if byte == 0 {
+            zero_run = zero_run.saturating_add(1);
+        } else {
+            zero_run = 0;
+        }
+    }
+
+    Ok(source)
 }
 
 fn skip_profile_tier_level(bits: &mut RbspReader, max_sub_layers_minus1: u8) -> Result<(), HevcSyntaxError> {

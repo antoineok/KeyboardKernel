@@ -6,17 +6,42 @@
 
 use core::{
     cell::UnsafeCell,
+    hint::spin_loop,
     ptr::{read_volatile, write_volatile},
+    time::Duration,
 };
 
 use crate::{info, memory::dma::DmaBuffer};
 
-use super::hevc::HevcResources;
+use super::{hevc::HevcResources, hevc_syntax::FirstPictureSyntax};
 
-// Phase-1 HEVC register offsets used during initial hardware bring-up.
+// Phase-1 HEVC register offsets.
+const RPI_SPS0: usize = 0x0000;
+const RPI_SPS1: usize = 0x0004;
+const RPI_PPS: usize = 0x0008;
+const RPI_SLICE: usize = 0x000c;
+const RPI_TILESTART: usize = 0x0010;
+const RPI_TILEEND: usize = 0x0014;
+const RPI_SLICESTART: usize = 0x0018;
+const RPI_MODE: usize = 0x001c;
+const RPI_QP: usize = 0x0030;
 const RPI_CONTROL: usize = 0x0034;
 const RPI_STATUS: usize = 0x0038;
 const RPI_VERSION: usize = 0x003c;
+const RPI_BFBASE: usize = 0x0040;
+const RPI_BFNUM: usize = 0x0044;
+const RPI_BFCONTROL: usize = 0x0048;
+const RPI_BFSTATUS: usize = 0x004c;
+const RPI_PUWBASE: usize = 0x0050;
+const RPI_PUWSTRIDE: usize = 0x0054;
+const RPI_COEFFWBASE: usize = 0x0058;
+const RPI_COEFFWSTRIDE: usize = 0x005c;
+const RPI_SLICECMDS: usize = 0x0060;
+const RPI_BEGINTILEEND: usize = 0x0064;
+const RPI_TRANSFER: usize = 0x0068;
+const RPI_CFBASE: usize = 0x006c;
+const RPI_CFNUM: usize = 0x0070;
+const RPI_CFSTATUS: usize = 0x0074;
 
 // Phase-2 status register. The phase-2 register file begins at 0x8000.
 const RPI_STATUS2: usize = 0x8028;
@@ -45,6 +70,24 @@ const RPIVID_COMMAND_CAPACITY: usize = 8192;
 const RPIVID_COMMAND_BYTES: usize = RPIVID_COMMAND_CAPACITY * core::mem::size_of::<u64>();
 const RPIVID_PHASE_BUFFER_COUNT: usize = 3;
 const RPIVID_BITSTREAM_STAGING_BYTES: usize = 4 * 1024 * 1024;
+
+const PROB_BACKUP: u32 = (20 << 12) | (20 << 6);
+const PROB_RELOAD: u32 = (20 << 12) | 20;
+const PAUSE_MODE_WPP: u32 = 1;
+
+// HEVC Main I-slice CABAC initialisation values (H.265 section 9.3.2.2).
+const PROB_INIT_I: [u8; 156] = [
+    153, 200, 139, 141, 157, 154, 154, 154, 154, 154, 184, 154, 154, 154, 184, 63,
+    154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 153, 138, 138,
+    111, 141, 94, 138, 182, 154, 154, 154, 140, 92, 137, 138, 140, 152, 138, 139,
+    153, 74, 149, 92, 139, 107, 122, 152, 140, 179, 166, 182, 140, 227, 122, 197,
+    110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111, 79, 108,
+    123, 63, 110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111,
+    79, 108, 123, 63, 91, 171, 134, 141, 138, 153, 136, 167, 152, 152, 139, 139,
+    111, 111, 125, 110, 110, 94, 124, 108, 124, 107, 125, 141, 179, 153, 125, 107,
+    125, 141, 179, 153, 125, 107, 125, 141, 179, 153, 125, 140, 139, 182, 182, 152,
+    136, 152, 136, 153, 136, 139, 111, 136, 139, 111, 0, 0,
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RpividDmaAddress(u32);
@@ -97,6 +140,7 @@ impl RpividDmaLength {
 
 pub struct RpividCommandBuffer {
     dma: DmaBuffer,
+    used_commands: usize,
 }
 
 impl RpividCommandBuffer {
@@ -104,7 +148,41 @@ impl RpividCommandBuffer {
         let dma = DmaBuffer::allocate(RPIVID_COMMAND_BYTES, RPIVID_DMA_GRANULE)
             .expect("failed to allocate RPIVID command DMA buffer");
 
-        Self { dma }
+        Self {
+            dma,
+            used_commands: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.used_commands = 0;
+    }
+
+    pub fn push(&mut self, register: usize, data: u32) {
+        assert_eq!(register & 3, 0, "RPIVID command register is not 32-bit aligned");
+        assert!(register <= u32::MAX as usize, "RPIVID command register exceeds u32");
+        assert!(
+            self.used_commands < RPIVID_COMMAND_CAPACITY,
+            "RPIVID command FIFO overflow",
+        );
+
+        let offset = self.used_commands * core::mem::size_of::<u64>();
+        let bytes = self.dma.as_mut_slice();
+        bytes[offset..offset + 4].copy_from_slice(&(register as u32).to_le_bytes());
+        bytes[offset + 4..offset + 8].copy_from_slice(&data.to_le_bytes());
+        self.used_commands += 1;
+    }
+
+    #[inline(always)]
+    pub const fn used_commands(&self) -> usize {
+        self.used_commands
+    }
+
+    pub fn sync_used_for_device(&self) {
+        self.dma.sync_range_for_device(
+            0,
+            self.used_commands * core::mem::size_of::<u64>(),
+        );
     }
 
     #[inline(always)]
@@ -214,6 +292,25 @@ impl RpividBitstreamBuffer {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpividPhase1Snapshot {
+    pub command_count: u32,
+    pub irq_received: bool,
+    pub cfstatus: u32,
+    pub cfnum: u32,
+    pub status: u32,
+    pub bfstatus: u32,
+    pub interrupt_control: u32,
+    pub pu_stride: u32,
+    pub coeff_stride: u32,
+}
+
+impl RpividPhase1Snapshot {
+    pub const fn complete(self) -> bool {
+        self.irq_received && self.cfstatus == self.cfnum
+    }
+}
+
 pub struct RpividWorkspaceStatic(UnsafeCell<Option<RpividDecodeWorkspace>>);
 
 unsafe impl Sync for RpividWorkspaceStatic {}
@@ -239,6 +336,23 @@ impl RpividWorkspaceStatic {
             .expect("RPIVID workspace used before initialization");
         workspace.bitstream.load(data);
         workspace.bitstream.window(0, data.len())
+    }
+
+    pub fn submit_first_idr_phase1(
+        &self,
+        picture: &FirstPictureSyntax,
+        cabac_payload: &[u8],
+    ) -> RpividPhase1Snapshot {
+        assert_eq!(
+            crate::arch::cpu::current_id(),
+            crate::arch::cpu::CpuId::BOOT,
+            "RPIVID phase-1 bring-up currently belongs to CPU0",
+        );
+        let workspace = self
+            .get_mut()
+            .as_mut()
+            .expect("RPIVID workspace used before initialization");
+        workspace.submit_first_idr_phase1(picture, cabac_payload)
     }
 }
 
@@ -304,6 +418,94 @@ impl RpividDecodeWorkspace {
         }
     }
 
+    fn submit_first_idr_phase1(
+        &mut self,
+        picture: &FirstPictureSyntax,
+        cabac_payload: &[u8],
+    ) -> RpividPhase1Snapshot {
+        let sps = picture.sps;
+        let pps = picture.pps;
+        let slice = picture.slice;
+
+        assert!(matches!(slice.nal_unit_type, 19 | 20), "phase-1 bring-up requires an IDR");
+        assert!(slice.first_slice_segment_in_pic, "phase-1 bring-up requires the first slice");
+        assert_eq!(slice.slice_type, 2, "phase-1 bring-up requires an I-slice");
+        assert!(!pps.tiles_enabled, "phase-1 bring-up does not support tiles");
+        assert!(pps.entropy_coding_sync_enabled, "phase-1 bring-up expects WPP");
+        assert!(!sps.scaling_list_enabled, "phase-1 bring-up does not support scaling lists");
+        assert_eq!(picture.ctb_height, slice.entry_point_count + 1, "WPP entry-point count does not match CTB rows");
+        assert!(!cabac_payload.is_empty(), "phase-1 CABAC payload is empty");
+
+        self.bitstream.load(cabac_payload);
+        let bitstream = self.bitstream.window(0, cabac_payload.len());
+
+        self.command.reset();
+        build_first_idr_wpp_commands(&mut self.command, picture, bitstream);
+        self.command.sync_used_for_device();
+
+        let phase_index = 0usize;
+        let pu_stride = phase_stride(self.pu_size, picture.ctb_height as usize);
+        let coeff_stride = phase_stride(self.coeff_size, picture.ctb_height as usize);
+
+        // These buffers were zeroed through the CPU allocator. Publish those
+        // dirty lines before handing ownership to the decoder, which then
+        // overwrites them during phase 1.
+        self.pu[phase_index].sync_for_device();
+        self.coeff[phase_index].sync_for_device();
+
+        let registers = RpividRegisters::from_resources(super::hevc::HEVC_PLATFORM.resources());
+        let _ = registers.acknowledge_interrupts();
+        let irq_before = super::hevc::HEVC_PLATFORM.irq_count();
+
+        registers.hevc.write32(
+            RPI_PUWBASE,
+            RpividDmaAddress::from_phys(self.pu[phase_index].phys_addr()).register_value(),
+        );
+        registers.hevc.write32(
+            RPI_PUWSTRIDE,
+            RpividDmaLength::from_bytes(pu_stride).register_value(),
+        );
+        registers.hevc.write32(
+            RPI_COEFFWBASE,
+            RpividDmaAddress::from_phys(self.coeff[phase_index].phys_addr()).register_value(),
+        );
+        registers.hevc.write32(
+            RPI_COEFFWSTRIDE,
+            RpividDmaLength::from_bytes(coeff_stride).register_value(),
+        );
+        registers
+            .hevc
+            .write32(RPI_CFNUM, self.command.used_commands() as u32);
+
+        // Writing CFBASE is the phase-1 start trigger. Match Linux's final
+        // ordered write after all command/workspace registers are visible.
+        registers.hevc.write32(
+            RPI_CFBASE,
+            self.command.hardware_addr().register_value(),
+        );
+
+        let started = crate::time::time_manager().uptime();
+        let timeout = Duration::from_millis(250);
+        while super::hevc::HEVC_PLATFORM.irq_count() == irq_before
+            && crate::time::time_manager().uptime().saturating_sub(started) < timeout
+        {
+            spin_loop();
+        }
+
+        let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != irq_before;
+        RpividPhase1Snapshot {
+            command_count: self.command.used_commands() as u32,
+            irq_received,
+            cfstatus: registers.hevc.read32(RPI_CFSTATUS),
+            cfnum: registers.hevc.read32(RPI_CFNUM),
+            status: registers.hevc.read32(RPI_STATUS),
+            bfstatus: registers.hevc.read32(RPI_BFSTATUS),
+            interrupt_control: registers.intc.read32(ARG_IC_ICTRL),
+            pu_stride: pu_stride as u32,
+            coeff_stride: coeff_stride as u32,
+        }
+    }
+
     pub fn total_bytes(&self) -> usize {
         RPIVID_COMMAND_BYTES
             + RPIVID_BITSTREAM_STAGING_BYTES
@@ -339,6 +541,218 @@ impl RpividDecodeWorkspace {
             let _ = RpividDmaLength::from_bytes(buffer.len());
         }
     }
+}
+
+fn phase_stride(buffer_size: usize, ctb_height: usize) -> usize {
+    assert!(ctb_height != 0, "RPIVID CTB height is zero");
+    let stride = (buffer_size / ctb_height) & !(RPIVID_DMA_GRANULE - 1);
+    assert!(stride != 0, "RPIVID phase stride rounded to zero");
+    stride
+}
+
+fn build_first_idr_wpp_commands(
+    commands: &mut RpividCommandBuffer,
+    picture: &FirstPictureSyntax,
+    bitstream: RpividBitstreamWindow,
+) {
+    let sps = picture.sps;
+    let pps = picture.pps;
+    let slice = picture.slice;
+    let slice_qp = 26 + pps.init_qp_minus26 + slice.slice_qp_delta;
+    assert!((0..=51).contains(&slice_qp), "RPIVID slice QP is outside 0..=51");
+
+    commands.push(RPI_BFBASE, bitstream.base_register_value());
+    commands.push(RPI_BFNUM, bitstream.byte_len());
+    commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 7));
+    commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 6));
+
+    write_i_slice_probabilities(commands, slice_qp);
+    write_i_slice_messages(commands, picture);
+    write_slice_segment_registers(commands, picture);
+
+    let slice_const = (slice.slice_type << 12)
+        | ((slice.sao_luma as u32) << 14)
+        | ((slice.sao_chroma as u32) << 15);
+
+    write_wpp_entry(commands, picture, 0, slice_qp as u32, slice_const, true);
+
+    let last_x = picture.ctb_width - 1;
+    let last_y = picture.ctb_height - 1;
+    for row in 0..last_y {
+        if picture.ctb_width > 2 {
+            write_wpp_pause(commands, picture, row);
+        }
+        commands.push(RPI_STATUS, (row << 18) | (last_x << 5) | 2);
+        if picture.ctb_width == 2 {
+            commands.push(RPI_TRANSFER, PROB_BACKUP);
+        } else {
+            commands.push(RPI_TRANSFER, PROB_RELOAD);
+        }
+        write_wpp_entry(
+            commands,
+            picture,
+            row + 1,
+            slice_qp as u32,
+            slice_const,
+            false,
+        );
+    }
+
+    if picture.ctb_width > 2 {
+        write_wpp_pause(commands, picture, last_y);
+    }
+    commands.push(RPI_STATUS, 1 | (last_x << 5) | (last_y << 18));
+}
+
+fn write_i_slice_probabilities(commands: &mut RpividCommandBuffer, slice_qp: i32) {
+    let q = slice_qp.clamp(0, 51);
+    let mut probabilities = [0u8; 156];
+    for index in 0..154 {
+        let init_value = PROB_INIT_I[index] as i32;
+        let m = (init_value >> 4) * 5 - 45;
+        let n = ((init_value & 15) << 3) - 16;
+        let mut pre = 2 * (((m * q) >> 4) + n) - 127;
+        pre ^= pre >> 31;
+        if pre > 124 {
+            pre = 124 + (pre & 1);
+        }
+        probabilities[index] = pre as u8;
+    }
+
+    for offset in (0..probabilities.len()).step_by(4) {
+        let word = u32::from(probabilities[offset])
+            | (u32::from(probabilities[offset + 1]) << 8)
+            | (u32::from(probabilities[offset + 2]) << 16)
+            | (u32::from(probabilities[offset + 3]) << 24);
+        commands.push(0x1000 + offset, word);
+    }
+    commands.push(RPI_TRANSFER, PROB_BACKUP);
+}
+
+fn write_i_slice_messages(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax) {
+    let pps = picture.pps;
+    let slice = picture.slice;
+
+    // I-slice, zero references, no temporal MVP. The collocated-from-L0 bit is
+    // inferred true by the hardware message format in that case.
+    let cmd_slice = 1u32 | (1 << 14);
+    let filter = ((slice.beta_offset_div2 as u32) & 15)
+        | (((slice.tc_offset_div2 as u32) & 15) << 4)
+        | ((slice.deblocking_filter_disabled as u32) << 8)
+        | ((slice.loop_filter_across_slices_enabled as u32) << 9)
+        | ((pps.loop_filter_across_tiles_enabled as u32) << 10);
+    let qp_offsets = (((slice.slice_cr_qp_offset as u32) & 31) << 5)
+        | ((slice.slice_cb_qp_offset as u32) & 31);
+
+    commands.push(RPI_SLICECMDS, 3);
+    commands.push(0x4000, cmd_slice);
+    commands.push(0x4004, filter);
+    commands.push(0x4008, qp_offsets);
+}
+
+fn write_slice_segment_registers(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax) {
+    let sps = picture.sps;
+    let pps = picture.pps;
+    let slice = picture.slice;
+
+    let sps0 = (sps.log2_min_luma_coding_block_size << 0)
+        | (sps.log2_ctb_size << 4)
+        | (sps.log2_min_luma_transform_block_size << 8)
+        | (sps.log2_max_luma_transform_block_size << 12)
+        | ((sps.bit_depth_luma_minus8 + 8) << 16)
+        | ((sps.bit_depth_chroma_minus8 + 8) << 20)
+        | (sps.max_transform_hierarchy_depth_intra << 24)
+        | (sps.max_transform_hierarchy_depth_inter << 28);
+
+    let pcm_luma = if sps.pcm_enabled { sps.pcm_sample_bit_depth_luma } else { 1 };
+    let pcm_chroma = if sps.pcm_enabled { sps.pcm_sample_bit_depth_chroma } else { 1 };
+    let pcm_min = if sps.pcm_enabled { sps.log2_min_pcm_luma_coding_block_size } else { 3 };
+    let pcm_max = if sps.pcm_enabled { sps.log2_max_pcm_luma_coding_block_size } else { 3 };
+    let chroma = if sps.separate_colour_plane { 0 } else { sps.chroma_format_idc };
+    let sps1 = (pcm_luma << 0)
+        | (pcm_chroma << 4)
+        | (pcm_min << 8)
+        | (pcm_max << 12)
+        | (chroma << 16)
+        | ((sps.amp_enabled as u32) << 18)
+        | ((sps.pcm_enabled as u32) << 19)
+        | ((sps.scaling_list_enabled as u32) << 20)
+        | ((sps.strong_intra_smoothing_enabled as u32) << 21);
+
+    let qp_depth = sps
+        .log2_ctb_size
+        .checked_sub(pps.diff_cu_qp_delta_depth)
+        .expect("RPIVID CU QP delta depth exceeds CTB depth");
+    let pps_reg = qp_depth
+        | ((pps.cu_qp_delta_enabled as u32) << 4)
+        | ((pps.transquant_bypass_enabled as u32) << 5)
+        | ((pps.transform_skip_enabled as u32) << 6)
+        | ((pps.sign_data_hiding_enabled as u32) << 7)
+        | ((((pps.pps_cb_qp_offset + slice.slice_cb_qp_offset) as u32) & 0xff) << 8)
+        | ((((pps.pps_cr_qp_offset + slice.slice_cr_qp_offset) as u32) & 0xff) << 16)
+        | ((pps.constrained_intra_pred as u32) << 24);
+
+    commands.push(RPI_SPS0, sps0);
+    commands.push(RPI_SPS1, sps1);
+    commands.push(RPI_PPS, pps_reg);
+    commands.push(RPI_SLICESTART, 0);
+}
+
+fn write_wpp_entry(
+    commands: &mut RpividCommandBuffer,
+    picture: &FirstPictureSyntax,
+    row: u32,
+    slice_qp: u32,
+    slice_const: u32,
+    begin_tile: bool,
+) {
+    let sps = picture.sps;
+    let last_x = picture.ctb_width - 1;
+    let tile_end = last_x | (row << 16);
+
+    commands.push(RPI_TILESTART, 0);
+    commands.push(RPI_TILEEND, tile_end);
+    if begin_tile {
+        commands.push(RPI_BEGINTILEEND, tile_end);
+    }
+    commands.push(RPI_SLICE, slice_register(picture, row, slice_const));
+    commands.push(RPI_QP, 6 * sps.bit_depth_luma_minus8 + slice_qp);
+    commands.push(
+        RPI_MODE,
+        PAUSE_MODE_WPP
+            | (1 << 17)
+            | (((row == picture.ctb_height - 1) as u32) << 18),
+    );
+    commands.push(RPI_CONTROL, row << 16);
+}
+
+fn slice_register(picture: &FirstPictureSyntax, row: u32, slice_const: u32) -> u32 {
+    let sps = picture.sps;
+    let ctb_size = 1u32 << sps.log2_ctb_size;
+    let width_last = sps.width & (ctb_size - 1);
+    let height_last = sps.height & (ctb_size - 1);
+    let width = if width_last == 0 { ctb_size } else { width_last };
+    let height = if row + 1 < picture.ctb_height || height_last == 0 {
+        ctb_size
+    } else {
+        height_last
+    };
+
+    slice_const | (width << 17) | (height << 24)
+}
+
+fn write_wpp_pause(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax, row: u32) {
+    commands.push(RPI_STATUS, (row << 18) | 0x25);
+    commands.push(RPI_TRANSFER, PROB_BACKUP);
+    commands.push(
+        RPI_MODE,
+        if row == picture.ctb_height - 1 {
+            0x70000
+        } else {
+            0x30000
+        },
+    );
+    commands.push(RPI_CONTROL, (row << 16) | 2);
 }
 
 pub fn initialize_decode_workspace(width: usize, height: usize) {
