@@ -18,7 +18,7 @@ use super::{
     rpivid::{RpividDecodedFrame, RPIVID_WORKSPACE},
 };
 
-const LATE_TOLERANCE: Duration = Duration::from_millis(2);
+const LATE_TOLERANCE: Duration = Duration::from_millis(20);
 const STATS_INTERVAL_FRAMES: u64 = 90;
 /// Keep several already-decoded RGB frames ready so a costly IDR or fragment
 /// read does not immediately turn into a visible presentation stall.
@@ -117,8 +117,16 @@ impl VideoPlayer {
     /// This does *not* advance the presentation clock. CPU1 still has to
     /// composite the selected frame and flip the framebuffer. `frame_presented`
     /// commits the duration only after that visible presentation completes.
-    pub fn advance_if_due(&mut self, now: Duration) -> Result<bool, KwVideoError> {
-        if self.pending_present_duration_ticks.is_some() || now < self.next_present_at {
+    pub fn advance_if_due(
+        &mut self,
+        now: Duration,
+        presentation_lead: Duration,
+    ) -> Result<bool, KwVideoError> {
+        let presentation_window_open = now
+            .checked_add(presentation_lead)
+            .map(|ready_by| ready_by >= self.next_present_at)
+            .unwrap_or(true);
+        if self.pending_present_duration_ticks.is_some() || !presentation_window_open {
             return Ok(false);
         }
 
@@ -145,19 +153,19 @@ impl VideoPlayer {
         Ok(true)
     }
 
-    /// Commit one video frame after the compositor/page flip has completed.
+    /// Commit one frame at a real display presentation boundary.
     ///
-    /// Anchoring the next deadline to the *actual* visible presentation time
-    /// prevents composition cost from shortening a frame's on-screen lifetime.
-    /// A 24000/1001 stream therefore keeps ~41.7 ms between completed flips
-    /// even when composing the frame itself takes measurable CPU time.
+    /// Normal playback stays on an absolute media timeline. A genuine large
+    /// miss rebases that timeline so the player never repays lateness with a
+    /// burst of too-fast frames.
     pub fn frame_presented(&mut self, presented_at: Duration) {
         let duration_ticks = self
             .pending_present_duration_ticks
             .take()
             .expect("KWVIDEO frame_presented without an advanced frame");
 
-        if self.pending_present_was_late {
+        let rebase = self.pending_present_was_late;
+        if rebase {
             self.clock_rebases = self.clock_rebases.saturating_add(1);
         }
         self.pending_present_was_late = false;
@@ -168,9 +176,23 @@ impl VideoPlayer {
             .expect("KWVIDEO presentation clock overflow");
         self.frames_presented = self.frames_presented.saturating_add(1);
 
-        let frame_duration = self.ticks_to_duration(duration_ticks);
-        self.next_present_at = presented_at
-            .checked_add(frame_duration)
+        // Keep an absolute media timeline so a 24 fps source on a 60 Hz
+        // display naturally alternates 3/2 vblanks instead of rounding every
+        // frame up to three refreshes. Only rebase after a genuine (>20 ms)
+        // scheduling miss, which prevents a later catch-up burst.
+        if self.frames_presented == 1 {
+            self.started_at = presented_at;
+        } else if rebase {
+            let elapsed_before_current = self
+                .presentation_ticks
+                .saturating_sub(u64::from(duration_ticks));
+            self.started_at = presented_at
+                .checked_sub(self.ticks_to_duration_u64(elapsed_before_current))
+                .unwrap_or(Duration::ZERO);
+        }
+        self.next_present_at = self
+            .started_at
+            .checked_add(self.ticks_to_duration_u64(self.presentation_ticks))
             .expect("KWVIDEO presentation deadline overflow");
 
         if self.frames_presented % STATS_INTERVAL_FRAMES == 0 {
@@ -202,6 +224,10 @@ impl VideoPlayer {
     }
 
     fn ticks_to_duration(&self, ticks: u32) -> Duration {
+        self.ticks_to_duration_u64(u64::from(ticks))
+    }
+
+    fn ticks_to_duration_u64(&self, ticks: u64) -> Duration {
         let nanos = (u128::from(ticks) * 1_000_000_000u128) / u128::from(self.timescale);
         Duration::from_nanos(nanos as u64)
     }

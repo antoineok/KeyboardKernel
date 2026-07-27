@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use core::{
     slice,
+    time::Duration,
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
@@ -18,6 +19,8 @@ use super::{
 
 const GRAPHICS_QUEUE_SLOTS: usize = 9;
 const OVERLAY_SLOTS: usize = 8;
+const VSYNC_CALIBRATION_INTERVALS: u32 = 6;
+const FALLBACK_VSYNC_PERIOD: Duration = Duration::from_micros(16_667);
 
 const RESULT_NONE: u8 = 0;
 const RESULT_OK: u8 = 1;
@@ -309,6 +312,17 @@ pub fn run_graphics_core() -> ! {
     send_event();
     crate::info!("{} graphics/video scheduler ready", cpu);
 
+    let vsync_period = calibrate_vsync_period(framebuffer).unwrap_or(FALLBACK_VSYNC_PERIOD);
+    crate::info!(
+        "CPU1 display VSYNC period: {} us (~{} Hz)",
+        vsync_period.as_micros(),
+        if vsync_period.as_micros() == 0 {
+            0
+        } else {
+            1_000_000u128 / vsync_period.as_micros()
+        },
+    );
+
     loop {
         let mut handled_command = false;
         while let Some(command) = CPU0_TO_CPU1_GRAPHICS.try_pop() {
@@ -373,7 +387,7 @@ pub fn run_graphics_core() -> ! {
 
         let mut video_frame_advanced = false;
         if let Some(player) = video.as_mut() {
-            match player.advance_if_due(time_manager().uptime()) {
+            match player.advance_if_due(time_manager().uptime(), vsync_period) {
                 Ok(true) => {
                     scene_dirty = true;
                     video_frame_advanced = true;
@@ -414,6 +428,24 @@ pub fn run_graphics_core() -> ! {
             wait_for_event();
         }
     }
+}
+
+fn calibrate_vsync_period(framebuffer: &mut super::framebuffer::Framebuffer) -> Option<Duration> {
+    if !framebuffer.wait_for_vsync() {
+        return None;
+    }
+    let started = time_manager().uptime();
+    for _ in 0..VSYNC_CALIBRATION_INTERVALS {
+        if !framebuffer.wait_for_vsync() {
+            return None;
+        }
+    }
+    let elapsed = time_manager().uptime().saturating_sub(started);
+    let nanos = elapsed.as_nanos() / u128::from(VSYNC_CALIBRATION_INTERVALS);
+    if nanos == 0 || nanos > u128::from(u64::MAX) {
+        return None;
+    }
+    Some(Duration::from_nanos(nanos as u64))
 }
 
 fn render_scene(
@@ -498,6 +530,10 @@ fn render_scene(
         }
     }
 
+    if !framebuffer.wait_for_vsync() {
+        crate::error!("CPU1 framebuffer VSYNC wait failed");
+        return RESULT_PRESENT_FAILED;
+    }
     if !framebuffer.present() {
         crate::error!("CPU1 framebuffer present failed");
         return RESULT_PRESENT_FAILED;
@@ -540,6 +576,10 @@ fn render_image_command(
         }
     }
 
+    if !framebuffer.wait_for_vsync() {
+        crate::error!("CPU1 framebuffer VSYNC wait failed");
+        return RESULT_PRESENT_FAILED;
+    }
     if !framebuffer.present() {
         crate::error!("CPU1 framebuffer present failed");
         return RESULT_PRESENT_FAILED;

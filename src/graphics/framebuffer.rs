@@ -600,6 +600,18 @@ impl Framebuffer {
         unsafe { self.buffer.add(offset) }
     }
 
+    /// Wait for the next VideoCore display VSYNC.
+    ///
+    /// Call this only after the next backbuffer has been fully composed so the
+    /// following page flip can be issued immediately at the scanout boundary.
+    pub fn wait_for_vsync(&mut self) -> bool {
+        if !MAILBOX.get().wait_for_vsync() {
+            warn!("Framebuffer VSYNC wait mailbox call failed");
+            return false;
+        }
+        true
+    }
+
     pub fn present(&mut self) -> bool {
         if self.buffer.is_null() {
             return false;

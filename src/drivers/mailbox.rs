@@ -30,6 +30,7 @@ pub const MBOX_TAG_SETALPHAMODE: u32 = 0x0004_8007;
 pub const MBOX_TAG_SETPHYWH: u32 = 0x48003;
 pub const MBOX_TAG_SETVIRTWH: u32 = 0x48004;
 pub const MBOX_TAG_SETVIRTOFF: u32 = 0x48009;
+pub const MBOX_TAG_SETVSYNC: u32 = 0x0004_800e;
 pub const MBOX_TAG_SETDEPTH: u32 = 0x48005;
 pub const MBOX_TAG_SETPXLORDR: u32 = 0x48006;
 pub const MBOX_TAG_GETFB: u32 = 0x40001;
@@ -223,6 +224,31 @@ impl MailboxBuffer {
 
         tag_succeeded && returned_id == clock_id && clock_exists && actual_on == on
     }
+
+    /// Block until the next display vertical synchronization event.
+    ///
+    /// Raspberry Pi's legacy framebuffer driver implements FBIO_WAITFORVSYNC
+    /// using the firmware FRAMEBUFFER_SET_VSYNC property with one dummy u32.
+    pub fn wait_for_vsync(&mut self) -> bool {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 7 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETVSYNC;
+        self.buffer[3] = 4;
+        self.buffer[4] = 0;
+        self.buffer[5] = 0;
+
+        self.buffer[6] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return false;
+        }
+
+        self.buffer[4] & 0x8000_0000 != 0
+    }
+
     pub fn set_power_state(&mut self, device_id: u32, on: bool, wait: bool) -> bool {
         self.buffer.fill(0);
 
