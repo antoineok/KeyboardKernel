@@ -6,7 +6,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::info;
+use crate::{info, memory::dma::DmaBuffer};
 
 use super::hevc::HevcResources;
 
@@ -36,6 +36,122 @@ const ARG_IC_ICTRL_ALL_IRQ_MASK: u32 = ARG_IC_ICTRL_ACTIVE1_INT
     | ARG_IC_ICTRL_VP9_INTERRUPT_INT;
 
 const BCM2711_HEVC_VERSION: u32 = 0x0202;
+
+const RPIVID_DMA_GRANULE: usize = 64;
+const RPIVID_COMMAND_CAPACITY: usize = 8192;
+const RPIVID_COMMAND_BYTES: usize = RPIVID_COMMAND_CAPACITY * core::mem::size_of::<u64>();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpividDmaAddress(u32);
+
+impl RpividDmaAddress {
+    pub fn from_phys(phys_addr: u64) -> Self {
+        assert_eq!(
+            phys_addr & (RPIVID_DMA_GRANULE as u64 - 1),
+            0,
+            "RPIVID DMA address is not 64-byte aligned"
+        );
+
+        let encoded = phys_addr >> 6;
+        assert!(
+            encoded <= u32::MAX as u64,
+            "RPIVID DMA address exceeds hardware register width"
+        );
+
+        Self(encoded as u32)
+    }
+
+    #[inline(always)]
+    pub const fn register_value(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpividDmaLength(u32);
+
+impl RpividDmaLength {
+    pub fn from_bytes(bytes: usize) -> Self {
+        let units = bytes
+            .checked_add(RPIVID_DMA_GRANULE - 1)
+            .expect("RPIVID DMA length overflow")
+            / RPIVID_DMA_GRANULE;
+        assert!(
+            units <= u32::MAX as usize,
+            "RPIVID DMA length exceeds hardware register width"
+        );
+
+        Self(units as u32)
+    }
+
+    #[inline(always)]
+    pub const fn register_value(self) -> u32 {
+        self.0
+    }
+}
+
+pub struct RpividCommandBuffer {
+    dma: DmaBuffer,
+}
+
+impl RpividCommandBuffer {
+    pub fn allocate() -> Self {
+        let dma = DmaBuffer::allocate(RPIVID_COMMAND_BYTES, RPIVID_DMA_GRANULE)
+            .expect("failed to allocate RPIVID command DMA buffer");
+
+        Self { dma }
+    }
+
+    #[inline(always)]
+    pub fn phys_addr(&self) -> u64 {
+        self.dma.phys_addr()
+    }
+
+    #[inline(always)]
+    pub fn hardware_addr(&self) -> RpividDmaAddress {
+        RpividDmaAddress::from_phys(self.phys_addr())
+    }
+
+    #[inline(always)]
+    pub fn hardware_len(&self) -> RpividDmaLength {
+        RpividDmaLength::from_bytes(self.dma.len())
+    }
+
+    #[inline(always)]
+    pub const fn command_capacity(&self) -> usize {
+        RPIVID_COMMAND_CAPACITY
+    }
+
+    pub fn sync_for_device(&self) {
+        self.dma.sync_for_device();
+    }
+}
+
+pub fn validate_command_dma_buffer() {
+    let command = RpividCommandBuffer::allocate();
+
+    assert_eq!(
+        command.phys_addr() as usize % RPIVID_DMA_GRANULE,
+        0,
+        "RPIVID command buffer is not 64-byte aligned"
+    );
+    assert_eq!(command.command_capacity(), RPIVID_COMMAND_CAPACITY);
+    assert_eq!(
+        command.hardware_len().register_value(),
+        (RPIVID_COMMAND_BYTES / RPIVID_DMA_GRANULE) as u32
+    );
+
+    command.sync_for_device();
+
+    info!(
+        "RPIVID command DMA buffer ready: phys={:#018x}, hw_addr={:#010x}, size={} KiB, hw_len={}x64B, commands={}",
+        command.phys_addr(),
+        command.hardware_addr().register_value(),
+        RPIVID_COMMAND_BYTES / 1024,
+        command.hardware_len().register_value(),
+        command.command_capacity(),
+    );
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MmioRegion {

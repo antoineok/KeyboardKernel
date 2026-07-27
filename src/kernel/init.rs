@@ -177,6 +177,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
 
     init_phys_allocator();
 
+    early_timeit!("HEVC command DMA buffer", {
+        crate::video::rpivid::validate_command_dma_buffer();
+    });
+
     early_timeit!("USB power domain", {
         if !mailbox.set_power_state(mailbox::POWER_DEVICE_USB_HCD, true, true) {
             panic!("Failed to power the USB controller");
