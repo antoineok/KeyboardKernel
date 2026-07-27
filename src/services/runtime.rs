@@ -1,12 +1,16 @@
 use crate::{
     hid::{DirtyReports, HidState},
     transport::{
-        ActiveTransport, KeyworkTransport, ReceiveStatus, SendStatus, TransportKind,
-        TransportRouter, TransportState, TransportTransition,
+        smp::{try_receive_management_from_usb, try_send_management_to_usb}, ActiveTransport,
+        KeyworkTransport, ReceiveStatus, SendStatus, TransportKind, TransportRouter,
+        TransportState, TransportTransition,
     },
 };
 
-use super::management::{ManagementBackend, ManagementService};
+use super::{
+    management::{ManagementBackend, ManagementService},
+    platform::KernelManagementBackend,
+};
 
 /// Top-level transport-independent service state.
 pub struct KeyworkServices<const MANAGEMENT_BUFFER_CAPACITY: usize> {
@@ -138,6 +142,96 @@ impl<const MANAGEMENT_BUFFER_CAPACITY: usize> KeyworkServices<MANAGEMENT_BUFFER_
 impl<const MANAGEMENT_BUFFER_CAPACITY: usize> Default
     for KeyworkServices<MANAGEMENT_BUFFER_CAPACITY>
 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// CPU0's transport-neutral control plane.
+///
+/// CPU0 does not poll DWC2 or service HID endpoints. CPU2 owns USB and forwards
+/// complete KWMP frames through the SMP mailbox. CPU0 only dispatches those
+/// management requests to the kernel backend and queues the encoded response
+/// back to the originating USB worker.
+pub struct Cpu0ControlPlane<const CAPACITY: usize> {
+    management: ManagementService<CAPACITY>,
+    request: [u8; CAPACITY],
+    pending_response: Option<BufferedManagementFrame<CAPACITY>>,
+}
+
+struct BufferedManagementFrame<const CAPACITY: usize> {
+    length: usize,
+    bytes: [u8; CAPACITY],
+}
+
+impl<const CAPACITY: usize> Cpu0ControlPlane<CAPACITY> {
+    pub const fn new() -> Self {
+        Self {
+            management: ManagementService::new(),
+            request: [0; CAPACITY],
+            pending_response: None,
+        }
+    }
+
+    /// Service at most one queued KWMP request/response exchange.
+    ///
+    /// All actual USB progress happens concurrently in CPU2's permanent worker.
+    /// This function only moves complete management frames across the inter-core
+    /// mailbox and executes CPU0-owned control operations.
+    pub fn service(&mut self, backend: &mut KernelManagementBackend) {
+        if !self.flush_pending_response() {
+            return;
+        }
+
+        let length = match try_receive_management_from_usb(&mut self.request) {
+            ReceiveStatus::Received(length) => length,
+            ReceiveStatus::Empty | ReceiveStatus::Disconnected => return,
+            ReceiveStatus::BufferTooSmall { required } => {
+                panic!("CPU2 supplied oversized KWMP frame: required={required}, capacity={CAPACITY}")
+            }
+        };
+
+        // A frame arriving through this mailbox necessarily originated from the
+        // USB worker. Bluetooth will get its own ingress mailbox later.
+        backend.set_active_transport(ActiveTransport::Usb);
+
+        match self
+            .management
+            .handle_frame(backend, &self.request[..length])
+        {
+            Ok(response) => {
+                let mut buffered = BufferedManagementFrame {
+                    length: response.len(),
+                    bytes: [0; CAPACITY],
+                };
+                buffered.bytes[..response.len()].copy_from_slice(response);
+                self.pending_response = Some(buffered);
+                let _ = self.flush_pending_response();
+            }
+            Err(error) => crate::warn!("Rejected KWMP frame: {:?}", error),
+        }
+    }
+
+    fn flush_pending_response(&mut self) -> bool {
+        let Some(response) = self.pending_response.as_ref() else {
+            return true;
+        };
+
+        match try_send_management_to_usb(&response.bytes[..response.length]) {
+            SendStatus::Sent => {
+                self.pending_response = None;
+                true
+            }
+            SendStatus::Busy => false,
+            SendStatus::Disconnected => {
+                self.pending_response = None;
+                true
+            }
+        }
+    }
+}
+
+impl<const CAPACITY: usize> Default for Cpu0ControlPlane<CAPACITY> {
     fn default() -> Self {
         Self::new()
     }

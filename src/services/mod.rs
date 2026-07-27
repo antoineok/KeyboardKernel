@@ -5,4 +5,4 @@ mod platform;
 mod runtime;
 
 pub use platform::KernelManagementBackend;
-pub use runtime::KeyworkServices;
+pub use runtime::{Cpu0ControlPlane, KeyworkServices};

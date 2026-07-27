@@ -17,8 +17,8 @@ use crate::time::time_manager;
 use crate::{
     early_timeit,
     info,
-    services::{KernelManagementBackend, KeyworkServices},
-    transport::{usb_core_ready, KeyworkTransport, TransportState, UsbCoreProxy},
+    services::{Cpu0ControlPlane, KernelManagementBackend},
+    transport::usb_core_ready,
     usb::MANAGEMENT_FRAME_CAPACITY,
 };
 
@@ -52,8 +52,7 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     bring_up_secondary_cpu(2);
     wait_for_usb_transport_core();
 
-    let mut usb_transport = UsbCoreProxy::new();
-    let mut services = KeyworkServices::<MANAGEMENT_FRAME_CAPACITY>::new();
+    let mut control_plane = Cpu0ControlPlane::<MANAGEMENT_FRAME_CAPACITY>::new();
     let mut management_backend = KernelManagementBackend::new();
     let mut graphics = GraphicsCoreProxy::new();
 
@@ -68,19 +67,12 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     log_memory_summary();
 
     loop {
-        let transition = services
-            .update_transport_selection(usb_transport.state(), TransportState::Disconnected);
-        if transition.changed() {
-            info!(
-                "Active host transport changed: {:?} -> {:?}",
-                transition.previous, transition.current
-            );
-        }
-        management_backend.set_active_transport(services.active_transport());
-        services
-            .poll_selected_transport(&mut usb_transport, &mut management_backend)
-            .expect("USB service polling failed");
+        // CPU2 owns DWC2, USB endpoint progress, HID and management transport.
+        // CPU0 only dispatches complete control-plane requests delivered by the
+        // inter-core mailbox.
+        control_plane.service(&mut management_backend);
         management_backend.poll_pending_action();
+        spin_loop();
     }
 }
 
