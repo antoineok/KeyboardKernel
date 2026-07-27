@@ -40,6 +40,7 @@ const BCM2711_HEVC_VERSION: u32 = 0x0202;
 const RPIVID_DMA_GRANULE: usize = 64;
 const RPIVID_COMMAND_CAPACITY: usize = 8192;
 const RPIVID_COMMAND_BYTES: usize = RPIVID_COMMAND_CAPACITY * core::mem::size_of::<u64>();
+const RPIVID_PHASE_BUFFER_COUNT: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RpividDmaAddress(u32);
@@ -127,29 +128,113 @@ impl RpividCommandBuffer {
     }
 }
 
-pub fn validate_command_dma_buffer() {
-    let command = RpividCommandBuffer::allocate();
+fn round_up_workspace_size(bytes: usize) -> usize {
+    // Match hevc_d_round_up_size() from Raspberry Pi's RPIVID driver. The
+    // decoder grows these buffers in a 3x/4x power-of-two progression.
+    let n = if bytes < 256 {
+        8
+    } else {
+        (usize::BITS - 1 - bytes.leading_zeros()) as usize
+    };
 
-    assert_eq!(
-        command.phys_addr() as usize % RPIVID_DMA_GRANULE,
-        0,
-        "RPIVID command buffer is not 64-byte aligned"
-    );
-    assert_eq!(command.command_capacity(), RPIVID_COMMAND_CAPACITY);
-    assert_eq!(
-        command.hardware_len().register_value(),
-        (RPIVID_COMMAND_BYTES / RPIVID_DMA_GRANULE) as u32
-    );
+    let three = 3usize
+        .checked_shl(n as u32)
+        .expect("RPIVID workspace size overflow");
+    let four = 4usize
+        .checked_shl(n as u32)
+        .expect("RPIVID workspace size overflow");
 
-    command.sync_for_device();
+    if bytes >= three { four } else { three }
+}
+
+pub struct RpividDecodeWorkspace {
+    command: RpividCommandBuffer,
+    pu: [DmaBuffer; RPIVID_PHASE_BUFFER_COUNT],
+    coeff: [DmaBuffer; RPIVID_PHASE_BUFFER_COUNT],
+    pu_size: usize,
+    coeff_size: usize,
+}
+
+impl RpividDecodeWorkspace {
+    pub fn allocate(width: usize, height: usize) -> Self {
+        assert!(width != 0 && height != 0, "RPIVID dimensions must be non-zero");
+        assert!(width <= 4096 && height <= 4096, "RPIVID dimensions exceed hardware limit");
+
+        let pixels = width
+            .checked_mul(height)
+            .expect("RPIVID frame dimensions overflow");
+        let coeff_size = round_up_workspace_size(pixels);
+        let pu_size = round_up_workspace_size(pixels / 4);
+
+        let command = RpividCommandBuffer::allocate();
+        let pu = core::array::from_fn(|_| {
+            DmaBuffer::allocate(pu_size, RPIVID_DMA_GRANULE)
+                .expect("failed to allocate RPIVID PU DMA buffer")
+        });
+        let coeff = core::array::from_fn(|_| {
+            DmaBuffer::allocate(coeff_size, RPIVID_DMA_GRANULE)
+                .expect("failed to allocate RPIVID coefficient DMA buffer")
+        });
+
+        Self {
+            command,
+            pu,
+            coeff,
+            pu_size,
+            coeff_size,
+        }
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        RPIVID_COMMAND_BYTES
+            + self.pu_size * RPIVID_PHASE_BUFFER_COUNT
+            + self.coeff_size * RPIVID_PHASE_BUFFER_COUNT
+    }
+
+    fn validate_dma_encoding(&self) {
+        assert_eq!(
+            self.command.phys_addr() as usize % RPIVID_DMA_GRANULE,
+            0,
+            "RPIVID command buffer is not 64-byte aligned"
+        );
+        assert_eq!(self.command.command_capacity(), RPIVID_COMMAND_CAPACITY);
+        assert_eq!(
+            self.command.hardware_len().register_value(),
+            (RPIVID_COMMAND_BYTES / RPIVID_DMA_GRANULE) as u32
+        );
+
+        for buffer in self.pu.iter().chain(self.coeff.iter()) {
+            assert_eq!(
+                buffer.phys_addr() as usize % RPIVID_DMA_GRANULE,
+                0,
+                "RPIVID workspace buffer is not 64-byte aligned"
+            );
+            let _ = RpividDmaAddress::from_phys(buffer.phys_addr());
+            let _ = RpividDmaLength::from_bytes(buffer.len());
+        }
+    }
+}
+
+pub fn validate_decode_workspace(width: usize, height: usize) {
+    let workspace = RpividDecodeWorkspace::allocate(width, height);
+    workspace.validate_dma_encoding();
+
+    // The command FIFO is the only CPU-populated buffer at this stage. PU and
+    // coefficient memory are device-write targets once a decode is submitted.
+    workspace.command.sync_for_device();
 
     info!(
-        "RPIVID command DMA buffer ready: phys={:#018x}, hw_addr={:#010x}, size={} KiB, hw_len={}x64B, commands={}",
-        command.phys_addr(),
-        command.hardware_addr().register_value(),
+        "RPIVID decode workspace ready: {}x{}, command={} KiB, PU={}x{} KiB, coeff={}x{} KiB, total={} KiB, pu0={:#018x}, coeff0={:#018x}",
+        width,
+        height,
         RPIVID_COMMAND_BYTES / 1024,
-        command.hardware_len().register_value(),
-        command.command_capacity(),
+        RPIVID_PHASE_BUFFER_COUNT,
+        workspace.pu_size / 1024,
+        RPIVID_PHASE_BUFFER_COUNT,
+        workspace.coeff_size / 1024,
+        workspace.total_bytes() / 1024,
+        workspace.pu[0].phys_addr(),
+        workspace.coeff[0].phys_addr(),
     );
 }
 
