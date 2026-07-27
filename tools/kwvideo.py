@@ -12,7 +12,8 @@ BRAND = b"kwv1"
 DEFAULT_SIZE = (1366, 768)
 DEFAULT_FPS = 30
 DEFAULT_CRF = 24
-KEYFRAME_INTERVAL_SECONDS = 2
+KEYFRAME_INTERVAL_SECONDS = 1
+DEFAULT_PRESET = "veryfast"
 
 
 def parse_size(value: str) -> tuple[int, int]:
@@ -105,6 +106,7 @@ def convert_video(
     fit: str,
     fps: int,
     crf: int,
+    preset: str,
 ) -> None:
     ffmpeg = shutil.which("ffmpeg")
 
@@ -146,6 +148,8 @@ def convert_video(
         video_filter,
         "-c:v",
         "libx265",
+        "-preset",
+        preset,
         "-crf",
         str(crf),
         "-tag:v",
@@ -177,7 +181,8 @@ def convert_video(
     print(f"Frame rate:   {fps} fps CFR")
     print("Codec:        HEVC Main / hvc1 / yuv420p")
     print("B-frames:     disabled")
-    print(f"Keyframes:    every {KEYFRAME_INTERVAL_SECONDS} seconds")
+    print(f"Encoder:      libx265 / {preset}")
+    print(f"Keyframes:    every {KEYFRAME_INTERVAL_SECONDS} second")
     print("MP4 layout:   fragmented (empty_moov + default_base_moof)")
     print(f"Major brand:  {BRAND.decode('ascii')}")
     print(f"Minor version: {minor_version:#x}")
@@ -233,6 +238,24 @@ def main() -> None:
         help="x265 CRF quality value, 0-51 (default: 24)",
     )
 
+    parser.add_argument(
+        "--preset",
+        choices=(
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo",
+        ),
+        default=DEFAULT_PRESET,
+        help="x265 encoding preset (default: veryfast)",
+    )
+
     arguments = parser.parse_args()
 
     convert_video(
@@ -242,6 +265,7 @@ def main() -> None:
         arguments.fit,
         arguments.fps,
         arguments.crf,
+        arguments.preset,
     )
 
 
