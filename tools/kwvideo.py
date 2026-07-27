@@ -200,6 +200,7 @@ def convert_video(
     x265_params = ":".join(
         (
             "bframes=0",
+            "wpp=0",
             # kwv1 deliberately keeps inter prediction simple enough for the
             # bare-metal RPIVID path: one L0 reference, no weighted prediction,
             # and no temporal-MVP/collocated-MV dependency. This still retains
@@ -263,6 +264,7 @@ def convert_video(
     print(f"Frame rate:   {format_frame_rate(fps)} fps CFR")
     print("Codec:        HEVC Main / hvc1 / yuv420p")
     print("B-frames:     disabled")
+    print("WPP:          disabled")
     print("References:   1 past frame; weighted prediction / temporal MVP disabled")
     print(f"Encoder:      libx265 / {preset}")
     print(f"Keyframes:    every {KEYFRAME_INTERVAL_SECONDS} second")

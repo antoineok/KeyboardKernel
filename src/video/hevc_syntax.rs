@@ -776,10 +776,7 @@ fn rbsp_prefix_to_nal_offset(
         source = source.checked_add(1).ok_or(HevcSyntaxError::Overflow)?;
 
         if zero_run >= 2 && byte == 0x03 {
-            // The emitted RBSP still ends in at least two zero bytes.
-            // Keep that state so chained emulation-prevention sequences
-            // remain detectable after this byte is removed.
-            zero_run = 2;
+            zero_run = 0;
             continue;
         }
 

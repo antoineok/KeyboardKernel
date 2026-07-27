@@ -92,8 +92,7 @@ const RPIVID_PHASE_BUFFER_COUNT: usize = 3;
 const RPIVID_BITSTREAM_STAGING_BYTES: usize = 4 * 1024 * 1024;
 
 const PROB_BACKUP: u32 = (20 << 12) | (20 << 6);
-const PROB_RELOAD: u32 = (20 << 12) | 20;
-const PAUSE_MODE_WPP: u32 = 1;
+const PAUSE_MODE_TILE: u32 = 0xffff;
 
 // HEVC Main I-slice CABAC initialisation values (H.265 section 9.3.2.2).
 const PROB_INIT_I: [u8; 156] = [
@@ -604,10 +603,10 @@ impl RpividDecodeWorkspace {
         assert!(slice.first_slice_segment_in_pic, "kwv1 requires one slice per picture");
         assert!(matches!(slice.slice_type, 1 | 2), "kwv1 RPIVID path only supports I/P slices");
         assert!(!pps.tiles_enabled, "kwv1 RPIVID path does not support tiles");
-        assert!(pps.entropy_coding_sync_enabled, "kwv1 RPIVID path expects WPP");
+        assert!(!pps.entropy_coding_sync_enabled, "kwv1 RPIVID path requires WPP disabled");
         assert!(!sps.scaling_list_enabled, "kwv1 RPIVID path does not support scaling lists");
         assert!(!sps.temporal_mvp_enabled, "kwv1 RPIVID path requires temporal MVP disabled");
-        assert_eq!(picture.ctb_height, slice.entry_point_count + 1, "WPP entry-point count does not match CTB rows");
+        assert_eq!(slice.entry_point_count, 0, "kwv1 non-WPP slice must not contain entry points");
         assert!(!cabac_payload.is_empty(), "RPIVID CABAC payload is empty");
         if slice.slice_type == 1 {
             assert_eq!(slice.num_ref_idx_l0_active, 1, "kwv1 P slice must use one L0 reference");
@@ -619,7 +618,7 @@ impl RpividDecodeWorkspace {
         let bitstream = self.bitstream.window(0, cabac_payload.len());
 
         self.command.reset();
-        build_picture_wpp_commands(&mut self.command, picture, bitstream);
+        build_picture_single_tile_commands(&mut self.command, picture, bitstream);
         self.command.sync_used_for_device();
 
         let phase_index = 0usize;
@@ -995,7 +994,7 @@ fn phase_stride(buffer_size: usize, ctb_height: usize) -> usize {
     stride
 }
 
-fn build_picture_wpp_commands(
+fn build_picture_single_tile_commands(
     commands: &mut RpividCommandBuffer,
     picture: &FirstPictureSyntax,
     bitstream: RpividBitstreamWindow,
@@ -1009,21 +1008,13 @@ fn build_picture_wpp_commands(
     commands.push(RPI_BFBASE, bitstream.base_register_value());
     commands.push(RPI_BFNUM, bitstream.byte_len());
     commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32 | (1 << 7));
-    // CABAC is staged as RBSP, with emulation-prevention bytes already
-    // removed in software. Do not enable RPIVID's EBSP de-escaping here: the
-    // hardware starts at CABAC rather than the NAL header and therefore cannot
-    // reliably recognize an emulation-prevention byte inserted across the
-    // slice-header/CABAC boundary.
+    // CABAC is staged as RBSP, so hardware emulation-prevention removal stays off.
     commands.push(RPI_BFCONTROL, bitstream.byte_offset() as u32);
 
     write_slice_probabilities(commands, slice_qp, slice.slice_type);
     write_slice_messages(commands, picture);
     write_slice_segment_registers(commands, picture);
 
-    // RPI_SLICE carries the same per-slice prediction shape as the slice
-    // message header. This was invisible for the IDR bring-up because an
-    // I-slice has no references and no merge candidates, but P-slices need
-    // all three low fields populated or phase 1 cannot decode them.
     let slice_const = (slice.max_num_merge_cand << 0)
         | (slice.num_ref_idx_l0_active << 4)
         | (slice.num_ref_idx_l1_active << 8)
@@ -1031,33 +1022,19 @@ fn build_picture_wpp_commands(
         | ((slice.sao_luma as u32) << 14)
         | ((slice.sao_chroma as u32) << 15);
 
-    write_wpp_entry(commands, picture, 0, slice_qp as u32, slice_const, true);
-
     let last_x = picture.ctb_width - 1;
     let last_y = picture.ctb_height - 1;
-    for row in 0..last_y {
-        if picture.ctb_width > 2 {
-            write_wpp_pause(commands, picture, row);
-        }
-        commands.push(RPI_STATUS, (row << 18) | (last_x << 5) | 2);
-        if picture.ctb_width == 2 {
-            commands.push(RPI_TRANSFER, PROB_BACKUP);
-        } else {
-            commands.push(RPI_TRANSFER, PROB_RELOAD);
-        }
-        write_wpp_entry(
-            commands,
-            picture,
-            row + 1,
-            slice_qp as u32,
-            slice_const,
-            false,
-        );
-    }
+    let tile_end = last_x | (last_y << 16);
 
-    if picture.ctb_width > 2 {
-        write_wpp_pause(commands, picture, last_y);
-    }
+    // kwv1 uses exactly one independent slice and one implicit tile spanning
+    // the complete picture. This mirrors RPIVID's non-WPP decode_slice path.
+    commands.push(RPI_TILESTART, 0);
+    commands.push(RPI_TILEEND, tile_end);
+    commands.push(RPI_BEGINTILEEND, tile_end);
+    commands.push(RPI_SLICE, slice_register(picture, last_y, slice_const));
+    commands.push(RPI_QP, 6 * sps.bit_depth_luma_minus8 + slice_qp as u32);
+    commands.push(RPI_MODE, PAUSE_MODE_TILE | (1 << 17) | (1 << 18));
+    commands.push(RPI_CONTROL, 0);
     commands.push(RPI_STATUS, 1 | (last_x << 5) | (last_y << 18));
 }
 
@@ -1191,34 +1168,6 @@ fn write_slice_segment_registers(commands: &mut RpividCommandBuffer, picture: &F
     commands.push(RPI_SLICESTART, 0);
 }
 
-fn write_wpp_entry(
-    commands: &mut RpividCommandBuffer,
-    picture: &FirstPictureSyntax,
-    row: u32,
-    slice_qp: u32,
-    slice_const: u32,
-    begin_tile: bool,
-) {
-    let sps = picture.sps;
-    let last_x = picture.ctb_width - 1;
-    let tile_end = last_x | (row << 16);
-
-    commands.push(RPI_TILESTART, 0);
-    commands.push(RPI_TILEEND, tile_end);
-    if begin_tile {
-        commands.push(RPI_BEGINTILEEND, tile_end);
-    }
-    commands.push(RPI_SLICE, slice_register(picture, row, slice_const));
-    commands.push(RPI_QP, 6 * sps.bit_depth_luma_minus8 + slice_qp);
-    commands.push(
-        RPI_MODE,
-        PAUSE_MODE_WPP
-            | (1 << 17)
-            | (((row == picture.ctb_height - 1) as u32) << 18),
-    );
-    commands.push(RPI_CONTROL, row << 16);
-}
-
 fn slice_register(picture: &FirstPictureSyntax, row: u32, slice_const: u32) -> u32 {
     let sps = picture.sps;
     let ctb_size = 1u32 << sps.log2_ctb_size;
@@ -1232,20 +1181,6 @@ fn slice_register(picture: &FirstPictureSyntax, row: u32, slice_const: u32) -> u
     };
 
     slice_const | (width << 17) | (height << 24)
-}
-
-fn write_wpp_pause(commands: &mut RpividCommandBuffer, picture: &FirstPictureSyntax, row: u32) {
-    commands.push(RPI_STATUS, (row << 18) | 0x25);
-    commands.push(RPI_TRANSFER, PROB_BACKUP);
-    commands.push(
-        RPI_MODE,
-        if row == picture.ctb_height - 1 {
-            0x70000
-        } else {
-            0x30000
-        },
-    );
-    commands.push(RPI_CONTROL, (row << 16) | 2);
 }
 
 pub fn initialize_decode_workspace(width: usize, height: usize) {
