@@ -10,6 +10,7 @@ use crate::{
         fs::vfs::{FsId, VFS},
         partition::mbr,
     },
+    video::hevc::{HEVC_COMPATIBLE, HEVC_PLATFORM},
 };
 
 extern "C" {
@@ -29,11 +30,16 @@ extern "C" {
 }
 
 const REQUIRED_ALIASES: &[&str] = &["gpio", "aux", "mailbox", "mmc0", "watchdog", "usb"];
+const REQUIRED_DEVICES: &[&str] = &[HEVC_COMPATIBLE];
 
 pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let boot_info = early_timeit!("Parse boot FDT", {
         unsafe {
-            BootInfo::from_ptr(device_tree_ptr as *const u8, REQUIRED_ALIASES)
+            BootInfo::from_ptr(
+                device_tree_ptr as *const u8,
+                REQUIRED_ALIASES,
+                REQUIRED_DEVICES,
+            )
                 .expect("Invalid boot FDT")
         }
     });
@@ -73,6 +79,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     if !watchdog.is_initialized() {
         panic!("Watchdog FAILED TO INITIALIZE!");
     }
+
+    early_timeit!("HEVC decoder discovery", {
+        HEVC_PLATFORM.init(boot_info.device(HEVC_COMPATIBLE));
+    });
 
     //let bt = crate::drivers::bluetooth::BLUETOOTH.get();
     //bt.init(mmio_table.entries.get("bluetooth"));
