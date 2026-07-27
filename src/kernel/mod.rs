@@ -147,6 +147,55 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
         prefetched_bytes / 1024,
     );
 
+    // Before sustained playback, submit the third fragment's IDR in isolation.
+    // This tells us whether the current failure is intrinsic to the first
+    // non-trivial I picture or depends on decoder state carried across the
+    // preceding GOPs. Keep this phase-1-only so the normal playback path below
+    // remains otherwise unchanged.
+    let preflight_fragment = &fragments[2];
+    let preflight_sample = preflight_fragment.samples()[0];
+    let preflight_sample_bytes = preflight_fragment
+        .sample_bytes(preflight_sample)
+        .expect("failed to locate KWVIDEO IDR preflight sample");
+    let preflight_picture = video
+        .picture_syntax_bytes(preflight_sample_bytes)
+        .expect("failed to parse KWVIDEO IDR preflight sample");
+    let preflight_slice = preflight_picture.slice;
+    assert!(
+        matches!(preflight_slice.nal_unit_type, 19 | 20) && preflight_slice.slice_type == 2,
+        "KWVIDEO IDR preflight target is not an IDR I-slice",
+    );
+    let preflight_raw_cabac_len = video
+        .picture_cabac_payload_bytes(preflight_sample_bytes, &preflight_picture)
+        .expect("failed to locate KWVIDEO IDR preflight raw CABAC")
+        .len();
+    let preflight_cabac = video
+        .picture_cabac_rbsp_bytes(preflight_sample_bytes, &preflight_picture)
+        .expect("failed to materialize KWVIDEO IDR preflight CABAC RBSP");
+    let preflight = crate::video::rpivid::RPIVID_WORKSPACE
+        .submit_picture_phase1(&preflight_picture, &preflight_cabac);
+    info!(
+        "RPIVID isolated IDR preflight: fragment=3, sample={} bytes, qp={}, header_rbsp_bits={}, entry_points={}, entry_bits={}, cabac={} bytes RBSP, epb_removed={}, commands={}, irq={}, complete={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}",
+        preflight_sample.size,
+        26 + preflight_picture.pps.init_qp_minus26 + preflight_slice.slice_qp_delta,
+        preflight_slice.header_rbsp_bits,
+        preflight_slice.entry_point_count,
+        preflight_slice.entry_point_offset_len,
+        preflight_cabac.len(),
+        preflight_raw_cabac_len.saturating_sub(preflight_cabac.len()),
+        preflight.command_count,
+        preflight.irq_received,
+        preflight.complete(),
+        preflight.cfstatus,
+        preflight.cfnum,
+        preflight.status,
+        preflight.bfstatus,
+    );
+    assert!(
+        preflight.complete(),
+        "RPIVID isolated complex-IDR preflight failed",
+    );
+
     let mut graphics = GraphicsCoreProxy::new();
     let playback_started = time_manager().uptime();
     let mut presentation_ticks = 0u64;
