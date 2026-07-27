@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::{fdt::{AliasEntry, DeviceEntry}, info};
+use crate::{drivers::mailbox::MailboxBuffer, fdt::{AliasEntry, DeviceEntry}, info};
 
 pub const HEVC_COMPATIBLE: &str = "brcm,bcm2711-hevc-dec";
 
@@ -118,6 +118,30 @@ impl HevcPlatform {
             clock.provider_phandle,
             clock.id,
         );
+    }
+
+    pub fn enable_clock(&self, mailbox: &mut MailboxBuffer) -> u32 {
+        let resources = self.resources();
+        let clock_id = resources.clock.id;
+
+        let max_rate = mailbox
+            .get_clock_max_rate(clock_id)
+            .unwrap_or_else(|| panic!("failed to query HEVC clock {clock_id} maximum rate"));
+        let actual_rate = mailbox
+            .set_clock_rate(clock_id, max_rate)
+            .unwrap_or_else(|| panic!("failed to set HEVC clock {clock_id} rate"));
+
+        assert!(
+            mailbox.set_clock_state(clock_id, true),
+            "failed to enable HEVC clock {clock_id}"
+        );
+
+        info!(
+            "HEVC clock enabled: id={} requested={} Hz actual={} Hz",
+            clock_id, max_rate, actual_rate
+        );
+
+        actual_rate
     }
 
     pub fn resources(&self) -> HevcResources {

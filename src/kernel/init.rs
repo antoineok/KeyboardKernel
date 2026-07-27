@@ -155,6 +155,10 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     );
     crate::info!("EL1 MMU and data cache enabled");
 
+    early_timeit!("HEVC clock enable", {
+        HEVC_PLATFORM.enable_clock(mailbox);
+    });
+
     init_phys_allocator();
 
     early_timeit!("USB power domain", {

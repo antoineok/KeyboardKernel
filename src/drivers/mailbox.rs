@@ -22,7 +22,9 @@ pub const MBOX_CH_COUNT: u8 = 7;
 pub const MBOX_CH_PROP: u8 = 8; // Request from ARM for response by VideoCore
 pub const MBOX_TAG_SETPOWER: u32 = 0x28001;
 pub const POWER_DEVICE_USB_HCD: u32 = 3;
-pub const MBOX_TAG_SETCLKRATE: u32 = 0x38002;
+pub const MBOX_TAG_GETCLKMAXRATE: u32 = 0x0003_0004;
+pub const MBOX_TAG_SETCLKSTATE: u32 = 0x0003_8001;
+pub const MBOX_TAG_SETCLKRATE: u32 = 0x0003_8002;
 
 pub const MBOX_TAG_SETALPHAMODE: u32 = 0x0004_8007;
 pub const MBOX_TAG_SETPHYWH: u32 = 0x48003;
@@ -132,6 +134,94 @@ impl MailboxBuffer {
                 return unsafe { core::ptr::read_volatile(&self.buffer[1]) } == MBOX_RESPONSE;
             }
         }
+    }
+
+    pub fn get_clock_max_rate(&mut self, clock_id: u32) -> Option<u32> {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 8 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_GETCLKMAXRATE;
+        self.buffer[3] = 8;
+        self.buffer[4] = 0;
+        self.buffer[5] = clock_id;
+        self.buffer[6] = 0;
+
+        self.buffer[7] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return None;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let rate = self.buffer[6];
+
+        if tag_response & 0x8000_0000 == 0 || returned_id != clock_id || rate == 0 {
+            return None;
+        }
+
+        Some(rate)
+    }
+
+    pub fn set_clock_rate(&mut self, clock_id: u32, rate_hz: u32) -> Option<u32> {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 9 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETCLKRATE;
+        self.buffer[3] = 12;
+        self.buffer[4] = 0;
+        self.buffer[5] = clock_id;
+        self.buffer[6] = rate_hz;
+        self.buffer[7] = 1; // Skip enabling global turbo settings.
+
+        self.buffer[8] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return None;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let actual_rate = self.buffer[6];
+
+        if tag_response & 0x8000_0000 == 0 || returned_id != clock_id || actual_rate == 0 {
+            return None;
+        }
+
+        Some(actual_rate)
+    }
+
+    pub fn set_clock_state(&mut self, clock_id: u32, on: bool) -> bool {
+        self.buffer.fill(0);
+
+        self.buffer[0] = 8 * 4;
+        self.buffer[1] = MBOX_REQUEST;
+
+        self.buffer[2] = MBOX_TAG_SETCLKSTATE;
+        self.buffer[3] = 8;
+        self.buffer[4] = 0;
+        self.buffer[5] = clock_id;
+        self.buffer[6] = u32::from(on);
+
+        self.buffer[7] = MBOX_TAG_LAST;
+
+        if !self.call(MBOX_CH_PROP) {
+            return false;
+        }
+
+        let tag_response = self.buffer[4];
+        let returned_id = self.buffer[5];
+        let returned_state = self.buffer[6];
+
+        let tag_succeeded = tag_response & 0x8000_0000 != 0;
+        let clock_exists = returned_state & 0b10 == 0;
+        let actual_on = returned_state & 1 != 0;
+
+        tag_succeeded && returned_id == clock_id && clock_exists && actual_on == on
     }
     pub fn set_power_state(&mut self, device_id: u32, on: bool, wait: bool) -> bool {
         self.buffer.fill(0);
