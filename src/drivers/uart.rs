@@ -10,10 +10,9 @@ use core::{
 };
 
 const AUX_UART_CLOCK: u32 = 500_000_000;
-// The Cortex-A72 bring-up deliberately keeps SCTLR_EL1.C clear for now.
-// Avoid LL/SC-based atomic RMW operations (LDXR/STXR) in the logger until
-// the cache/coherency work is complete. Lamport's bakery algorithm gives us
-// mutual exclusion using only atomic loads and stores.
+// Keep the logger independent of LL/SC-based atomic RMW operations. Lamport's
+// bakery algorithm gives us deterministic four-core mutual exclusion using only
+// atomic loads and stores.
 //
 // Keep these arrays explicit: Atomic* values are not Copy, and BCM2711 has
 // exactly four Cortex-A72 cores.

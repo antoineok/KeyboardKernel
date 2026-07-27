@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, mem::size_of};
+
+use crate::arch::cache::{clean_data_range_to_poc, invalidate_data_range_to_poc};
 
 use crate::{drivers::address::Address, fdt::AliasEntry};
 
@@ -33,7 +35,7 @@ pub const MBOX_TAG_GETPITCH: u32 = 0x40008;
 
 pub const MBOX_TAG_LAST: u32 = 0;
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 pub struct MailboxBuffer {
     pub(crate) buffer: [u32; 39],
     mbox_read: Address,
@@ -93,9 +95,17 @@ impl MailboxBuffer {
     }
 
     pub fn call(&mut self, channel: u8) -> bool {
-        // Only upper 28 bits of the buffer address are sent; lower 4 bits are the channel
+        // Only upper 28 bits of the buffer address are sent; lower 4 bits are the channel.
         let mbox_ptr = self.as_ptr() as usize as u32;
         let addr = (mbox_ptr & !0xF) | (channel as u32 & 0xF);
+
+        // The property mailbox is not coherent with the Cortex-A72 caches. The
+        // whole object is cache-line aligned so cache maintenance cannot discard
+        // unrelated dirty data from a neighbouring static. Before D-cache is
+        // enabled these helpers deliberately reduce to no-ops.
+        unsafe {
+            clean_data_range_to_poc(self as *const Self as *const u8, size_of::<Self>());
+        }
 
         // Wait until we can write
         while self.mbox_status.read() & MBOX_FULL != 0 {}
@@ -109,6 +119,15 @@ impl MailboxBuffer {
 
             // Is it a reply to our message?
             if self.mbox_read.read() == addr {
+                // VideoCore has finished writing the response. Discard the ARM's
+                // stale cached copy before inspecting the response words.
+                unsafe {
+                    invalidate_data_range_to_poc(
+                        self as *const Self as *const u8,
+                        size_of::<Self>(),
+                    );
+                }
+
                 // Is it successful?
                 return unsafe { core::ptr::read_volatile(&self.buffer[1]) } == MBOX_RESPONSE;
             }

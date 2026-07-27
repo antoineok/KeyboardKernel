@@ -132,14 +132,18 @@ pub unsafe fn early_el1_init(device_tree_ptr: usize) {
     let mmu = early_timeit!("MMU page-table build", { mmu::map_kernel_and_mmio() });
 
     crate::info!(
-        "Enabling EL1 MMU with TTBR0={:#018x} (data cache remains disabled)",
+        "Enabling EL1 MMU with TTBR0={:#018x} and coherent data cache",
         mmu.l1_phys()
     );
     early_timeit!("MMU enable", {
         mmu.enable();
     });
     assert!(mmu::is_enabled(), "EL1 MMU failed to enable");
-    crate::info!("EL1 MMU enabled");
+    assert!(
+        mmu::is_data_cache_enabled(),
+        "EL1 data cache failed to enable"
+    );
+    crate::info!("EL1 MMU and data cache enabled");
 
     init_phys_allocator();
 

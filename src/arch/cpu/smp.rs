@@ -14,6 +14,7 @@ const CPU_RELEASE_ADDRS: [usize; CPU_COUNT] = [0xD8, 0xE0, 0xE8, 0xF0];
 const STATUS_ONLINE: u8 = 1 << 0;
 const STATUS_EL1: u8 = 1 << 1;
 const STATUS_MMU: u8 = 1 << 2;
+const STATUS_DCACHE: u8 = 1 << 3;
 
 static SECONDARY_STATUS: [AtomicU8; CPU_COUNT] = [
     AtomicU8::new(0),
@@ -31,6 +32,7 @@ pub struct SecondaryCpuStatus {
     pub online: bool,
     pub at_el1: bool,
     pub mmu_enabled: bool,
+    pub data_cache_enabled: bool,
 }
 
 impl SecondaryCpuStatus {
@@ -38,6 +40,7 @@ impl SecondaryCpuStatus {
         online: false,
         at_el1: false,
         mmu_enabled: false,
+        data_cache_enabled: false,
     };
 }
 
@@ -53,8 +56,8 @@ pub fn release_secondary(cpu: CpuId) -> bool {
     let entry_phys = secondary_start as usize;
 
     unsafe {
-        // The spin-table alias is Normal-NC and D-cache is still disabled, so
-        // the armstub can observe the physical slot directly.
+        // The spin-table alias is Normal-NC, so the armstub observes the release
+        // slot directly even after CPU0 enables its data cache.
         ptr::write_volatile(release_slot, entry_phys);
 
         // Complete the release-slot write before waking the firmware's WFE
@@ -77,10 +80,16 @@ pub fn secondary_status(cpu: CpuId) -> SecondaryCpuStatus {
         online: status & STATUS_ONLINE != 0,
         at_el1: status & STATUS_EL1 != 0,
         mmu_enabled: status & STATUS_MMU != 0,
+        data_cache_enabled: status & STATUS_DCACHE != 0,
     }
 }
 
-fn publish_secondary_status(cpu: CpuId, at_el1: bool, mmu_enabled: bool) {
+fn publish_secondary_status(
+    cpu: CpuId,
+    at_el1: bool,
+    mmu_enabled: bool,
+    data_cache_enabled: bool,
+) {
     let mut status = STATUS_ONLINE;
 
     if at_el1 {
@@ -89,6 +98,10 @@ fn publish_secondary_status(cpu: CpuId, at_el1: bool, mmu_enabled: bool) {
 
     if mmu_enabled {
         status |= STATUS_MMU;
+    }
+
+    if data_cache_enabled {
+        status |= STATUS_DCACHE;
     }
 
     SECONDARY_STATUS[cpu.index()].store(status, Ordering::Release);
@@ -111,8 +124,9 @@ pub extern "C" fn secondary_el1_entry() -> ! {
     let mmu_installed = unsafe { mmu::enable_published_kernel_mmu() };
     let at_el1 = PrivilegeLevel::current().is_kernel();
     let mmu_enabled = mmu_installed && mmu::is_enabled();
+    let data_cache_enabled = mmu_installed && mmu::is_data_cache_enabled();
 
-    publish_secondary_status(cpu, at_el1, mmu_enabled);
+    publish_secondary_status(cpu, at_el1, mmu_enabled, data_cache_enabled);
 
     match cpu.raw() {
         1 => crate::graphics::run_graphics_core(),

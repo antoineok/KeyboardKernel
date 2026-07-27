@@ -242,12 +242,17 @@ fn bring_up_secondary_cpu(raw_id: u8) {
 
         if status.online {
             info!(
-                "{} online: EL1={}, MMU={}",
-                cpu, status.at_el1, status.mmu_enabled
+                "{} online: EL1={}, MMU={}, D-cache={}",
+                cpu, status.at_el1, status.mmu_enabled, status.data_cache_enabled
             );
 
             assert!(status.at_el1, "{} did not enter EL1", cpu);
             assert!(status.mmu_enabled, "{} failed to enable its EL1 MMU", cpu);
+            assert!(
+                status.data_cache_enabled,
+                "{} failed to enable its EL1 data cache",
+                cpu
+            );
             return;
         }
 
