@@ -7,7 +7,7 @@ use crate::arch::{
     exceptions::PrivilegeLevel,
 };
 
-use crate::graphics::{graphics_core_ready, GraphicsCoreProxy, GraphicsRequestResult};
+use crate::graphics::{graphics_core_ready, GraphicsCoreProxy};
 use crate::memory::{
     heap::KERNEL_HEAP, phys::PHYS_ALLOCATOR, MemoryRegionKind, MEMORY_MANAGER,
 };
@@ -57,35 +57,17 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
     let mut management_backend = KernelManagementBackend::new();
     let mut graphics = GraphicsCoreProxy::new();
 
-    // CPU0 only asks for the visual state. CPU1 owns the MP4 stream, RPIVID,
-    // RGB conversion, composition and framebuffer pacing from this point on.
-    let video_request = graphics
-        .start_video(FsId::Rom, "output.kwv")
-        .expect("failed to request KWVIDEO background from CPU1");
-    // This is only an acknowledgement poll. CPU1 is already running its own
-    // permanent scheduler loop and consumes the command independently.
-    let mut video_start_ack_pending = Some(video_request);
-    let mut memory_summary_logged = false;
-    info!("CPU0 requested KWVIDEO background {} on CPU1", video_request);
+    // CPU0 only publishes the desired visual state. Once queued, CPU1 owns
+    // opening/streaming the asset, RPIVID, composition and presentation. There
+    // is deliberately no CPU0 acknowledgement poll in the permanent loop.
+    graphics
+        .start_video_detached(FsId::Rom, "output.kwv")
+        .expect("failed to queue KWVIDEO background for CPU1");
+    info!("CPU0 queued KWVIDEO background for CPU1");
+
+    log_memory_summary();
 
     loop {
-        if let Some(request_id) = video_start_ack_pending {
-            if let Some(result) = graphics.request_result(request_id) {
-                assert_eq!(
-                    result,
-                    GraphicsRequestResult::Complete,
-                    "CPU1 KWVIDEO start request failed: {result:?}",
-                );
-                video_start_ack_pending = None;
-                info!("CPU1 accepted KWVIDEO background request {}", request_id);
-            }
-        }
-
-        if !memory_summary_logged && video_start_ack_pending.is_none() {
-            log_memory_summary();
-            memory_summary_logged = true;
-        }
-
         let transition = services
             .update_transport_selection(usb_transport.state(), TransportState::Disconnected);
         if transition.changed() {

@@ -188,12 +188,26 @@ impl GraphicsCoreProxy {
 
     fn submit(&mut self, command: GraphicsCommand) -> Result<u64, GraphicsSubmitError> {
         let request_id = command.request_id();
+        debug_assert_ne!(request_id, 0, "tracked graphics requests must have an ID");
         CPU0_TO_CPU1_GRAPHICS
             .try_push(command)
             .map_err(|_| GraphicsSubmitError::QueueFull)?;
         self.pending_request = Some(request_id);
         send_event();
         Ok(request_id)
+    }
+
+    fn submit_detached(&mut self, command: GraphicsCommand) -> Result<(), GraphicsSubmitError> {
+        assert_eq!(current_id().raw(), 0, "graphics commands must be submitted by CPU0");
+        if !graphics_core_ready() {
+            return Err(GraphicsSubmitError::WorkerNotReady);
+        }
+        debug_assert_eq!(command.request_id(), 0, "detached graphics requests use ID 0");
+        CPU0_TO_CPU1_GRAPHICS
+            .try_push(command)
+            .map_err(|_| GraphicsSubmitError::QueueFull)?;
+        send_event();
+        Ok(())
     }
 
     pub fn submit_image(
@@ -224,6 +238,23 @@ impl GraphicsCoreProxy {
         let request_id = self.next_id()?;
         self.submit(GraphicsCommand::StartVideo(StartVideoCommand {
             request_id,
+            fs,
+            path,
+        }))
+    }
+
+    /// Queue a video background without creating a CPU0-side completion dependency.
+    ///
+    /// CPU1 owns execution and error reporting after the command is queued. This is
+    /// intended for boot/profile visuals where CPU0 must not poll CPU1 from its
+    /// permanent service loop. Request ID zero is reserved for detached commands.
+    pub fn start_video_detached(
+        &mut self,
+        fs: FsId,
+        path: &'static str,
+    ) -> Result<(), GraphicsSubmitError> {
+        self.submit_detached(GraphicsCommand::StartVideo(StartVideoCommand {
+            request_id: 0,
             fs,
             path,
         }))
@@ -393,9 +424,13 @@ pub fn run_graphics_core() -> ! {
                 }
             };
 
-            GRAPHICS_COMPLETION_RESULT.store(result, Ordering::Release);
-            GRAPHICS_COMPLETED_REQUEST.store(request_id, Ordering::Release);
-            send_event();
+            // Request ID zero is fire-and-forget. CPU1 has already logged any
+            // command-specific failure and CPU0 has no completion state to poll.
+            if request_id != 0 {
+                GRAPHICS_COMPLETION_RESULT.store(result, Ordering::Release);
+                GRAPHICS_COMPLETED_REQUEST.store(request_id, Ordering::Release);
+                send_event();
+            }
         }
 
         // Stage the next decoded video frame as soon as the previous page has
