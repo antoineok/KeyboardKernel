@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
-use crate::arch::cpu::{current_id, SpscQueue};
+use crate::arch::cpu::{current_id, send_event, wait_for_event, SpscQueue};
 
 use super::{
     framebuffer::FRAMEBUFFER, BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect, Surface,
@@ -146,9 +146,7 @@ impl GraphicsCoreProxy {
             .map_err(|_| GraphicsSubmitError::QueueFull)?;
         self.pending_request = Some(request_id);
 
-        unsafe {
-            core::arch::asm!("sev", options(nomem, nostack, preserves_flags));
-        }
+        send_event();
 
         Ok(request_id)
     }
@@ -205,16 +203,12 @@ pub fn run_graphics_core() -> ! {
         .expect("framebuffer unavailable when CPU1 claimed graphics ownership");
 
     GRAPHICS_CORE_READY.store(true, Ordering::Release);
-    unsafe {
-        core::arch::asm!("sev", options(nomem, nostack, preserves_flags));
-    }
+    send_event();
     crate::info!("{} graphics worker ready", cpu);
 
     loop {
         let Some(command) = CPU0_TO_CPU1_GRAPHICS.try_pop() else {
-            unsafe {
-                core::arch::asm!("wfe", options(nomem, nostack, preserves_flags));
-            }
+            wait_for_event();
             continue;
         };
 
@@ -224,9 +218,7 @@ pub fn run_graphics_core() -> ! {
         GRAPHICS_COMPLETION_RESULT.store(result, Ordering::Release);
         GRAPHICS_COMPLETED_REQUEST.store(command.request_id, Ordering::Release);
 
-        unsafe {
-            core::arch::asm!("sev", options(nomem, nostack, preserves_flags));
-        }
+        send_event();
 
         if result == RESULT_OK {
             crate::info!("{} presented graphics request {}", cpu, command.request_id);

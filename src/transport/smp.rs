@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    arch::cpu::{current_id, SpscQueue},
+    arch::cpu::{current_id, send_event, SpscQueue},
     hid::{ConsumerReport, HostLedState, KeyboardReport, SystemReport},
     usb::{MANAGEMENT_FRAME_CAPACITY, USB_TRANSPORT},
 };
@@ -182,9 +182,7 @@ pub fn run_usb_transport_core() -> ! {
 
     publish_usb_snapshot(usb);
     USB_CORE_READY.store(true, Ordering::Release);
-    unsafe {
-        core::arch::asm!("sev", options(nomem, nostack, preserves_flags));
-    }
+    send_event();
     crate::info!("{} USB transport worker ready", cpu);
 
     let mut pending_hid: Option<HidCommand> = None;

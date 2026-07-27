@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use super::{current_id, CpuId, CPU_COUNT};
+use super::{current_id, send_event, wait_for_event, CpuId, CPU_COUNT};
 use crate::arch::{exceptions::PrivilegeLevel, mmu};
 
 // The Raspberry Pi armstub keeps secondary BCM2711 CPUs in a spin table in
@@ -84,12 +84,7 @@ pub fn secondary_status(cpu: CpuId) -> SecondaryCpuStatus {
     }
 }
 
-fn publish_secondary_status(
-    cpu: CpuId,
-    at_el1: bool,
-    mmu_enabled: bool,
-    data_cache_enabled: bool,
-) {
+fn publish_secondary_status(cpu: CpuId, at_el1: bool, mmu_enabled: bool, data_cache_enabled: bool) {
     let mut status = STATUS_ONLINE;
 
     if at_el1 {
@@ -106,9 +101,7 @@ fn publish_secondary_status(
 
     SECONDARY_STATUS[cpu.index()].store(status, Ordering::Release);
 
-    unsafe {
-        asm!("sev", options(nomem, nostack, preserves_flags));
-    }
+    send_event();
 }
 
 /// First Rust entry point for secondary CPUs.
@@ -135,8 +128,6 @@ pub extern "C" fn secondary_el1_entry() -> ! {
     }
 
     loop {
-        unsafe {
-            asm!("wfe", options(nomem, nostack, preserves_flags));
-        }
+        wait_for_event();
     }
 }
