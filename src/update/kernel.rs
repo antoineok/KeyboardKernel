@@ -20,12 +20,13 @@ impl KernelUpdater {
 
         Self::verify_magic_bytes(image)?;
 
-        let vfs = VFS.get_mut();
-        if vfs.exists_fs(UPDATE_FS, KERNEL_NEW) {
-            vfs.delete_fs(UPDATE_FS, KERNEL_NEW)?;
-        }
-        vfs.write_fs(UPDATE_FS, KERNEL_NEW, image)?;
-        Ok(())
+        VFS.with_mut(|vfs| -> Result<(), UpdateError> {
+            if vfs.exists_fs(UPDATE_FS, KERNEL_NEW) {
+                vfs.delete_fs(UPDATE_FS, KERNEL_NEW)?;
+            }
+            vfs.write_fs(UPDATE_FS, KERNEL_NEW, image)?;
+            Ok(())
+        })
     }
 
     pub fn verify_staged(
@@ -40,15 +41,16 @@ impl KernelUpdater {
     }
 
     pub fn discard_staged() -> Result<(), UpdateError> {
-        let vfs = VFS.get_mut();
-        if vfs.exists_fs(UPDATE_FS, KERNEL_NEW) {
-            vfs.delete_fs(UPDATE_FS, KERNEL_NEW)?;
-        }
-        Ok(())
+        VFS.with_mut(|vfs| -> Result<(), UpdateError> {
+            if vfs.exists_fs(UPDATE_FS, KERNEL_NEW) {
+                vfs.delete_fs(UPDATE_FS, KERNEL_NEW)?;
+            }
+            Ok(())
+        })
     }
 
     pub fn has_staged() -> bool {
-        VFS.get().exists_fs(UPDATE_FS, KERNEL_NEW)
+        VFS.with_ref(|vfs| vfs.exists_fs(UPDATE_FS, KERNEL_NEW))
     }
 
     pub fn commit_and_reboot() -> ! {
@@ -76,9 +78,7 @@ impl KernelUpdater {
     fn commit_staged() -> Result<(usize, [u8; 32]), UpdateError> {
         let (expected_size, expected_sha256) = Self::fingerprint_file(KERNEL_NEW)?;
 
-        {
-            let vfs = VFS.get_mut();
-
+        VFS.with_mut(|vfs| -> Result<(), UpdateError> {
             if vfs.exists_fs(UPDATE_FS, KERNEL_OLD) {
                 vfs.delete_fs(UPDATE_FS, KERNEL_OLD)?;
             }
@@ -95,7 +95,8 @@ impl KernelUpdater {
 
             // Explicit durability boundary after the complete directory swap.
             vfs.flush_fs(UPDATE_FS)?;
-        }
+            Ok(())
+        })?;
 
         if let Err(error) = Self::verify_file(KERNEL_CURRENT, expected_size, &expected_sha256) {
             Self::rollback_to_old();
@@ -104,27 +105,28 @@ impl KernelUpdater {
 
         // Verify reads happened after a durable flush. Flush once more before
         // watchdog reset so there is no outstanding filesystem write left.
-        VFS.get().flush_fs(UPDATE_FS)?;
+        VFS.with_ref(|vfs| vfs.flush_fs(UPDATE_FS))?;
         Ok((expected_size, expected_sha256))
     }
 
     fn rollback_to_old() {
-        let vfs = VFS.get_mut();
-
-        if vfs.exists_fs(UPDATE_FS, KERNEL_CURRENT) {
-            let _ = vfs.delete_fs(UPDATE_FS, KERNEL_CURRENT);
-        }
-        if vfs.exists_fs(UPDATE_FS, KERNEL_OLD) {
-            let _ = vfs.rename_fs(UPDATE_FS, KERNEL_OLD, KERNEL_CURRENT);
-        }
-        let _ = vfs.flush_fs(UPDATE_FS);
+        VFS.with_mut(|vfs| {
+            if vfs.exists_fs(UPDATE_FS, KERNEL_CURRENT) {
+                let _ = vfs.delete_fs(UPDATE_FS, KERNEL_CURRENT);
+            }
+            if vfs.exists_fs(UPDATE_FS, KERNEL_OLD) {
+                let _ = vfs.rename_fs(UPDATE_FS, KERNEL_OLD, KERNEL_CURRENT);
+            }
+            let _ = vfs.flush_fs(UPDATE_FS);
+        });
     }
 
     fn fingerprint_file(path: &str) -> Result<(usize, [u8; 32]), UpdateError> {
-        let vfs = VFS.get();
-        let file = vfs.open_fs(UPDATE_FS, path)?;
-        Self::verify_magic_bytes(file.as_bytes())?;
-        Ok((file.len(), sha256(file.as_bytes())))
+        VFS.with_ref(|vfs| -> Result<(usize, [u8; 32]), UpdateError> {
+            let file = vfs.open_fs(UPDATE_FS, path)?;
+            Self::verify_magic_bytes(file.as_bytes())?;
+            Ok((file.len(), sha256(file.as_bytes())))
+        })
     }
 
     fn verify_file(
@@ -132,17 +134,18 @@ impl KernelUpdater {
         expected_size: usize,
         expected_sha256: &[u8; 32],
     ) -> Result<(), UpdateError> {
-        let vfs = VFS.get();
-        let file = vfs.open_fs(UPDATE_FS, path)?;
+        VFS.with_ref(|vfs| -> Result<(), UpdateError> {
+            let file = vfs.open_fs(UPDATE_FS, path)?;
 
-        if file.len() != expected_size {
-            return Err(UpdateError::VerifyFailed);
-        }
-        Self::verify_magic_bytes(file.as_bytes())?;
-        if &sha256(file.as_bytes()) != expected_sha256 {
-            return Err(UpdateError::VerifyFailed);
-        }
-        Ok(())
+            if file.len() != expected_size {
+                return Err(UpdateError::VerifyFailed);
+            }
+            Self::verify_magic_bytes(file.as_bytes())?;
+            if &sha256(file.as_bytes()) != expected_sha256 {
+                return Err(UpdateError::VerifyFailed);
+            }
+            Ok(())
+        })
     }
 
     fn verify_magic_bytes(image: &[u8]) -> Result<(), UpdateError> {

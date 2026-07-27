@@ -216,7 +216,7 @@ unsafe fn init_boot_allocator() {
 unsafe fn init_phys_allocator() {
     let mm = MEMORY_MANAGER.get().map();
     early_timeit!("Physical allocator init", {
-        PHYS_ALLOCATOR.get_mut().init_from_memory_map(mm);
+        PHYS_ALLOCATOR.with_mut(|allocator| allocator.init_from_memory_map(mm));
     });
 
     // 6) Kernel heap
@@ -247,7 +247,8 @@ pub fn init_vfs() {
     let boot = BOOT_SLICE.get().as_ref().unwrap();
     let rom = ROM_SLICE.get().as_ref().unwrap();
 
-    let vfs = VFS.get_mut();
-    vfs.mount_fat32(FsId::Boot, boot).unwrap();
-    vfs.mount_fat32(FsId::Rom, rom).unwrap();
+    VFS.with_mut(|vfs| {
+        vfs.mount_fat32(FsId::Boot, boot).unwrap();
+        vfs.mount_fat32(FsId::Rom, rom).unwrap();
+    });
 }

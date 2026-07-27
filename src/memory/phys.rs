@@ -12,6 +12,7 @@
 //! - Bit = 1 → allocated / reserved
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::early_timeit;
 
@@ -403,18 +404,44 @@ impl PhysAllocator {
     }
 }
 
-pub struct PhysStatic(UnsafeCell<PhysAllocator>);
+pub struct PhysStatic {
+    allocator: UnsafeCell<PhysAllocator>,
+    locked: AtomicBool,
+}
 
 unsafe impl Sync for PhysStatic {}
 
-pub static PHYS_ALLOCATOR: PhysStatic = PhysStatic(UnsafeCell::new(PhysAllocator::new()));
+pub static PHYS_ALLOCATOR: PhysStatic = PhysStatic {
+    allocator: UnsafeCell::new(PhysAllocator::new()),
+    locked: AtomicBool::new(false),
+};
 
 impl PhysStatic {
-    pub fn get_mut(&self) -> &mut PhysAllocator {
-        unsafe { &mut *self.0.get() }
+    fn lock(&self) {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
     }
 
-    pub fn get(&self) -> &PhysAllocator {
-        unsafe { &*self.0.get() }
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut PhysAllocator) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &mut *self.allocator.get() });
+        self.unlock();
+        result
+    }
+
+    pub fn with_ref<R>(&self, f: impl FnOnce(&PhysAllocator) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &*self.allocator.get() });
+        self.unlock();
+        result
     }
 }

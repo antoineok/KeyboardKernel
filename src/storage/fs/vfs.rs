@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::string::String;
 use alloc::vec;
@@ -440,18 +441,44 @@ fn normalize_path(path: &str) -> Result<String, VfsError> {
 
 //--------------------------------------------------------------------------------------------------
 
-pub struct VfsStatic(UnsafeCell<Vfs<'static>>);
+pub struct VfsStatic {
+    vfs: UnsafeCell<Vfs<'static>>,
+    locked: AtomicBool,
+}
 
 unsafe impl Sync for VfsStatic {}
 
-pub static VFS: VfsStatic = VfsStatic(UnsafeCell::new(Vfs::new()));
+pub static VFS: VfsStatic = VfsStatic {
+    vfs: UnsafeCell::new(Vfs::new()),
+    locked: AtomicBool::new(false),
+};
 
 impl VfsStatic {
-    pub fn get(&self) -> &Vfs<'static> {
-        unsafe { &*self.0.get() }
+    fn lock(&self) {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
     }
 
-    pub fn get_mut(&self) -> &mut Vfs<'static> {
-        unsafe { &mut *self.0.get() }
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+
+    pub fn with_ref<R>(&self, f: impl FnOnce(&Vfs<'static>) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &*self.vfs.get() });
+        self.unlock();
+        result
+    }
+
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut Vfs<'static>) -> R) -> R {
+        self.lock();
+        let result = f(unsafe { &mut *self.vfs.get() });
+        self.unlock();
+        result
     }
 }

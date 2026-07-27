@@ -6,7 +6,7 @@
 
 use core::{marker::PhantomData, ptr::NonNull, slice};
 
-use crate::arch::{cache, cpu::CpuId};
+use crate::arch::cache;
 
 use super::{phys::PHYS_ALLOCATOR, PhysAddr};
 
@@ -26,8 +26,7 @@ pub enum DmaBufferError {
 /// and `phys_addr()` refer to the same numeric address. Keep both concepts in
 /// the API so the video driver does not depend on identity mapping forever.
 ///
-/// Allocation and destruction are intentionally restricted to CPU0 until the
-/// physical page allocator itself becomes SMP-safe.
+/// Allocation and destruction are serialized by the SMP-safe physical allocator wrapper.
 pub struct DmaBuffer {
     ptr: NonNull<u8>,
     phys_addr: PhysAddr,
@@ -42,12 +41,6 @@ pub struct DmaBuffer {
 
 impl DmaBuffer {
     pub fn allocate(len: usize, alignment: usize) -> Result<Self, DmaBufferError> {
-        assert_eq!(
-            crate::arch::cpu::current_id(),
-            CpuId::BOOT,
-            "DMA buffers must currently be allocated on CPU0"
-        );
-
         if len == 0 {
             return Err(DmaBufferError::ZeroLength);
         }
@@ -64,12 +57,11 @@ impl DmaBuffer {
             .ok_or(DmaBufferError::SizeOverflow)?;
         let effective_alignment = alignment.max(PAGE_SIZE);
 
-        let phys_addr = unsafe {
-            PHYS_ALLOCATOR
-                .get_mut()
-                .alloc_contiguous_aligned(page_count, effective_alignment)
-        }
-        .ok_or(DmaBufferError::OutOfMemory)?;
+        let phys_addr = PHYS_ALLOCATOR
+            .with_mut(|allocator| unsafe {
+                allocator.alloc_contiguous_aligned(page_count, effective_alignment)
+            })
+            .ok_or(DmaBufferError::OutOfMemory)?;
 
         let ptr = NonNull::new(phys_addr as usize as *mut u8)
             .expect("physical allocator returned the null page for DMA memory");
@@ -169,20 +161,14 @@ impl DmaBuffer {
 
 impl Drop for DmaBuffer {
     fn drop(&mut self) {
-        assert_eq!(
-            crate::arch::cpu::current_id(),
-            CpuId::BOOT,
-            "DMA buffers must currently be freed on CPU0"
-        );
-
         // The contents are being discarded. Flush and invalidate every page so
         // a later owner cannot inherit dirty/stale cache lines associated with
         // a device transaction that has already finished.
         unsafe {
             cache::clean_invalidate_data_range_to_poc(self.ptr.as_ptr(), self.capacity);
-            PHYS_ALLOCATOR
-                .get_mut()
-                .free_contiguous(self.phys_addr, self.page_count);
         }
+        PHYS_ALLOCATOR.with_mut(|allocator| unsafe {
+            allocator.free_contiguous(self.phys_addr, self.page_count);
+        });
     }
 }
