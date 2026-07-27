@@ -4,7 +4,6 @@
 //! physical addresses discovered from the FDT can be used directly as virtual
 //! addresses after EL1 translation is enabled.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::{
     cell::UnsafeCell,
@@ -392,6 +391,10 @@ impl RpividDecodedFrame {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+
+    pub fn into_pixels(self) -> Vec<u8> {
+        self.pixels
+    }
 }
 
 pub struct RpividWorkspaceStatic(UnsafeCell<Option<RpividDecodeWorkspace>>);
@@ -410,8 +413,8 @@ impl RpividWorkspaceStatic {
     pub fn stage_bitstream(&self, data: &[u8]) -> RpividBitstreamWindow {
         assert_eq!(
             crate::arch::cpu::current_id(),
-            crate::arch::cpu::CpuId::BOOT,
-            "RPIVID bitstream staging currently belongs to CPU0",
+            crate::arch::cpu::CpuId::new(1).expect("CPU1 must exist"),
+            "RPIVID bitstream staging belongs to CPU1",
         );
         let workspace = self
             .get_mut()
@@ -428,8 +431,8 @@ impl RpividWorkspaceStatic {
     ) -> RpividPhase1Snapshot {
         assert_eq!(
             crate::arch::cpu::current_id(),
-            crate::arch::cpu::CpuId::BOOT,
-            "RPIVID phase 1 currently belongs to CPU0",
+            crate::arch::cpu::CpuId::new(1).expect("CPU1 must exist"),
+            "RPIVID phase 1 belongs to CPU1",
         );
         self.get_mut()
             .as_mut()
@@ -444,8 +447,8 @@ impl RpividWorkspaceStatic {
     ) -> RpividPhase2Snapshot {
         assert_eq!(
             crate::arch::cpu::current_id(),
-            crate::arch::cpu::CpuId::BOOT,
-            "RPIVID phase 2 currently belongs to CPU0",
+            crate::arch::cpu::CpuId::new(1).expect("CPU1 must exist"),
+            "RPIVID phase 2 belongs to CPU1",
         );
         self.get_mut()
             .as_mut()
@@ -458,15 +461,24 @@ impl RpividWorkspaceStatic {
         picture: &FirstPictureSyntax,
         picture_index: usize,
     ) -> RpividDecodedFrame {
+        self.copy_frame_rgbx_reuse(picture, picture_index, Vec::new())
+    }
+
+    pub fn copy_frame_rgbx_reuse(
+        &self,
+        picture: &FirstPictureSyntax,
+        picture_index: usize,
+        pixels: Vec<u8>,
+    ) -> RpividDecodedFrame {
         assert_eq!(
             crate::arch::cpu::current_id(),
-            crate::arch::cpu::CpuId::BOOT,
-            "RPIVID frame conversion currently belongs to CPU0",
+            crate::arch::cpu::CpuId::new(1).expect("CPU1 must exist"),
+            "RPIVID frame conversion belongs to CPU1",
         );
         self.get_mut()
             .as_mut()
             .expect("RPIVID workspace used before initialization")
-            .copy_frame_rgbx(picture, picture_index)
+            .copy_frame_rgbx_reuse(picture, picture_index, pixels)
     }
 }
 
@@ -790,15 +802,13 @@ impl RpividDecodeWorkspace {
         }
 
         let irq_received = super::hevc::HEVC_PLATFORM.irq_count() != irq_before;
-        let (output_checksum, nonzero_bytes) = if irq_received {
-            let current = self.frames[current_index]
+        if irq_received {
+            self.frames[current_index]
                 .as_mut()
-                .expect("RPIVID current frame buffer disappeared after phase 2");
-            current.dma.sync_for_cpu();
-            buffer_signature(current.dma.as_slice())
-        } else {
-            (0, 0)
-        };
+                .expect("RPIVID current frame buffer disappeared after phase 2")
+                .dma
+                .sync_for_cpu();
+        }
 
         RpividPhase2Snapshot {
             irq_received,
@@ -814,8 +824,8 @@ impl RpividDecodeWorkspace {
             frame_bytes: layout.frame_bytes as u32,
             colmv_stride: layout.colmv_stride as u32,
             colmv_bytes: 0,
-            output_checksum,
-            nonzero_bytes,
+            output_checksum: 0,
+            nonzero_bytes: 0,
         }
     }
 
@@ -835,10 +845,11 @@ impl RpividDecodeWorkspace {
         }
     }
 
-    fn copy_frame_rgbx(
+    fn copy_frame_rgbx_reuse(
         &mut self,
         picture: &FirstPictureSyntax,
         picture_index: usize,
+        mut pixels: Vec<u8>,
     ) -> RpividDecodedFrame {
         let sps = picture.sps;
         let frame = self.frames[picture_index & 1]
@@ -855,12 +866,16 @@ impl RpividDecodeWorkspace {
         let len = pitch
             .checked_mul(visible_height)
             .expect("decoded RGBX allocation overflow");
-        let mut pixels = vec![0u8; len];
+        pixels.resize(len, 0);
         let source = frame.dma.as_slice();
+
+        assert_eq!(visible_width & 1, 0, "kwv1 4:2:0 visible width must be even");
+        assert_eq!((sps.crop_left as usize) & 1, 0, "kwv1 4:2:0 left crop must be even");
 
         for y in 0..visible_height {
             let source_y = y + sps.crop_top as usize;
-            for x in 0..visible_width {
+            let mut x = 0usize;
+            while x < visible_width {
                 let source_x = x + sps.crop_left as usize;
                 let column = source_x / 128;
                 let in_column = source_x & 127;
@@ -869,16 +884,18 @@ impl RpividDecodeWorkspace {
                 let uv_offset = column_base
                     + layout.chroma_offset
                     + (source_y / 2) * 128
-                    + (in_column & !1);
-                let y_sample = source[y_offset];
+                    + in_column;
                 let cb = source[uv_offset];
                 let cr = source[uv_offset + 1];
-                let rgb = limited_bt709_rgb(y_sample, cb, cr);
                 let dest = y * pitch + x * 4;
-                pixels[dest] = rgb[0];
-                pixels[dest + 1] = rgb[1];
-                pixels[dest + 2] = rgb[2];
-                pixels[dest + 3] = 0xff;
+                write_limited_bt709_pair(
+                    &mut pixels[dest..dest + 8],
+                    source[y_offset],
+                    source[y_offset + 1],
+                    cb,
+                    cr,
+                );
+                x += 2;
             }
         }
 
@@ -962,25 +979,24 @@ fn phase2_config2(picture: &FirstPictureSyntax, write_motion_vectors: bool) -> u
     config
 }
 
-fn buffer_signature(bytes: &[u8]) -> (u64, u32) {
-    let mut hash = 0xcbf29ce484222325u64;
-    let mut nonzero = 0u32;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-        nonzero = nonzero.saturating_add((byte != 0) as u32);
-    }
-    (hash, nonzero)
-}
-
-fn limited_bt709_rgb(y: u8, cb: u8, cr: u8) -> [u8; 3] {
-    let c = (i32::from(y) - 16).max(0);
+#[inline(always)]
+fn write_limited_bt709_pair(destination: &mut [u8], y0: u8, y1: u8, cb: u8, cr: u8) {
+    debug_assert!(destination.len() >= 8);
     let d = i32::from(cb) - 128;
     let e = i32::from(cr) - 128;
-    let r = (298 * c + 459 * e + 128) >> 8;
-    let g = (298 * c - 55 * d - 136 * e + 128) >> 8;
-    let b = (298 * c + 541 * d + 128) >> 8;
-    [clamp_u8(r), clamp_u8(g), clamp_u8(b)]
+    let red_chroma = 459 * e + 128;
+    let green_chroma = -55 * d - 136 * e + 128;
+    let blue_chroma = 541 * d + 128;
+
+    for (index, y) in [y0, y1].into_iter().enumerate() {
+        let c = (i32::from(y) - 16).max(0);
+        let luma = 298 * c;
+        let offset = index * 4;
+        destination[offset] = clamp_u8((luma + red_chroma) >> 8);
+        destination[offset + 1] = clamp_u8((luma + green_chroma) >> 8);
+        destination[offset + 2] = clamp_u8((luma + blue_chroma) >> 8);
+        destination[offset + 3] = 0xff;
+    }
 }
 
 fn clamp_u8(value: i32) -> u8 {

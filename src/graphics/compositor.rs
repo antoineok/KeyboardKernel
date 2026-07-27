@@ -113,63 +113,61 @@ impl Compositor {
         self.background_color = color;
     }
 
-    /// Render a complete frame.
-    ///
-    /// Layers are drawn in slice order:
-    ///
-    /// - the first layer is furthest back;
-    /// - the last layer is furthest forward.
+    pub fn clear(&self, destination: &mut SurfaceMut<'_>) -> Result<(), CompositorError> {
+        fill_rect(
+            destination,
+            Rect::new(0, 0, destination.width(), destination.height()),
+            self.background_color,
+        )
+    }
+
+    pub fn render_layer(
+        &self,
+        destination: &mut SurfaceMut<'_>,
+        layer: Layer<'_>,
+    ) -> Result<(), CompositorError> {
+        match layer {
+            Layer::Solid(layer) => fill_rect(destination, layer.bounds, layer.color),
+            Layer::Image(layer) => {
+                let source = layer.source_rect;
+                match layer.blend_mode {
+                    BlendMode::Opaque => blit_opaque(
+                        &layer.source,
+                        destination,
+                        source.x,
+                        source.y,
+                        layer.position.x,
+                        layer.position.y,
+                        source.width,
+                        source.height,
+                    )
+                    .map_err(Into::into),
+                    BlendMode::Alpha => blit_alpha(
+                        &layer.source,
+                        destination,
+                        source.x,
+                        source.y,
+                        layer.position.x,
+                        layer.position.y,
+                        source.width,
+                        source.height,
+                    )
+                    .map_err(Into::into),
+                }
+            }
+        }
+    }
+
+    /// Render a complete frame. Layers are drawn back-to-front.
     pub fn render(
         &self,
         destination: &mut SurfaceMut<'_>,
         layers: &[Layer<'_>],
     ) -> Result<(), CompositorError> {
-        fill_rect(
-            destination,
-            Rect::new(0, 0, destination.width(), destination.height()),
-            self.background_color,
-        )?;
-
-        for layer in layers {
-            match *layer {
-                Layer::Solid(layer) => {
-                    fill_rect(destination, layer.bounds, layer.color)?;
-                }
-
-                Layer::Image(layer) => {
-                    let source = layer.source_rect;
-
-                    match layer.blend_mode {
-                        BlendMode::Opaque => {
-                            blit_opaque(
-                                &layer.source,
-                                destination,
-                                source.x,
-                                source.y,
-                                layer.position.x,
-                                layer.position.y,
-                                source.width,
-                                source.height,
-                            )?;
-                        }
-
-                        BlendMode::Alpha => {
-                            blit_alpha(
-                                &layer.source,
-                                destination,
-                                source.x,
-                                source.y,
-                                layer.position.x,
-                                layer.position.y,
-                                source.width,
-                                source.height,
-                            )?;
-                        }
-                    }
-                }
-            }
+        self.clear(destination)?;
+        for &layer in layers {
+            self.render_layer(destination, layer)?;
         }
-
         Ok(())
     }
 }

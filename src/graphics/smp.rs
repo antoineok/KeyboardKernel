@@ -1,16 +1,23 @@
+use alloc::vec::Vec;
 use core::{
     slice,
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
-use crate::arch::cpu::{current_id, send_event, wait_for_event, SpscQueue};
+use crate::{
+    arch::cpu::{current_id, send_event, wait_for_event, SpscQueue},
+    storage::fs::vfs::FsId,
+    time::time_manager,
+    video::player::VideoPlayer,
+};
 
 use super::{
     framebuffer::FRAMEBUFFER, BlendMode, Compositor, ImageLayer, Layer, Point, SourceRect, Surface,
     SurfaceInfo,
 };
 
-const GRAPHICS_QUEUE_SLOTS: usize = 5;
+const GRAPHICS_QUEUE_SLOTS: usize = 9;
+const OVERLAY_SLOTS: usize = 8;
 
 const RESULT_NONE: u8 = 0;
 const RESULT_OK: u8 = 1;
@@ -18,6 +25,8 @@ const RESULT_INVALID_SOURCE: u8 = 2;
 const RESULT_FRAMEBUFFER_UNAVAILABLE: u8 = 3;
 const RESULT_COMPOSITOR_FAILED: u8 = 4;
 const RESULT_PRESENT_FAILED: u8 = 5;
+const RESULT_VIDEO_FAILED: u8 = 6;
+const RESULT_OVERLAY_SLOT_INVALID: u8 = 7;
 
 #[derive(Clone, Copy)]
 struct SharedSurface {
@@ -35,13 +44,6 @@ impl SharedSurface {
         }
     }
 
-    /// Reconstruct an immutable surface shared by CPU0.
-    ///
-    /// # Safety
-    ///
-    /// The producer must keep the source allocation alive and immutable until
-    /// this command has completed. `GraphicsCoreProxy::submit_image` exposes
-    /// the raw request ID so CPU0 can preserve that lifetime until completion.
     unsafe fn as_surface<'a>(self) -> Result<Surface<'a>, super::SurfaceError> {
         let pixels = unsafe { slice::from_raw_parts(self.pixels as *const u8, self.length) };
         Surface::new(pixels, self.info)
@@ -58,9 +60,69 @@ struct RenderImageCommand {
     clear_color: u32,
 }
 
-static CPU0_TO_CPU1_GRAPHICS: SpscQueue<RenderImageCommand, GRAPHICS_QUEUE_SLOTS> =
-    SpscQueue::new();
+#[derive(Clone, Copy)]
+struct StartVideoCommand {
+    request_id: u64,
+    fs: FsId,
+    path: &'static str,
+}
 
+#[derive(Clone, Copy)]
+struct SetOverlayCommand {
+    request_id: u64,
+    slot: u8,
+    source: SharedSurface,
+    source_rect: SourceRect,
+    position: Point,
+    blend_mode: BlendMode,
+}
+
+#[derive(Clone, Copy)]
+enum GraphicsCommand {
+    RenderImage(RenderImageCommand),
+    StartVideo(StartVideoCommand),
+    StopVideo { request_id: u64 },
+    SetOverlay(SetOverlayCommand),
+    ClearOverlay { request_id: u64, slot: u8 },
+}
+
+impl GraphicsCommand {
+    const fn request_id(self) -> u64 {
+        match self {
+            Self::RenderImage(command) => command.request_id,
+            Self::StartVideo(command) => command.request_id,
+            Self::StopVideo { request_id } | Self::ClearOverlay { request_id, .. } => request_id,
+            Self::SetOverlay(command) => command.request_id,
+        }
+    }
+}
+
+struct OwnedOverlay {
+    pixels: Vec<u8>,
+    info: SurfaceInfo,
+    source_rect: SourceRect,
+    position: Point,
+    blend_mode: BlendMode,
+}
+
+impl OwnedOverlay {
+    fn from_command(command: SetOverlayCommand) -> Result<Self, super::SurfaceError> {
+        let source = unsafe { command.source.as_surface()? };
+        Ok(Self {
+            pixels: source.pixels().to_vec(),
+            info: source.info(),
+            source_rect: command.source_rect,
+            position: command.position,
+            blend_mode: command.blend_mode,
+        })
+    }
+
+    fn surface(&self) -> Result<Surface<'_>, super::SurfaceError> {
+        Surface::new(&self.pixels, self.info)
+    }
+}
+
+static CPU0_TO_CPU1_GRAPHICS: SpscQueue<GraphicsCommand, GRAPHICS_QUEUE_SLOTS> = SpscQueue::new();
 static GRAPHICS_CORE_READY: AtomicBool = AtomicBool::new(false);
 static GRAPHICS_COMPLETED_REQUEST: AtomicU64 = AtomicU64::new(0);
 static GRAPHICS_COMPLETION_RESULT: AtomicU8 = AtomicU8::new(RESULT_NONE);
@@ -79,12 +141,11 @@ pub enum GraphicsRequestResult {
     FramebufferUnavailable,
     CompositorFailed,
     PresentFailed,
+    VideoFailed,
+    OverlaySlotInvalid,
 }
 
 /// CPU0-side command producer for the graphics core.
-///
-/// CPU1 is the sole runtime owner of the framebuffer and compositor. CPU0 may
-/// prepare/load immutable assets, then submit descriptors through this proxy.
 pub struct GraphicsCoreProxy {
     next_request_id: u64,
     pending_request: Option<u64>,
@@ -98,12 +159,32 @@ impl GraphicsCoreProxy {
         }
     }
 
-    /// Submit one complete-frame image render to CPU1.
-    ///
-    /// The source pixels are borrowed only conceptually: the queue stores a raw
-    /// immutable descriptor so it can cross cores. The caller must keep
-    /// `source` alive and unchanged until [`Self::request_result`] reports that
-    /// this request has completed.
+    fn next_id(&mut self) -> Result<u64, GraphicsSubmitError> {
+        assert_eq!(current_id().raw(), 0, "graphics commands must be submitted by CPU0");
+        if !graphics_core_ready() {
+            return Err(GraphicsSubmitError::WorkerNotReady);
+        }
+        if self.pending_request.is_some() {
+            return Err(GraphicsSubmitError::RequestPending);
+        }
+        let id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        if self.next_request_id == 0 {
+            self.next_request_id = 1;
+        }
+        Ok(id)
+    }
+
+    fn submit(&mut self, command: GraphicsCommand) -> Result<u64, GraphicsSubmitError> {
+        let request_id = command.request_id();
+        CPU0_TO_CPU1_GRAPHICS
+            .try_push(command)
+            .map_err(|_| GraphicsSubmitError::QueueFull)?;
+        self.pending_request = Some(request_id);
+        send_event();
+        Ok(request_id)
+    }
+
     pub fn submit_image(
         &mut self,
         source: &Surface<'_>,
@@ -112,50 +193,70 @@ impl GraphicsCoreProxy {
         blend_mode: BlendMode,
         clear_color: u32,
     ) -> Result<u64, GraphicsSubmitError> {
-        assert_eq!(
-            current_id().raw(),
-            0,
-            "graphics commands must currently be submitted by CPU0"
-        );
-
-        if !graphics_core_ready() {
-            return Err(GraphicsSubmitError::WorkerNotReady);
-        }
-
-        if self.pending_request.is_some() {
-            return Err(GraphicsSubmitError::RequestPending);
-        }
-
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
-        if self.next_request_id == 0 {
-            self.next_request_id = 1;
-        }
-
-        let command = RenderImageCommand {
+        let request_id = self.next_id()?;
+        self.submit(GraphicsCommand::RenderImage(RenderImageCommand {
             request_id,
             source: SharedSurface::from_surface(source),
             source_rect,
             position,
             blend_mode,
             clear_color,
-        };
+        }))
+    }
 
-        CPU0_TO_CPU1_GRAPHICS
-            .try_push(command)
-            .map_err(|_| GraphicsSubmitError::QueueFull)?;
-        self.pending_request = Some(request_id);
+    /// Ask CPU1 to own and continuously play a `kwv1` background.
+    pub fn start_video(
+        &mut self,
+        fs: FsId,
+        path: &'static str,
+    ) -> Result<u64, GraphicsSubmitError> {
+        let request_id = self.next_id()?;
+        self.submit(GraphicsCommand::StartVideo(StartVideoCommand {
+            request_id,
+            fs,
+            path,
+        }))
+    }
 
-        send_event();
+    pub fn stop_video(&mut self) -> Result<u64, GraphicsSubmitError> {
+        let request_id = self.next_id()?;
+        self.submit(GraphicsCommand::StopVideo { request_id })
+    }
 
-        Ok(request_id)
+    /// Copy one persistent image layer into CPU1-owned memory.
+    ///
+    /// Once the request completes, CPU0 may release or mutate the source.
+    pub fn set_overlay_image(
+        &mut self,
+        slot: usize,
+        source: &Surface<'_>,
+        source_rect: SourceRect,
+        position: Point,
+        blend_mode: BlendMode,
+    ) -> Result<u64, GraphicsSubmitError> {
+        let request_id = self.next_id()?;
+        self.submit(GraphicsCommand::SetOverlay(SetOverlayCommand {
+            request_id,
+            slot: u8::try_from(slot).unwrap_or(u8::MAX),
+            source: SharedSurface::from_surface(source),
+            source_rect,
+            position,
+            blend_mode,
+        }))
+    }
+
+    pub fn clear_overlay(&mut self, slot: usize) -> Result<u64, GraphicsSubmitError> {
+        let request_id = self.next_id()?;
+        self.submit(GraphicsCommand::ClearOverlay {
+            request_id,
+            slot: u8::try_from(slot).unwrap_or(u8::MAX),
+        })
     }
 
     pub fn request_result(&mut self, request_id: u64) -> Option<GraphicsRequestResult> {
         if self.pending_request != Some(request_id) {
             return None;
         }
-
         if GRAPHICS_COMPLETED_REQUEST.load(Ordering::Acquire) != request_id {
             return None;
         }
@@ -166,9 +267,10 @@ impl GraphicsCoreProxy {
             RESULT_FRAMEBUFFER_UNAVAILABLE => GraphicsRequestResult::FramebufferUnavailable,
             RESULT_COMPOSITOR_FAILED => GraphicsRequestResult::CompositorFailed,
             RESULT_PRESENT_FAILED => GraphicsRequestResult::PresentFailed,
+            RESULT_VIDEO_FAILED => GraphicsRequestResult::VideoFailed,
+            RESULT_OVERLAY_SLOT_INVALID => GraphicsRequestResult::OverlaySlotInvalid,
             _ => return None,
         };
-
         self.pending_request = None;
         Some(result)
     }
@@ -184,46 +286,213 @@ pub fn graphics_core_ready() -> bool {
     GRAPHICS_CORE_READY.load(Ordering::Acquire)
 }
 
-/// Permanent CPU1 graphics worker.
+/// Permanent CPU1 graphics scheduler.
 ///
-/// CPU0 initializes the mailbox framebuffer before releasing secondary CPUs.
-/// From this function onward CPU1 is the sole runtime owner of `FRAMEBUFFER`
-/// and the mailbox calls used to present framebuffer pages.
+/// CPU1 owns the framebuffer, the compositor, KWVIDEO playback and RPIVID.
+/// Video is just the back-most scene layer; persistent overlays are drawn over
+/// the current video frame whenever either the video or an overlay changes.
 pub fn run_graphics_core() -> ! {
     let cpu = current_id();
     assert_eq!(cpu.raw(), 1, "graphics worker must run on CPU1");
 
     let framebuffer = FRAMEBUFFER.get();
     let mut compositor = Compositor::new(0x000000ff);
+    let mut video: Option<VideoPlayer> = None;
+    let mut overlays: [Option<OwnedOverlay>; OVERLAY_SLOTS] = core::array::from_fn(|_| None);
+    let mut scene_dirty = false;
 
-    // Validate that CPU0 completed framebuffer initialization before handing
-    // ownership to this core.
     framebuffer
         .as_surface_mut()
         .expect("framebuffer unavailable when CPU1 claimed graphics ownership");
 
     GRAPHICS_CORE_READY.store(true, Ordering::Release);
     send_event();
-    crate::info!("{} graphics worker ready", cpu);
+    crate::info!("{} graphics/video scheduler ready", cpu);
 
     loop {
-        let Some(command) = CPU0_TO_CPU1_GRAPHICS.try_pop() else {
+        let mut handled_command = false;
+        while let Some(command) = CPU0_TO_CPU1_GRAPHICS.try_pop() {
+            handled_command = true;
+            let request_id = command.request_id();
+            let result = match command {
+                GraphicsCommand::RenderImage(command) => {
+                    compositor.set_background_color(command.clear_color);
+                    render_image_command(framebuffer, &compositor, command)
+                }
+                GraphicsCommand::StartVideo(command) => match VideoPlayer::open(command.fs, command.path) {
+                    Ok(player) => {
+                        crate::info!("CPU1 started KWVIDEO background: {}", command.path);
+                        video = Some(player);
+                        scene_dirty = true;
+                        RESULT_OK
+                    }
+                    Err(error) => {
+                        crate::error!("CPU1 failed to start KWVIDEO {}: {}", command.path, error);
+                        RESULT_VIDEO_FAILED
+                    }
+                },
+                GraphicsCommand::StopVideo { .. } => {
+                    video = None;
+                    scene_dirty = true;
+                    RESULT_OK
+                }
+                GraphicsCommand::SetOverlay(command) => {
+                    let slot = usize::from(command.slot);
+                    if slot >= overlays.len() {
+                        RESULT_OVERLAY_SLOT_INVALID
+                    } else {
+                        match OwnedOverlay::from_command(command) {
+                            Ok(overlay) => {
+                                overlays[slot] = Some(overlay);
+                                scene_dirty = true;
+                                RESULT_OK
+                            }
+                            Err(error) => {
+                                crate::error!("CPU1 rejected shared overlay surface: {}", error);
+                                RESULT_INVALID_SOURCE
+                            }
+                        }
+                    }
+                }
+                GraphicsCommand::ClearOverlay { slot, .. } => {
+                    let slot = usize::from(slot);
+                    if slot >= overlays.len() {
+                        RESULT_OVERLAY_SLOT_INVALID
+                    } else {
+                        overlays[slot] = None;
+                        scene_dirty = true;
+                        RESULT_OK
+                    }
+                }
+            };
+
+            GRAPHICS_COMPLETION_RESULT.store(result, Ordering::Release);
+            GRAPHICS_COMPLETED_REQUEST.store(request_id, Ordering::Release);
+            send_event();
+        }
+
+        if let Some(player) = video.as_mut() {
+            match player.present_if_due(time_manager().uptime()) {
+                Ok(true) => scene_dirty = true,
+                Ok(false) => {}
+                Err(error) => {
+                    crate::error!("CPU1 KWVIDEO playback failed: {}", error);
+                    video = None;
+                    scene_dirty = true;
+                }
+            }
+        }
+
+        if scene_dirty {
+            let result = render_scene(framebuffer, &compositor, video.as_ref(), &overlays);
+            if result != RESULT_OK {
+                crate::error!("CPU1 scene presentation failed with result {}", result);
+            }
+            scene_dirty = false;
+        }
+
+        if let Some(player) = video.as_mut() {
+            if let Err(error) = player.prepare_if_needed() {
+                crate::error!("CPU1 KWVIDEO decode preparation failed: {}", error);
+                video = None;
+                scene_dirty = true;
+            }
+            // A running video has media deadlines but no timer IRQ yet. CPU1 is
+            // dedicated to visuals, so poll the scheduler clock between frames.
+            core::hint::spin_loop();
+        } else if !handled_command {
             wait_for_event();
-            continue;
-        };
-
-        compositor.set_background_color(command.clear_color);
-
-        let result = render_image_command(framebuffer, &compositor, command);
-        GRAPHICS_COMPLETION_RESULT.store(result, Ordering::Release);
-        GRAPHICS_COMPLETED_REQUEST.store(command.request_id, Ordering::Release);
-
-        send_event();
-
-        if result == RESULT_OK {
-            crate::info!("{} presented graphics request {}", cpu, command.request_id);
         }
     }
+}
+
+fn render_scene(
+    framebuffer: &mut super::framebuffer::Framebuffer,
+    compositor: &Compositor,
+    video: Option<&VideoPlayer>,
+    overlays: &[Option<OwnedOverlay>; OVERLAY_SLOTS],
+) -> u8 {
+    {
+        let mut backbuffer = match framebuffer.as_surface_mut() {
+            Ok(surface) => surface,
+            Err(error) => {
+                crate::error!("CPU1 framebuffer backbuffer unavailable: {}", error);
+                return RESULT_FRAMEBUFFER_UNAVAILABLE;
+            }
+        };
+
+        let video_frame = video.and_then(VideoPlayer::current_frame);
+        if video_frame.is_none() {
+            if let Err(error) = compositor.clear(&mut backbuffer) {
+                crate::error!("CPU1 framebuffer clear failed: {}", error);
+                return RESULT_COMPOSITOR_FAILED;
+            }
+        }
+
+        if let Some(frame) = video_frame {
+            assert_eq!(frame.width(), backbuffer.width(), "KWVIDEO background width must match framebuffer");
+            assert_eq!(frame.height(), backbuffer.height(), "KWVIDEO background height must match framebuffer");
+            let info = match SurfaceInfo::new(
+                frame.width(),
+                frame.height(),
+                frame.pitch(),
+                super::PixelFormat::Rgbx8888,
+            ) {
+                Ok(info) => info,
+                Err(error) => {
+                    crate::error!("CPU1 rejected decoded video surface: {}", error);
+                    return RESULT_INVALID_SOURCE;
+                }
+            };
+            let surface = match Surface::new(frame.pixels(), info) {
+                Ok(surface) => surface,
+                Err(error) => {
+                    crate::error!("CPU1 rejected decoded video pixels: {}", error);
+                    return RESULT_INVALID_SOURCE;
+                }
+            };
+            if let Err(error) = compositor.render_layer(
+                &mut backbuffer,
+                Layer::Image(ImageLayer {
+                    source: surface,
+                    source_rect: SourceRect::whole(&surface),
+                    position: Point::new(0, 0),
+                    blend_mode: BlendMode::Opaque,
+                }),
+            ) {
+                crate::error!("CPU1 video background composition failed: {}", error);
+                return RESULT_COMPOSITOR_FAILED;
+            }
+        }
+
+        for overlay in overlays.iter().flatten() {
+            let source = match overlay.surface() {
+                Ok(surface) => surface,
+                Err(error) => {
+                    crate::error!("CPU1 stored overlay became invalid: {}", error);
+                    return RESULT_INVALID_SOURCE;
+                }
+            };
+            if let Err(error) = compositor.render_layer(
+                &mut backbuffer,
+                Layer::Image(ImageLayer {
+                    source,
+                    source_rect: overlay.source_rect,
+                    position: overlay.position,
+                    blend_mode: overlay.blend_mode,
+                }),
+            ) {
+                crate::error!("CPU1 overlay composition failed: {}", error);
+                return RESULT_COMPOSITOR_FAILED;
+            }
+        }
+    }
+
+    if !framebuffer.present() {
+        crate::error!("CPU1 framebuffer present failed");
+        return RESULT_PRESENT_FAILED;
+    }
+    RESULT_OK
 }
 
 fn render_image_command(
