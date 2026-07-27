@@ -151,6 +151,26 @@ pub extern "C" fn el1_entry(device_tree_ptr: usize) -> ! {
             .unwrap_or_else(|error| panic!("failed to locate KWVIDEO picture {picture_index} CABAC payload: {error}"));
         let phase1 = crate::video::rpivid::RPIVID_WORKSPACE
             .submit_picture_phase1(&picture, cabac_payload);
+        if !phase1.complete() {
+            info!(
+                "RPIVID phase1 failure: picture={}, nal_type={}, slice_type={}, poc_lsb={}, refs={}/{}, merge={}, cabac={} bytes, commands={}, irq={}, CFSTATUS={:#010x}/{:#010x}, STATUS={:#010x}, BFSTATUS={:#010x}, intc={:#010x}",
+                picture_index,
+                slice.nal_unit_type,
+                slice.slice_type,
+                slice.pic_order_cnt_lsb,
+                slice.num_ref_idx_l0_active,
+                slice.num_ref_idx_l1_active,
+                slice.max_num_merge_cand,
+                cabac_payload.len(),
+                phase1.command_count,
+                phase1.irq_received,
+                phase1.cfstatus,
+                phase1.cfnum,
+                phase1.status,
+                phase1.bfstatus,
+                phase1.interrupt_control,
+            );
+        }
         assert!(
             phase1.complete(),
             "RPIVID phase 1 failed for KWVIDEO picture {picture_index}",

@@ -1015,7 +1015,14 @@ fn build_picture_wpp_commands(
     write_slice_messages(commands, picture);
     write_slice_segment_registers(commands, picture);
 
-    let slice_const = (slice.slice_type << 12)
+    // RPI_SLICE carries the same per-slice prediction shape as the slice
+    // message header. This was invisible for the IDR bring-up because an
+    // I-slice has no references and no merge candidates, but P-slices need
+    // all three low fields populated or phase 1 cannot decode them.
+    let slice_const = (slice.max_num_merge_cand << 0)
+        | (slice.num_ref_idx_l0_active << 4)
+        | (slice.num_ref_idx_l1_active << 8)
+        | (slice.slice_type << 12)
         | ((slice.sao_luma as u32) << 14)
         | ((slice.sao_chroma as u32) << 15);
 
