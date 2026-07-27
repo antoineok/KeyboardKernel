@@ -144,7 +144,7 @@ impl HevcPlatform {
         actual_rate
     }
 
-    pub fn probe_hardware(&self) -> u32 {
+    pub fn probe_hardware(&self) -> super::rpivid::RpividIdleSnapshot {
         super::rpivid::RpividRegisters::from_resources(self.resources()).probe()
     }
 

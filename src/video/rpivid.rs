@@ -10,10 +10,17 @@ use crate::info;
 
 use super::hevc::HevcResources;
 
-/// Phase-1 HEVC register containing the decoder hardware revision.
-///
-/// This matches `RPI_VERSION` in Raspberry Pi's HEVC decoder driver.
+// Phase-1 HEVC register offsets used during initial hardware bring-up.
+const RPI_CONTROL: usize = 0x0034;
+const RPI_STATUS: usize = 0x0038;
 const RPI_VERSION: usize = 0x003c;
+
+// Phase-2 status register. The phase-2 register file begins at 0x8000.
+const RPI_STATUS2: usize = 0x8028;
+
+// Local Argon interrupt controller register block.
+const ARG_IC_ICTRL: usize = 0x0000;
+
 const BCM2711_HEVC_VERSION: u32 = 0x0202;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,6 +55,15 @@ impl MmioRegion {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RpividIdleSnapshot {
+    pub version: u32,
+    pub control: u32,
+    pub status1: u32,
+    pub status2: u32,
+    pub interrupt_control: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RpividRegisters {
     hevc: MmioRegion,
     intc: MmioRegion,
@@ -61,22 +77,35 @@ impl RpividRegisters {
         }
     }
 
-    pub fn version(self) -> u32 {
-        self.hevc.read32(RPI_VERSION)
+    pub fn idle_snapshot(self) -> RpividIdleSnapshot {
+        RpividIdleSnapshot {
+            version: self.hevc.read32(RPI_VERSION),
+            control: self.hevc.read32(RPI_CONTROL),
+            status1: self.hevc.read32(RPI_STATUS),
+            status2: self.hevc.read32(RPI_STATUS2),
+            interrupt_control: self.intc.read32(ARG_IC_ICTRL),
+        }
     }
 
-    pub fn probe(self) -> u32 {
-        let version = self.version();
+    pub fn probe(self) -> RpividIdleSnapshot {
+        let snapshot = self.idle_snapshot();
         assert_eq!(
-            version, BCM2711_HEVC_VERSION,
-            "unsupported BCM2711 HEVC hardware version {version:#x}"
+            snapshot.version, BCM2711_HEVC_VERSION,
+            "unsupported BCM2711 HEVC hardware version {:#x}",
+            snapshot.version
         );
 
         info!(
-            "BCM2711 HEVC register probe passed: version={:#x}, hevc={:#018x}, intc={:#018x}",
-            version, self.hevc.base, self.intc.base
+            "BCM2711 HEVC register probe passed: version={:#x}, control={:#010x}, status1={:#010x}, status2={:#010x}, intc={:#010x}, hevc={:#018x}, intc_base={:#018x}",
+            snapshot.version,
+            snapshot.control,
+            snapshot.status1,
+            snapshot.status2,
+            snapshot.interrupt_control,
+            self.hevc.base,
+            self.intc.base,
         );
 
-        version
+        snapshot
     }
 }
